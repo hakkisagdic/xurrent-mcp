@@ -260,8 +260,41 @@ public sealed class LiveAdapter : IXurrentAdapter, IDisposable
         catch (InvalidOperationException) { return null; } // etiket kozmetiktir; hata akışı bozmasın
     }
 
+    /// <summary>
+    /// (kişi, tarih) için sunucudan çekilmiş günlük toplam ve çekilme anı.
+    /// Bulk yazma sırasında AYNI günü tekrar tekrar sormamak için.
+    /// </summary>
+    private readonly Dictionary<string, (int Baseline, DateTimeOffset At)> _loggedBaseline = new();
+
+    /// <summary>Bu adapter örneğinin o güne YAZDIĞI dakikalar (baseline'ın üstüne eklenir).</summary>
+    private readonly Dictionary<string, int> _loggedLocal = new();
+
+    private const int LoggedBaselineTtlSeconds = 5;
+
+    /// <summary>
+    /// ★ NEDEN CACHE: bu sorgu her yazmadan önce çalışıyordu, yani bulk'ta kayıt
+    /// başına İKİ istek gidiyordu (LoggedMinutes + TimeEntryCreate). Xurrent'ın
+    /// rate limit'i 20 istek / 2 saniye olduğu için 8 kayıtlık bir bulk sınırı
+    /// aşıyor ve 429 alıyordu — TypeScript ve Python kayıt başına tek istek attığı
+    /// için aynı senaryoda sorun yaşamıyordu.
+    ///
+    /// Bu hatayı tools/fake-xurrent sahte sunucusu ortaya çıkardı; mock modda
+    /// görünmüyordu çünkü mock'ta HTTP yok.
+    ///
+    /// Çözüm: baseline'ı günde bir kez sor, kendi yazdıklarımızı yerel say.
+    /// Kısa TTL, başka bir istemci de yazarsa bir süre sonra tazelenmesini sağlar.
+    /// </summary>
     public async Task<int> GetLoggedMinutesAsync(string personId, DateOnly date, CancellationToken ct)
     {
+        var resolved = await ResolvePersonIdAsync(personId, ct);
+        var key = $"{resolved}|{date:yyyy-MM-dd}";
+
+        if (_loggedBaseline.TryGetValue(key, out var hit)
+            && (DateTimeOffset.UtcNow - hit.At).TotalSeconds < LoggedBaselineTtlSeconds)
+        {
+            return hit.Baseline + (_loggedLocal.TryGetValue(key, out var addedFast) ? addedFast : 0);
+        }
+
         const string q = """
             query LoggedMinutes($personId: String!, $date: ISO8601Date!) {
               timeEntries(first: 100, view: all, filter: {
@@ -272,17 +305,35 @@ public sealed class LiveAdapter : IXurrentAdapter, IDisposable
               }
             }
             """;
+        int baseline;
         try
         {
             var data = await PostAsync(q, new JsonObject
             {
-                ["personId"] = await ResolvePersonIdAsync(personId, ct),
+                ["personId"] = resolved,
                 ["date"] = date.ToString("yyyy-MM-dd"),
             }, ct);
-            return (data["timeEntries"]?["nodes"] as JsonArray ?? [])
+            baseline = (data["timeEntries"]?["nodes"] as JsonArray ?? [])
                 .Sum(n => MockAdapter.Int(n!.AsObject(), "timeSpent") ?? 0);
         }
         catch (InvalidOperationException) { return 0; } // sınır kontrolü best-effort
+
+        // Taze baseline geldi; bu ana kadar yerel saydıklarımız zaten içinde.
+        _loggedBaseline[key] = (baseline, DateTimeOffset.UtcNow);
+        _loggedLocal[key] = 0;
+        return baseline;
+    }
+
+    /// <summary>
+    /// Başarılı bir yazmadan sonra çağrılır: aynı güne yazılan dakikaları, sunucuya
+    /// tekrar sormadan yerel olarak sayar.
+    /// </summary>
+    private void NoteLoggedLocally(string resolvedPersonId, DateOnly date, int minutes)
+    {
+        if (minutes <= 0) return;
+        var key = $"{resolvedPersonId}|{date:yyyy-MM-dd}";
+        if (!_loggedBaseline.ContainsKey(key)) return;   // baseline yoksa bir sonraki sorgu zaten çeker
+        _loggedLocal[key] = (_loggedLocal.TryGetValue(key, out var v) ? v : 0) + minutes;
     }
 
     // ── Yazma ────────────────────────────────────────────────────────────────
@@ -305,7 +356,17 @@ public sealed class LiveAdapter : IXurrentAdapter, IDisposable
         if (errs.Count > 0) return new MutationOutcome(null, errs);
 
         if (payload["timeEntry"]?.AsObject() is { } te)
+        {
+            // Yazma başarılı: günlük toplamı sunucuya TEKRAR SORMADAN yerel say.
+            // Aksi halde bulk'ta kayıt başına ikinci bir istek gider ve rate limit aşılır.
+            var teDate = MockAdapter.Str(te, "date");
+            var teMinutes = MockAdapter.Int(te, "timeSpent") ?? 0;
+            var tePerson = te["person"]?["id"]?.GetValue<string>();
+            if (teDate is not null && tePerson is not null && DateOnly.TryParse(teDate, out var d))
+                NoteLoggedLocally(tePerson, d, teMinutes);
+
             return new MutationOutcome(te, []);
+        }
 
         // Parent update payload'ı TimeEntry DÖNDÜRMEZ (request/task döner).
         // two_step'in 2. adımı için oluşan kaydın id'sine ihtiyacımız var -> takip sorgusu.

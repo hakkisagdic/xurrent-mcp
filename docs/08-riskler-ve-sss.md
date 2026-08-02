@@ -187,23 +187,37 @@ Aşağıdaki üç madde [09 — Protokol geçişi](09-protokol-gecisi.md) bölü
 Diğerlerinden farkı: bunların bir kısmı **zaten ölçüldü**, bir kısmı **henüz ölçülmedi**
 — ve ikisi açıkça ayrılmıştır.
 
-### D11 — Claude Code hangi revizyonu kabul ediyor? ★★ — **HENÜZ ÖLÇÜLMEDİ**
+### D11 — Claude Code hangi revizyonu kabul ediyor? — ✅ **ÖLÇÜLDÜ: İKİSİNİ DE**
 
-> **⚠️ Bu maddeye varsayım yazılmayacaktır.** Claude Code'un (ve Claude Desktop'ın)
-> `2026-07-28` revizyonunu konuşup konuşmadığı, `server/discover` gönderip
-> göndermediği, `input_required` sonucunu ele alıp almadığı **bu belgenin yazıldığı
-> anda ölçülmemiştir.**
+*Neden kritikti:* Bu proje `.mcp.json` ile Claude Code'a takılıyor
+([03](03-mcp-tasarimi.md)). İstemci yalnızca v1 konuşsaydı `MCP_PROTOCOL=2025-11-25`
+zorunlu olurdu; yalnızca v2 konuşsaydı TypeScript sunucusu (SDK `1.30.0` ile başlayan
+sürüm) hiç bağlanamazdı.
 
-*Neden kritik:* Bu proje `.mcp.json` ile Claude Code'a takılıyor ([03](03-mcp-tasarimi.md)).
-İstemci yalnızca v1 konuşuyorsa `MCP_PROTOCOL=2025-11-25` ile başlatmak gerekir;
-yalnızca v2 konuşuyorsa TypeScript sunucusu (SDK `1.30.0`) **hiç bağlanmaz.**
+**Ölçüm.** `.mcp.json`'daki üç girdi de aynı oturumda bağlandı ve `xurrent_whoami`
+çağrıldı:
 
-*Nasıl ölçülür:* Sunucu tarafında gelen ham JSON-RPC'yi stderr'e dök ve bak —
-ilk istek `initialize` mi, `server/discover` mı? İkincisiyse `_meta` içinde hangi
-`io.modelcontextprotocol/protocolVersion` geliyor?
+| Sunucu | `MCP_PROTOCOL` | Bildirilen `inputSchema` draft'ı | Sonuç |
+|---|---|---|---|
+| `xurrent-ts` | `2026-07-28` | JSON Schema **2020-12** | ✅ bağlandı, çağrı başarılı |
+| `xurrent-ts-v1` | `2025-11-25` | **draft-07** | ✅ bağlandı, çağrı başarılı |
+| `xurrent-cs` | `2026-07-28` | *(bildirilmiyor)* | ✅ bağlandı, çağrı başarılı |
 
-*Ölçülene kadar:* `MCP_PROTOCOL` varsayılanına güvenme; ders öncesi **her iki değerle
-de** bir kez bağlan.
+Üçü de `structuredContent` olarak **birebir aynı** yanıtı döndürdü.
+
+**Sonuç:** Claude Code her iki revizyonu da kabul ediyor; `MCP_PROTOCOL` varsayılanı
+(`2026-07-28`) güvenle bırakılabilir. `xurrent-ts-v1` girdisi `.mcp.json`'da
+**eski protokolü derste canlı göstermek** için duruyor, uyumluluk zorunluluğu olarak değil.
+
+**Yan bulgu — şema draft'ı revizyona göre değişiyor.** Aynı sunucu, aynı tool'lar,
+tek fark `MCP_PROTOCOL`: v2'de `inputSchema` **2020-12**, v1'de **draft-07** olarak
+bildiriliyor. Bu, `2026-07-28`'in `inputSchema`/`outputSchema`'yı tam JSON Schema
+2020-12'ye (ve `$ref`'e) gevşetmesinin doğrudan yansıması. Şema doğrulayan bir istemci
+yazıyorsanız draft'ı sabit varsaymayın.
+
+> **Hâlâ ölçülmeyen:** Claude **Desktop**. Yalnızca Claude Code ölçüldü.
+> Ayrıca istemcinin `input_required` (MRTR) sonucunu retry ederek ele alıp almadığı
+> ayrı bir sorudur — yukarıdaki çağrılar okuma tool'uydu, onay akışını tetiklemedi.
 
 ### D12 — SDK 2.0.0'ın v1 geriye dönük desteği ne zamana kadar? ★
 
