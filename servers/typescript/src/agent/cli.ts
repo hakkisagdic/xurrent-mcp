@@ -2,8 +2,13 @@
 /**
  * Terminal chatbot.
  *
- * ANTHROPIC_API_KEY gerektirir. Yalnızca MCP sunucusunu Claude Code / Claude
- * Desktop'a takacaksanız GEREKMEZ — o durumda LLM'i host uygulama sağlar.
+ * GEMINI_API_KEY gerektirir. Yalnızca MCP sunucusunu bir host uygulamaya
+ * (Claude Code, Claude Desktop, Gemini CLI...) takacaksanız GEREKMEZ — o durumda
+ * LLM'i host sağlar.
+ *
+ * Anahtarsız uçtan uca deneme:
+ *   node tools/fake-gemini/server.mjs --mod otomatik --port 5100
+ *   GEMINI_BASE_URL=http://127.0.0.1:5100 GEMINI_API_KEY=sahte npm run chat
  *
  * Onay (yazma izni) burada readline ile sorulur: LLM'e "onay aldın mı?" diye
  * güvenmeyiz, kullanıcıya doğrudan sorarız.
@@ -12,6 +17,7 @@
 import { createInterface } from "node:readline/promises";
 import { loadConfig } from "../config.js";
 import { createToolContext, type ConfirmFn } from "../core/context.js";
+import { createGeminiClient } from "../llm/gemini.js";
 import { createXurrentAdapter } from "../xurrent/index.js";
 import { createAgent } from "./core.js";
 
@@ -37,16 +43,32 @@ async function main(): Promise<void> {
   };
 
   const ctx = createToolContext(cfg, createXurrentAdapter(cfg), confirm);
-  const agent = createAgent(cfg, ctx);
+  const client = createGeminiClient(cfg);
+  const agent = createAgent(cfg, ctx, client);
 
   process.stdout.write(
     `\n${C.bold}Xurrent zaman takibi asistanı${C.reset} ${C.dim}(TypeScript)${C.reset}\n` +
-      `${C.dim}Mod: ${cfg.mode} · Strateji: ${cfg.backdateStrategy} · Takvim: ${cfg.calendarProvider} · Model: ${cfg.anthropicModel}${C.reset}\n` +
+      `${C.dim}Mod: ${cfg.mode} · Strateji: ${cfg.backdateStrategy} · Takvim: ${cfg.calendarProvider} · Model: ${cfg.geminiModel}${C.reset}\n` +
+      `${C.dim}LLM: ${client.baseUrl}${C.reset}\n` +
       `${C.dim}Örnek: "bugünkü toplantılarımı Xurrent'a yaz" · Çıkmak için: /q${C.reset}\n\n`,
   );
 
+  // stdin kapandığında (boruyla beslenen betikler, CI) readline artık soru soramaz.
+  // Bunu hata olarak değil, oturumun bitişi olarak ele alıyoruz.
+  let stdinClosed = false;
+  rl.on("close", () => {
+    stdinClosed = true;
+  });
+
   for (;;) {
-    const input = (await rl.question(`${C.green}sen> ${C.reset}`)).trim();
+    if (stdinClosed) break;
+    let raw: string;
+    try {
+      raw = await rl.question(`${C.green}sen> ${C.reset}`);
+    } catch {
+      break; // EOF
+    }
+    const input = raw.trim();
     if (!input) continue;
     if (input === "/q" || input === "/exit" || input === "/quit") break;
 

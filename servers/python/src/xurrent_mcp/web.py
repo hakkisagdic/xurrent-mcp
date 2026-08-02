@@ -40,6 +40,7 @@ henuz olusturulmamis. Backend yine de hazir:</p>
 <ul>
   <li><code>POST /api/chat</code> — <code>{"message":"..."}</code></li>
   <li><code>GET /api/tools</code> — tool envanteri</li>
+  <li><code>GET /api/config</code> — arayuz rozet verisi (mod, model, hasApiKey)</li>
   <li><code>GET /api/health</code> — mod ve yapilandirma ozeti</li>
 </ul>
 </div>
@@ -61,7 +62,28 @@ def build_app(config: Config | None = None) -> Starlette:
                 "backdateStrategy": cfg.backdate_strategy,
                 "calendarProvider": cfg.calendar_provider,
                 "timeZone": cfg.timezone,
-                "chatAvailable": bool(cfg.anthropic_api_key),
+                "chatAvailable": bool(cfg.gemini_api_key),
+                "toolCount": len(TOOLS),
+            }
+        )
+
+    async def config_endpoint(_request: Request) -> JSONResponse:
+        """clients/web/API.md §1 — arayuzun acilista okudugu rozet verisi.
+
+        ★ SIR SIZMAZ: yalnizca `hasApiKey: boolean` doner. Anahtarin kendisi,
+          Xurrent token'i ve takvim kimlik bilgileri hicbir uca cikmaz.
+        """
+        return JSONResponse(
+            {
+                "mode": runtime.adapter.mode,
+                "strategy": cfg.backdate_strategy,
+                "calendarProvider": cfg.calendar_provider,
+                "model": cfg.gemini_model,
+                "hasApiKey": bool(cfg.gemini_api_key),
+                "language": "python",
+                "dryRunForced": cfg.dry_run,
+                "timeZone": cfg.timezone,
+                "maxBackdateDays": cfg.max_backdate_days,
                 "toolCount": len(TOOLS),
             }
         )
@@ -92,12 +114,12 @@ def build_app(config: Config | None = None) -> Starlette:
             return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
     async def chat(request: Request) -> JSONResponse:
-        if not cfg.anthropic_api_key:
+        if not cfg.gemini_api_key:
             return JSONResponse(
                 {
                     "ok": False,
                     "error": (
-                        "ANTHROPIC_API_KEY tanimli degil. Web sohbeti icin gereklidir. "
+                        "GEMINI_API_KEY tanimli degil. Web sohbeti icin gereklidir. "
                         "Tool'lari LLM'siz denemek icin POST /api/tool kullanin."
                     ),
                 },
@@ -129,6 +151,7 @@ def build_app(config: Config | None = None) -> Starlette:
         return HTMLResponse(FALLBACK_PAGE)
 
     routes: list[Any] = [
+        Route("/api/config", config_endpoint, methods=["GET"]),
         Route("/api/health", health, methods=["GET"]),
         Route("/api/tools", list_tools, methods=["GET"]),
         Route("/api/tool", call_tool_endpoint, methods=["POST"]),

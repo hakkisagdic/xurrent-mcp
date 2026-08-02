@@ -24,8 +24,10 @@
     <PackageReference Include="ModelContextProtocol" Version="2.0.0" />
     <PackageReference Include="ModelContextProtocol.AspNetCore" Version="2.0.0" />
 
-    <!-- Chatbot (chat/web modları) için Anthropic Messages API istemcisi. -->
-    <PackageReference Include="Anthropic.SDK" Version="5.10.0" />
+    <!-- Chatbot (chat/web modları) için LLM istemcisi PAKET DEĞİLDİR:
+         Gemini generateContent tek uç noktadır ve HttpClient + System.Text.Json ile
+         doğrudan konuşulur (Llm/GeminiClient.cs). Bir SDK, derste göstermek istediğimiz
+         wire biçimini saklardı; ayrıca sürüm bağımlılığı getirirdi. -->
   </ItemGroup>
 
   <ItemGroup>

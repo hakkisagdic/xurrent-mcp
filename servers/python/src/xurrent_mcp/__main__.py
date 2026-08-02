@@ -2,8 +2,8 @@
 
     xurrent-mcp             -> stdio MCP sunucusu (VARSAYILAN)
     xurrent-mcp --http      -> Streamable HTTP MCP sunucusu
-    xurrent-mcp --chat      -> terminal chatbot (ANTHROPIC_API_KEY gerekir)
-    xurrent-mcp --web       -> web arayuzu (ANTHROPIC_API_KEY gerekir)
+    xurrent-mcp --chat      -> terminal chatbot (GEMINI_API_KEY gerekir)
+    xurrent-mcp --web       -> web arayuzu (GEMINI_API_KEY gerekir)
     xurrent-mcp --wizard    -> sihirbaz (ders modu, API key gerekmez)
 
 KRITIK: stdio modunda stdout SADECE JSON-RPC icindir. Tek bir print() bile

@@ -102,13 +102,13 @@ claude
 `.mcp.json` zaten hazır. Claude Code açılınca `xurrent-ts` sunucusunu onaylayın,
 ardından *"bugünkü toplantılarımı Xurrent'a yaz"* deyin.
 
-**2 — Terminal chatbot** (`ANTHROPIC_API_KEY` gerekir)
+**2 — Terminal chatbot** (`GEMINI_API_KEY` gerekir — ya da sahte Gemini, aşağıda)
 
 ```bash
 cd servers/typescript && npm run chat
 ```
 
-**3 — Web arayüzü** (`ANTHROPIC_API_KEY` gerekir)
+**3 — Web arayüzü** (`GEMINI_API_KEY` gerekir — ya da sahte Gemini, aşağıda)
 
 ```bash
 cd servers/typescript && npm run web    # → http://localhost:8787
@@ -116,6 +116,29 @@ cd servers/typescript && npm run web    # → http://localhost:8787
 
 **Bonus — Sihirbaz:** yukarıdaki `npm run wizard`. API key gerekmez; tool'ları
 doğrudan çağırır, LLM kullanmaz.
+
+### API anahtarı olmadan chatbot
+
+LLM sağlayıcısı **Gemini**. Anahtarınız yoksa yerel sahte sunucuyu kullanın —
+istemci kodunda tek satır değişmez:
+
+```bash
+node tools/fake-gemini/server.mjs --mod zar --tohum 42
+```
+
+```bash
+GEMINI_BASE_URL=http://127.0.0.1:5100 GEMINI_API_KEY=sahte npm run chat
+```
+
+Dört mod var: `otomatik` (kural tabanlı), `zar` (rastgele ama tohumlanabilir —
+aynı tohum aynı akışı verir), `sor` (isteği kuyruğa yazar, **yanıtı siz
+yazarsınız** ve verdiğiniz yanıt kayda geçer), `kayit` (kaydedilenleri oynatır).
+Ayrıntı: [tools/fake-gemini](tools/fake-gemini/README.md)
+
+MCP sözleşmesi ile Gemini arasındaki şema farkı ayrı bir konu: MCP `inputSchema`
+tam JSON Schema 2020-12, Gemini ise OpenAPI'nin dar bir alt kümesini kabul eder.
+Aradaki çevirici neyi attığını raporlar — `additionalProperties`, `pattern`,
+`maxLength`, `minimum` gibi anahtarlar Gemini'ye gitmez.
 
 ---
 

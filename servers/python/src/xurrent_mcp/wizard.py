@@ -1,7 +1,7 @@
 """docs/wizard/steps.json'u yuruten sihirbaz (ders modu).
 
 Uc dil de AYNI steps.json dosyasini calistirir. Sihirbaz LLM KULLANMAZ —
-tool'lari dogrudan cagirir, bu yuzden ANTHROPIC_API_KEY gerekmez.
+tool'lari dogrudan cagirir, bu yuzden GEMINI_API_KEY gerekmez.
 
 Bu modul stdio MCP modunda CALISTIRILMAZ; ciktisi insan icindir ve stdout'a yazar.
 """

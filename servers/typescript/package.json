@@ -17,12 +17,12 @@
     "wizard": "node dist/wizard.js",
     "gen:ics": "node dist/gen-ics.js",
     "verify": "node dist/verify.js",
+    "test:schema": "node --test src/llm/schema.test.mjs",
     "probe:protocols": "node scripts/probe-protocols.mjs",
     "probe:state": "node scripts/probe-request-state.mjs"
   },
   "_dependencyNote": "İki MCP SDK kuşağı YAN YANA durur. Bunu mümkün kılan tek şey PAKET ADLARININ FARKLI olmasıdır: v1 @modelcontextprotocol/sdk, v2 @modelcontextprotocol/{core,server,client}. Sürümler SABİTLENMİŞTİR — ders çıktılarının deterministik kalması buna bağlıdır.",
   "dependencies": {
-    "@anthropic-ai/sdk": "0.115.0",
     "@modelcontextprotocol/client": "2.0.0",
     "@modelcontextprotocol/core": "2.0.0",
     "@modelcontextprotocol/sdk": "1.30.0",

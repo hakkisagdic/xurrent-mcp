@@ -1,11 +1,20 @@
-"""Terminal chatbot: Anthropic tool loop + Turkce sistem promptu.
+"""Terminal chatbot: Gemini tool loop + Turkce sistem promptu.
 
-ANTHROPIC_API_KEY gerekir. SADECE MCP sunucusunu Claude Code / Claude Desktop'a
+GEMINI_API_KEY gerekir. SADECE MCP sunucusunu Claude Code / Claude Desktop'a
 takacaksaniz GEREKMEZ — o durumda LLM'i host uygulama saglar.
 
-Model: claude-opus-5. Bu modelde dusunme (thinking) VARSAYILAN OLARAK ACIKTIR
-ve max_tokens dusunme + cevap metnini BIRLIKTE sinirlar; bu yuzden max_tokens
-comert tutulur. temperature/top_p/top_k bu modelde KABUL EDILMEZ (400 doner).
+TEK SAGLAYICI: Gemini. Model varsayilani `gemini-3.6-flash` (bkz. config.py).
+GEMINI_BASE_URL ile sahte sunucuya yonlendirilebilir; boylece tool dongusu,
+sema cevirisi ve id eslesmesi API anahtarsiz test edilir.
+
+★ Gemini'nin Anthropic'ten AYRILDIGI dort nokta — kod bu dortluye gore yazildi:
+  1. Sistem mesaji `contents` icine KONMAZ, ayri `systemInstruction` alanina konur.
+     Gemini'de "system" diye bir rol YOKTUR.
+  2. Rol eslemesi: assistant -> "model", user -> "user".
+  3. Tool sonucu KULLANICI rolunde, `functionResponse` parcasi olarak doner ve
+     `id` alani modelin `functionCall.id`'si ile AYNI olmak zorundadir.
+  4. Tool semasi tam JSON Schema DEGIL, OpenAPI'nin dar bir alt kumesidir —
+     arada llm/schema.py cevirisi vardir ve NE ATTIGINI stderr'e yazar.
 """
 
 from __future__ import annotations
@@ -13,15 +22,28 @@ from __future__ import annotations
 import json
 import logging
 import sys
+from collections.abc import Callable
 from typing import Any
 
 from .config import Config, load_config
-from .tools import TOOLS, Runtime, call_tool
+from .llm.gemini import (
+    GeminiClient,
+    GeminiError,
+    function_response,
+    function_responses_turn,
+    model_parts,
+    user_text,
+)
+from .llm.schema import build_function_declarations, format_translation_report
+from .tools import TOOLS, Runtime, ToolSpec, call_tool
 
 log = logging.getLogger(__name__)
 
-MAX_TOKENS = 16000
+MAX_OUTPUT_TOKENS = 8192
 MAX_TOOL_ROUNDS = 12
+# Tool secimi belirleyici olsun: ayni istek ayni tool'u cagirsin. Ders
+# demosunda "bende baska calisti" durumunu ortadan kaldirir.
+TEMPERATURE = 0.2
 
 SYSTEM_PROMPT = """\
 Sen Xurrent (ITSM) icin calisan bir zaman girisi asistanisin. Kullaniciyla
@@ -70,122 +92,156 @@ DEGISMEZ KURALLAR
 9. HATALARI SAKLAMA. errors dizisi bos degilse islem BASARISIZ olmustur.
    Bunu yumusatmadan, Turkce ve anlasilir sekilde soylersin.
 
+10. VARSAYILANLAR ACIKLAMADADIR. Bazi parametrelerin varsayilan degeri sema
+    yerine aciklama metninde yazar ("Varsayilan: '$me'."). Sebep: Gemini tool
+    semasi `default` anahtarini kabul etmez. Bir alani bos birakabilirsin,
+    sunucu varsayilani uygular.
+
 Kisa, net ve somut konus. Yaptigin her tool cagrisini ve neden yaptigini tek
 cumleyle belirt.
 """
 
 
-def _anthropic_tools() -> list[dict[str, Any]]:
-    """MCP tool sozlesmesini Anthropic tool tanimlarina cevirir.
+def _describe(spec: ToolSpec) -> str:
+    """Tool aciklamasi + ogretici notlar.
 
-    Ayni sozlesme iki farkli protokole servis edilir: MCP'de `inputSchema`,
-    Anthropic API'sinde `input_schema`. Icerik BIREBIR aynidir.
+    LLM'in tool'u DOGRU kullanmasinin tek kaynagi bu metindir; sozlesmedeki
+    teachingNotes buraya katilir cunku Gemini semasinda onlari tasiyacak bir
+    alan yoktur.
     """
-    out: list[dict[str, Any]] = []
-    for spec in TOOLS:
-        description = spec.description
-        if spec.teaching_notes:
-            notes = "\n".join(f"- {n}" for n in spec.teaching_notes)
-            description = f"{description}\n\nDIKKAT EDILECEKLER:\n{notes}"
-        out.append(
-            {
-                "name": spec.name,
-                "description": description,
-                "input_schema": spec.input_schema,
-            }
-        )
-    return out
+    if not spec.teaching_notes:
+        return spec.description
+    notes = "\n".join(f"- {n}" for n in spec.teaching_notes)
+    return f"{spec.description}\n\nDIKKAT EDILECEKLER:\n{notes}"
+
+
+def gemini_tools(
+    specs: list[ToolSpec] | None = None, *, report_to: Any = None
+) -> list[dict[str, Any]]:
+    """MCP tool sozlesmesini Gemini `tools` blokuna cevirir.
+
+    Ayni sozlesme iki farkli lehcede konusulur: MCP'de `inputSchema` (tam JSON
+    Schema 2020-12), Gemini'de `functionDeclarations[].parameters` (OpenAPI alt
+    kumesi). Ceviri llm/schema.py'de yapilir ve ATTIGI HER ANAHTARI kaydeder.
+
+    Rapor stderr'e basilir — stdout SADECE JSON-RPC icindir.
+    """
+    declarations, reports = build_function_declarations(specs or TOOLS, describe=_describe)
+    stream = report_to if report_to is not None else sys.stderr
+    print(format_translation_report(reports), file=stream)
+    return [{"functionDeclarations": declarations}]
 
 
 class XurrentAgent:
-    """Anthropic Messages API uzerinde calisan tool loop."""
+    """Gemini generateContent uzerinde calisan tool loop."""
 
     def __init__(self, config: Config | None = None) -> None:
         self.config = config or load_config()
-        if not self.config.anthropic_api_key:
+        if not self.config.gemini_api_key:
             raise RuntimeError(
-                "ANTHROPIC_API_KEY tanimli degil. Chatbot icin gereklidir. "
+                "GEMINI_API_KEY tanimli degil. Chatbot icin gereklidir. "
                 "Sadece MCP sunucusu kullanacaksaniz gerekmez — LLM'i host uygulama saglar."
             )
-        import anthropic
-
-        self.client = anthropic.Anthropic(api_key=self.config.anthropic_api_key)
+        self.client = GeminiClient(
+            api_key=self.config.gemini_api_key,
+            model=self.config.gemini_model,
+            base_url=self.config.gemini_base_url,
+        )
         self.runtime = Runtime.create(self.config)
-        self.tools = _anthropic_tools()
-        self.messages: list[dict[str, Any]] = []
+        self.tools = gemini_tools()
+        # Gemini'nin `contents` dizisi. Sistem promptu BURAYA GIRMEZ.
+        self.contents: list[dict[str, Any]] = []
 
-    def ask(self, user_text: str, *, on_tool: Any = None) -> str:
+    # ── tool calistirma ──
+
+    def _run_call(
+        self, call: dict[str, Any], on_tool: Callable[[str, dict[str, Any]], None] | None
+    ) -> dict[str, Any]:
+        """Tek bir functionCall'i calistirip functionResponse parcasi doner."""
+        name = str(call.get("name") or "")
+        args = call.get("args") or {}
+        if not isinstance(args, dict):
+            args = {}
+        if on_tool:
+            on_tool(name, args)
+        try:
+            payload = call_tool(self.runtime, name, dict(args))
+        except Exception as exc:  # noqa: BLE001
+            # Hata da OBJE olarak doner; model bunu okuyup kullaniciya anlatabilsin.
+            return function_response(call, {"error": f"Tool hatasi: {exc}"})
+        return function_response(call, payload)
+
+    # ── genel API ──
+
+    def ask(
+        self,
+        user_message: str,
+        *,
+        on_tool: Callable[[str, dict[str, Any]], None] | None = None,
+    ) -> str:
         """Bir kullanici mesajini isler; gerekli tool'lari cagirir ve cevabi doner."""
-        self.messages.append({"role": "user", "content": user_text})
+        self.contents.append(user_text(user_message))
+        answer_chunks: list[str] = []
 
         for _ in range(MAX_TOOL_ROUNDS):
-            response = self.client.messages.create(
-                model=self.config.anthropic_model,
-                max_tokens=MAX_TOKENS,
-                system=SYSTEM_PROMPT,
+            response = self.client.generate(
+                contents=self.contents,
                 tools=self.tools,
-                messages=self.messages,
+                system_instruction=SYSTEM_PROMPT,
+                generation_config={
+                    "temperature": TEMPERATURE,
+                    "maxOutputTokens": MAX_OUTPUT_TOKENS,
+                },
             )
 
-            # Guvenlik siniflandiricisi istegi reddedebilir: HTTP 200 + refusal.
-            # content'e dokunmadan ONCE stop_reason kontrol edilir.
-            if response.stop_reason == "refusal":
-                self.messages.append({"role": "assistant", "content": response.content})
-                return "Model bu istegi guvenlik gerekcesiyle reddetti."
+            # Modelin urettigi parts AYNEN gecmise girer. functionCall.id
+            # dahil hicbir sey yeniden uretilmez — id eslesmesi buna baglidir.
+            self.contents.append(model_parts(response.parts))
 
-            # Assistant turu (tool_use bloklari dahil) gecmise EKLENIR.
-            self.messages.append({"role": "assistant", "content": response.content})
+            warning = response.finish_warning
+            calls = response.function_calls
 
-            tool_uses = [b for b in response.content if b.type == "tool_use"]
-            if not tool_uses:
-                return "\n".join(b.text for b in response.content if b.type == "text").strip()
+            if not calls:
+                text = response.text
+                if warning:
+                    text = f"{text}\n\n[uyari] {warning}".strip()
+                answer_chunks.append(text)
+                return "\n\n".join(c for c in answer_chunks if c).strip()
 
-            # Paralel tool cagrilari TEK bir user mesajinda geri doner.
-            results: list[dict[str, Any]] = []
-            for block in tool_uses:
-                if on_tool:
-                    on_tool(block.name, block.input)
-                try:
-                    payload = call_tool(self.runtime, block.name, dict(block.input or {}))
-                    results.append(
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": block.id,
-                            "content": json.dumps(payload, ensure_ascii=False),
-                        }
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    results.append(
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": block.id,
-                            "content": f"Tool hatasi: {exc}",
-                            "is_error": True,
-                        }
-                    )
-            self.messages.append({"role": "user", "content": results})
+            # Model tool cagirdi ama arada metin de uretmis olabilir; kaybolmasin.
+            if response.text:
+                answer_chunks.append(response.text)
+
+            # Paralel cagrilar TEK bir user turunda geri doner.
+            parts = [self._run_call(call, on_tool) for call in calls]
+            self.contents.append(function_responses_turn(parts))
 
         return (
             "Tool dongusu ust sinira ulasti. Istegi daha kucuk adimlara bolerek "
             "tekrar deneyin."
         )
 
+    def close(self) -> None:
+        self.client.close()
+
 
 def run_chat(config: Config | None = None) -> None:
     """Terminal sohbet dongusu."""
     agent = XurrentAgent(config)
     print("Xurrent zaman girisi asistani (Python). Cikmak icin: /cik veya Ctrl-D")
-    print(f"Mod: {agent.runtime.adapter.mode}  •  Model: {agent.config.anthropic_model}\n")
+    print(f"Mod: {agent.runtime.adapter.mode}  •  Model: {agent.config.gemini_model}\n")
 
     while True:
         try:
             line = input("sen > ").strip()
         except (EOFError, KeyboardInterrupt):
             print()
+            agent.close()
             return
         if not line:
             continue
         if line in ("/cik", "/quit", "/exit"):
+            agent.close()
             return
 
         def show(name: str, args: dict[str, Any]) -> None:
@@ -194,6 +250,9 @@ def run_chat(config: Config | None = None) -> None:
 
         try:
             answer = agent.ask(line, on_tool=show)
+        except GeminiError as exc:
+            print(f"\nGemini hatasi: {exc}\n")
+            continue
         except Exception as exc:  # noqa: BLE001
             print(f"\nHata: {exc}\n")
             continue

@@ -5,8 +5,9 @@
  * değiştirmek dökümantasyonu yalancı çıkarır; ikisi birlikte değişir.
  *
  * NOT: dotenv paketi KULLANILMIYOR. Proje kasıtlı olarak bağımlılık-fakiri
- * (SDK + zod + Anthropic SDK). .env ayrıştırıcısı 20 satır; bir bağımlılık
- * eklemeye değmez ve Python/C# tarafında da aynı basitlikte yazılabilir.
+ * (MCP SDK + zod; LLM sağlayıcısı için SDK bile yok, düz fetch). .env ayrıştırıcısı
+ * 20 satır; bir bağımlılık eklemeye değmez ve Python/C# tarafında da aynı basitlikte
+ * yazılabilir.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -172,8 +173,15 @@ const EnvSchema = z.object({
     .optional()
     .transform((v) => (v === "up" || v === "down" ? (v as RoundingMode) : ("nearest" as RoundingMode))),
 
-  ANTHROPIC_API_KEY: withDefault(""),
-  ANTHROPIC_MODEL: withDefault("claude-opus-5"),
+  // ── LLM sağlayıcısı: GEMINI (tek sağlayıcı) ───────────────────────────────
+  GEMINI_API_KEY: withDefault(""),
+  // Varsayılan model NEDEN gemini-3.6-flash: ai.google.dev/gemini-api/docs/models
+  // listesinde "Stable" işaretli EN GÜNCEL flash modeli budur ve tool calling
+  // destekler. Flash tercih edildi çünkü bu bir ders materyalidir: gecikme ve
+  // maliyet, marjinal akıl yürütme kalitesinden daha önemli.
+  GEMINI_MODEL: withDefault("gemini-3.6-flash"),
+  // Sahte Gemini sunucusuna (tools/fake-gemini) yönlendirmeyi mümkün kılar.
+  GEMINI_BASE_URL: withDefault("https://generativelanguage.googleapis.com"),
   WEB_PORT: intish(8787),
   MCP_HTTP_PORT: intish(8788),
 
@@ -233,8 +241,10 @@ export interface AppConfig {
   defaultTimeAllocationId: string;
   roundingMode: RoundingMode;
 
-  anthropicApiKey: string;
-  anthropicModel: string;
+  geminiApiKey: string;
+  geminiModel: string;
+  /** Uç nokta kökü. Sonda eğik çizgi TAŞIMAZ. */
+  geminiBaseUrl: string;
   webPort: number;
   mcpHttpPort: number;
 
@@ -307,8 +317,9 @@ export function loadConfig(force = false): AppConfig {
     defaultTimeAllocationId: parsed.DEFAULT_TIME_ALLOCATION_ID,
     roundingMode: parsed.ROUNDING_MODE,
 
-    anthropicApiKey: parsed.ANTHROPIC_API_KEY,
-    anthropicModel: parsed.ANTHROPIC_MODEL,
+    geminiApiKey: parsed.GEMINI_API_KEY,
+    geminiModel: parsed.GEMINI_MODEL,
+    geminiBaseUrl: parsed.GEMINI_BASE_URL.replace(/\/+$/, ""),
     webPort: parsed.WEB_PORT,
     mcpHttpPort: parsed.MCP_HTTP_PORT,
 
@@ -379,6 +390,22 @@ function validateSemantics(cfg: AppConfig, env: Record<string, string | undefine
     );
   }
   if (cfg.stateTtlSeconds <= 0) problems.push("XURRENT_STATE_TTL pozitif olmalıdır (saniye).");
+
+  // GEMINI_BASE_URL bozuksa hata chatbot'un ilk isteğinde "fetch failed" olarak
+  // çıkar ve sebebi görünmez. Açılışta söylenmesi daha ucuz.
+  try {
+    new URL(cfg.geminiBaseUrl);
+  } catch {
+    problems.push(`GEMINI_BASE_URL geçerli bir URL değil: ${cfg.geminiBaseUrl}`);
+  }
+
+  // Anthropic KALDIRILDI. Eski değişkenler .env'de kalmışsa sessizce yok sayılır;
+  // "anahtarı koydum ama çalışmıyor" şaşkınlığını önlemek için söylenir.
+  for (const stale of ["ANTHROPIC_API_KEY", "ANTHROPIC_MODEL"]) {
+    if (env[stale]) {
+      problems.push(`${stale} artık KULLANILMIYOR — bu proje tek sağlayıcıya (Gemini) geçti. GEMINI_API_KEY / GEMINI_MODEL kullanın.`);
+    }
+  }
 
   if (problems.length) {
     for (const p of problems) process.stderr.write(`[xurrent-mcp:warn] yapılandırma: ${p}\n`);

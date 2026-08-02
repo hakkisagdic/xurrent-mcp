@@ -22,11 +22,12 @@ Hiçbir token gerekmez — varsayılan **mock** moddur.
 | `npm run dev` | izleme modunda derleme |
 | `npm start` | MCP **stdio** sunucusu (`.mcp.json` bunu bekler: `dist/mcp/stdio.js`) |
 | `npm run http` | MCP **Streamable HTTP** sunucusu (`MCP_HTTP_PORT`, varsayılan 8788) |
-| `npm run chat` | terminal chatbot (`ANTHROPIC_API_KEY` gerekir) |
+| `npm run chat` | terminal chatbot (`GEMINI_API_KEY` gerekir) |
 | `npm run web` | web arayüzü (`WEB_PORT`, varsayılan 8787) — `clients/web` servis edilir |
 | `npm run wizard` | `docs/wizard/steps.json` dersini in-process yürütür ve beklenen sayıları doğrular |
 | `npm run gen:ics` | `fixtures/calendar.json` → `fixtures/calendar.ics` (o günkü tarihlere göre) |
 | `npm run verify` | gerçek bir MCP client ile `tools/list` çekip `contract/tools.json`'a karşı doğrular |
+| `npm run test:schema` | MCP → Gemini şema çevirisinin birim testi (bağımlılıksız, `node --test`) |
 | `npm run probe:protocols` | 8 tool'u İKİ protokolde çalıştırıp `structuredContent`'lerin özdeşliğini kanıtlar |
 | `npm run probe:state` | `requestState` kurcalama/replay testleri (ham JSON-RPC ile) |
 
@@ -80,6 +81,89 @@ Blob **imzalıdır, şifreli değildir** — client içeriği okuyabilir, o yüz
 > `XURRENT_STATE_SECRET` boş bırakılırsa anahtar süreç başında **rastgele** üretilir. Sunucu
 > yeniden başladığında bekleyen onaylar geçersiz olur — bu bir kusur değil, **istenen davranıştır**.
 
+## LLM sağlayıcısı: Gemini — tek sağlayıcı, SDK yok
+
+Chatbot (`npm run chat`, `npm run web`) **Gemini** kullanır. Anthropic bağımlılığı,
+kodu ve ortam değişkenleri **kaldırılmıştır**. Gemini için de **SDK kurulmadı**: düz
+`fetch`. İki gerekçe — bağımlılık azlığı, ve wire formatının derste **görünür** olması.
+
+```
+POST {GEMINI_BASE_URL}/v1beta/models/{GEMINI_MODEL}:generateContent
+x-goog-api-key: <anahtar>          ← HEADER. Query parametresine ASLA konmaz (log'a düşer).
+```
+
+| Gövde alanı | Not |
+|---|---|
+| `contents[]` | `{ role: "user" \| "model", parts: [...] }`. **`"system"` rolü YOKTUR**, `"assistant"` da yoktur → `model`. |
+| `systemInstruction` | Sistem promptu **buraya** konur, `contents` içine değil. |
+| `tools[].functionDeclarations[]` | `{ name, description, parameters }` — `parameters` çevrilmiş şemadır (aşağı bak). |
+| `generationConfig` | `temperature: 0` (ders çıktıları deterministik olsun), `maxOutputTokens: 16000`. |
+
+**Tool döngüsü** — sıra ve id eşleşmesi zorunludur:
+
+```jsonc
+{ "role": "model", "parts": [{ "functionCall":     { "id": "x1", "name": "...", "args": {...} } }] }
+{ "role": "user",  "parts": [{ "functionResponse": { "id": "x1", "name": "...", "response": {...} } }] }
+```
+
+- `functionResponse.id` ile `functionCall.id` **birebir aynı** olmalıdır; yoksa API
+  yanıtı çağrıya eşleyemez. Model `id` göndermediyse biz de göndermeyiz — uydurulmuş
+  bir id, hiçbir çağrıya eşleşmeyen bir yanıt üretir.
+- `response` **OBJE** olmak zorundadır (düz string kabul edilmez); hatalar da
+  `{ error: "..." }` olarak yapılandırılmış gider.
+- Tool sonucu **`"user"`** rolüyle döner. Gemini'de `"tool"` diye bir rol yoktur.
+- **HTTP 200 gelse bile** gövdede `error` alanı olabilir; `src/llm/gemini.ts` ikisini de kontrol eder.
+
+### ★ Şema çevirisi — asıl mühendislik problemi
+
+MCP `inputSchema` **tam JSON Schema 2020-12**'dir (2026-07-28 revizyonu bunu bilerek
+gevşetti). Gemini `functionDeclarations.parameters` ise OpenAPI şemasının yalnızca bir
+**alt kümesini** kabul eder:
+
+| | Gemini |
+|---|---|
+| Desteklenen | `type` · `properties` · `required` · `description` · `enum` · `items` |
+| Özel kural | `$ref`/`$defs` **dolar işareti olmadan** → `ref`/`defs`; `ref` yalnızca `defs`'in **doğrudan çocuğunu** gösterebilir, **dış referans yok**; azami derinlik **32** |
+| Yok | `additionalProperties` · `default` · `pattern` · `min/maxLength` · `minimum` · `maximum` · `oneOf`/`anyOf`/`allOf` · `const` · `format` · tip birleşimi (`["string","null"]`) |
+
+Çeviriyi `src/llm/schema.ts` yapar. **Saf fonksiyondur** (girdiyi değiştirmez, I/O yapmaz)
+ve **ne attığını raporlar** — sessizce düşen bir kısıt, modelin artık bilmediği bir kısıttır:
+
+```
+┌─ ŞEMA ÇEVİRİSİ — MCP (JSON Schema 2020-12) → Gemini (OpenAPI alt kümesi)
+│ xurrent_create_time_entry   derinlik  2 ·  7 anahtar düştü → $schema, default, maxLength, maximum, minimum, pattern
+├─ TOPLAM 39 düşürme, 8 tool
+│     19 × default          8 × $schema        3 × pattern
+└─ Sözleşme aynı; lehçe farklı. Düşen kısıtlar sunucu tarafında zod ile YENİDEN doğrulanır.
+```
+
+Rapor süreç başına bir kez **stderr**'e basılır (stdio'da stdout yalnızca JSON-RPC taşır).
+
+Kaybı sınırlayan iki kural:
+
+1. **`default` KAYBOLMAZ** — açıklamaya metin olarak taşınır (`(varsayılan: $me)`), çünkü
+   `default` modelin argüman üretirken gerçekten kullandığı bir bilgidir.
+2. Diğer kısıtlar (`pattern`, `minimum`, `maxLength`…) gerçekten düşer — ama sunucu
+   tarafında **zod ile yeniden doğrulanır**. Yani sözleşme delinmez; yalnızca hata,
+   modelin argümanı ürettiği anda değil, tool çalıştığı anda yakalanır.
+
+Birim testi bunu ölçer:
+
+```bash
+npm run build && npm run test:schema     # 14 test: 8/8 tool çevrilir, düşen anahtarlar listelenir
+```
+
+### Anahtarsız uçtan uca deneme
+
+```bash
+node ../../tools/fake-gemini/server.mjs --mod otomatik --port 5100
+GEMINI_BASE_URL=http://127.0.0.1:5100 GEMINI_API_KEY=sahte npm run chat
+# girdi: "açık işlerim neler"
+```
+
+`GEMINI_BASE_URL`'in var olma sebebi tam olarak budur: gerçek bir anahtar olmadan
+tool döngüsünün, şema çevirisinin ve onay akışının uçtan uca koşturulabilmesi.
+
 ## Dosya haritası
 
 ```
@@ -108,7 +192,11 @@ src/xurrent/mock.ts         fixtures adapter — Yol A/Yol B kısıtlarını da 
 src/xurrent/live.ts         gerçek GraphQL adapter
 src/calendar/*              mock / ics / google / graph + ortak normalizasyon
 src/tools/*                 8 ince sarmalayıcı — iş mantığı core/toolimpl.ts'te
-src/agent/{core,cli,web}.ts chatbot çekirdeği + terminal + web (clients/web/API.md sözleşmesi)
+
+src/llm/schema.ts           ★ MCP (JSON Schema 2020-12) → Gemini (OpenAPI alt kümesi) çevirici + düşen anahtar raporu
+src/llm/schema.test.mjs     ★ bağımlılıksız birim test (node --test) — `npm run test:schema`
+src/llm/gemini.ts           Gemini generateContent istemcisi — SDK yok, düz fetch
+src/agent/{core,cli,web}.ts chatbot çekirdeği (Gemini tool döngüsü) + terminal + web (clients/web/API.md sözleşmesi)
 src/wizard.ts               ders akışını yürüten sihirbaz (in-process)
 scripts/probe-*.mjs         protokol özdeşliği ve requestState güvenlik sondaları
 ```
@@ -121,6 +209,13 @@ scripts/probe-*.mjs         protokol özdeşliği ve requestState güvenlik sond
 | `XURRENT_CONFIRM_POLICY` | `closed` | `closed` = onay sorulur; **kanal yoksa** live'da RED, mock'ta uyarıyla devam · `open` = onay **hiç** sorulmaz (yalnızca CI) · `strict` = onay **mock modda da zorunlu**; kanal yoksa mock'ta bile RED |
 | `XURRENT_STATE_SECRET` | *(boş)* | `requestState` HMAC anahtarı. Boşsa süreç başında rastgele üretilir. |
 | `XURRENT_STATE_TTL` | `300` | `requestState` geçerlilik süresi (saniye) |
+| `GEMINI_API_KEY` | *(boş)* | Chatbot için gerekir. `x-goog-api-key` header'ında gider. |
+| `GEMINI_MODEL` | `gemini-3.6-flash` | `ai.google.dev/gemini-api/docs/models` listesindeki **Stable** işaretli en güncel flash modeli. Flash seçildi: ders materyalinde gecikme/maliyet, marjinal akıl yürütmeden önemli. |
+| `GEMINI_BASE_URL` | `https://generativelanguage.googleapis.com` | Sahte Gemini'ye yönlendirmek için (`tools/fake-gemini`). |
+
+> **Kaldırıldı:** `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` ve `@anthropic-ai/sdk`.
+> `.env` içinde kalmışlarsa açılışta stderr'e uyarı basılır — sessizce yok saymak
+> "anahtarı koydum ama çalışmıyor" şaşkınlığı üretir.
 
 ### `XURRENT_CONFIRM_POLICY` — üç değer, tek tablo
 

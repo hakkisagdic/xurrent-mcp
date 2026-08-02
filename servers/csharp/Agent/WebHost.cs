@@ -53,7 +53,7 @@ public static class WebHost
             mode = cfg.IsMock ? "mock" : "live",
             strategy = cfg.BackdateStrategy,
             calendarProvider = cfg.CalendarProvider,
-            model = cfg.AnthropicModel,
+            model = cfg.GeminiModel,
             hasApiKey = agent.HasLlm,
             language = "csharp",
             dryRunForced = cfg.XurrentDryRun,
@@ -95,7 +95,7 @@ public static class WebHost
 
         Console.WriteLine($"Web arayüzü: http://localhost:{cfg.WebPort}  (dil: C#, tool sayısı: {agent.ToolNames.Count})");
         if (!agent.HasLlm)
-            Console.Error.WriteLine("UYARI: ANTHROPIC_API_KEY tanımlı değil — sohbet devre dışı, arayüz salt görüntüleme modunda.");
+            Console.Error.WriteLine("UYARI: GEMINI_API_KEY tanımlı değil — sohbet devre dışı, arayüz salt görüntüleme modunda.");
 
         await app.RunAsync(ct);
         await agent.DisposeAsync();

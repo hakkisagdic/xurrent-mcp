@@ -114,8 +114,17 @@ class Config:
     default_time_allocation_id: str = ""
     rounding_mode: RoundingMode = "nearest"
 
-    anthropic_api_key: str = ""
-    anthropic_model: str = "claude-opus-5"
+    # --- LLM saglayicisi: TEK saglayici, Gemini ---
+    # GEMINI_MODEL varsayilani `gemini-3.6-flash`: ai.google.dev/gemini-api/docs/models
+    # icinde "Stable" isaretli EN GUNCEL flash modeli ve "agentic" gorevler icin
+    # onerilen dengeli secenek. Preview modeller (ornegin gemini-3-flash-preview)
+    # 2 hafta ihbarla kaldirilabildigi icin ders materyalinde KULLANILMAZ.
+    gemini_api_key: str = ""
+    gemini_model: str = "gemini-3.6-flash"
+    # ★ Sahte sunucuya yonlendirmek icin degistirilebilir olmasi ZORUNLU:
+    #   GEMINI_BASE_URL=http://127.0.0.1:5102 ile API anahtarsiz uctan uca test.
+    gemini_base_url: str = "https://generativelanguage.googleapis.com"
+
     web_port: int = 8787
     mcp_http_port: int = 8788
 
@@ -164,6 +173,18 @@ class Config:
                 "XURRENT_STATE_SECRET bos — requestState imza anahtari surec basinda "
                 "RASTGELE uretildi. Sunucu yeniden baslayinca bekleyen onaylar gecersiz olur. "
                 "Coklu surec/HTTP dagitiminda bu degeri ACIKCA verin."
+            )
+        # Anahtarin URL'e sizmasi en sik yapilan Gemini hatasidir: query string
+        # ters vekil ve CDN erisim loglarina duser. Sessizce calisir, sonra sizar.
+        if "key=" in self.gemini_base_url.lower():
+            out.append(
+                "GEMINI_BASE_URL icinde 'key=' var. API anahtari URL'e KOYULMAZ — "
+                "erisim loglarina duser. Anahtar x-goog-api-key HEADER'inda gider."
+            )
+        if self.gemini_base_url != "https://generativelanguage.googleapis.com":
+            out.append(
+                f"GEMINI_BASE_URL degistirildi: {self.gemini_base_url} — gercek Gemini'ye "
+                "DEGIL, bu adrese istek gidiyor (ornegin tools/fake-gemini)."
             )
         return out
 
@@ -242,8 +263,11 @@ def load_config() -> Config:
         timezone=_env("XURRENT_TIMEZONE", "Europe/Istanbul"),
         default_time_allocation_id=_env("DEFAULT_TIME_ALLOCATION_ID"),
         rounding_mode=rounding,
-        anthropic_api_key=_env("ANTHROPIC_API_KEY"),
-        anthropic_model=_env("ANTHROPIC_MODEL", "claude-opus-5"),
+        gemini_api_key=_env("GEMINI_API_KEY"),
+        gemini_model=_env("GEMINI_MODEL", "gemini-3.6-flash"),
+        gemini_base_url=_env(
+            "GEMINI_BASE_URL", "https://generativelanguage.googleapis.com"
+        ).rstrip("/"),
         web_port=_env_int("WEB_PORT", 8787),
         mcp_http_port=_env_int("MCP_HTTP_PORT", 8788),
         fixtures_dir=fixtures_dir,

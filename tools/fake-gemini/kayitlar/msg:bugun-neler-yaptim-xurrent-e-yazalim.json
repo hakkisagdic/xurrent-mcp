@@ -1,0 +1,42 @@
+{
+  "_aciklama": "sahte-gemini kaydı. 'sor' modunda verilen yanıt buraya düştü; 'kayit' modunda tekrar oynatılır.",
+  "anahtar": "msg:bugun-neler-yaptim-xurrent-e-yazalim",
+  "ozet": {
+    "tur": "kullanici-mesaji",
+    "sonKullaniciMetni": "bugün neler yaptım, xurrent e yazalım",
+    "donenToolSonucu": null,
+    "mevcutToollar": [
+      "calendar_list_today"
+    ],
+    "turSayisi": 1,
+    "systemInstruction": null
+  },
+  "yanit": {
+    "candidates": [
+      {
+        "content": {
+          "role": "model",
+          "parts": [
+            {
+              "functionCall": {
+                "id": "sahte-2",
+                "name": "calendar_list_today",
+                "args": {
+                  "provider": "mock"
+                }
+              }
+            }
+          ]
+        },
+        "finishReason": "STOP",
+        "index": 0
+      }
+    ],
+    "usageMetadata": {
+      "promptTokenCount": 0,
+      "candidatesTokenCount": 0,
+      "totalTokenCount": 0
+    },
+    "modelVersion": "sahte-gemini"
+  }
+}

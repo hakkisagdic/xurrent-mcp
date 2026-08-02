@@ -1,0 +1,329 @@
+<!doctype html>
+<html lang="tr" data-theme="auto">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <meta name="description" content="xurrent-mcp — uygulama içi MCP Inspector: protokol pazarlığı, canlı sözleşme doğrulaması, teachingNotes, şema formu, yanıt anatomisi ve MRTR akışı">
+  <title>xurrent-mcp — Inspector</title>
+  <!-- Bağımlılık YOK, CDN YOK. Üç yerel dosya: index.html · style.css · app.js -->
+  <link rel="stylesheet" href="/style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%237c3aed'/><text x='16' y='23' font-size='18' font-family='system-ui' font-weight='700' fill='white' text-anchor='middle'>I</text></svg>">
+</head>
+<body>
+
+<div class="layout">
+
+  <!-- ══════════════════════ SOL PANEL ══════════════════════ -->
+  <aside class="sidebar" id="sidebar" aria-label="Bağlantı ve tool listesi">
+    <div class="brand">
+      <div class="brand-mark">I</div>
+      <div class="brand-text">
+        <strong>MCP Inspector</strong>
+        <span>xurrent-mcp · ders aracı</span>
+      </div>
+    </div>
+
+    <section class="panel-section">
+      <h2>1 · Sunucu</h2>
+      <div class="radio-grid" id="sunucu-secim" role="radiogroup" aria-label="Sunucu implementasyonu">
+        <div class="loading-line">Yükleniyor…</div>
+      </div>
+    </section>
+
+    <section class="panel-section">
+      <h2>2 · Protokol revizyonu</h2>
+      <div class="radio-grid" id="protokol-secim" role="radiogroup" aria-label="Protokol revizyonu"></div>
+      <p class="hint-sm" id="protokol-aciklama"></p>
+    </section>
+
+    <section class="panel-section">
+      <div class="btn-row">
+        <button class="primary-btn" id="baglan-btn" type="button">Bağlan</button>
+        <button class="ghost-btn" id="kopar-btn" type="button" disabled>Kopar</button>
+      </div>
+      <div class="conn-state" id="conn-state">
+        <span class="dot dot-off"></span><span>Bağlı değil</span>
+      </div>
+    </section>
+
+    <section class="panel-section grow" id="tool-listesi-bolum" hidden>
+      <h2>3 · Tool'lar <span class="count" id="tool-sayisi"></span></h2>
+      <div class="tool-list" id="tool-listesi"></div>
+      <p class="hint-sm">
+        <span class="badge badge-write">YAZMA</span> işaretli tool'lar
+        <code>readOnlyHint:false</code> taşır — çağırmadan önce iki kez düşün.
+      </p>
+    </section>
+
+    <div class="sidebar-foot">
+      <button class="ghost-btn" id="tema-btn" type="button" title="Tema değiştir">🌗 Tema</button>
+      <a class="ghost-btn" href="https://modelcontextprotocol.io/specification/2026-07-28/changelog" target="_blank" rel="noreferrer noopener">Spec ↗</a>
+    </div>
+  </aside>
+  <div class="sidebar-backdrop" id="backdrop"></div>
+
+  <!-- ══════════════════════ ANA ALAN ══════════════════════ -->
+  <main class="main">
+    <div class="topbar">
+      <button class="ghost-btn only-mobile" id="nav-btn" type="button" aria-label="Menü">☰</button>
+      <strong>Inspector</strong>
+      <span class="topbar-state" id="topbar-state"></span>
+      <button class="ghost-btn only-mobile" id="tema-btn-m" type="button" style="margin-left:auto">🌗</button>
+    </div>
+
+    <nav class="tabs" id="tabs" role="tablist">
+      <button class="tab active" data-tab="protokol" role="tab">Protokol</button>
+      <button class="tab" data-tab="sozlesme" role="tab">Sözleşme</button>
+      <button class="tab" data-tab="tool" role="tab">Tool</button>
+      <button class="tab" data-tab="trafik" role="tab">Ham trafik</button>
+      <button class="tab" data-tab="nedir" role="tab">Bu ekran nedir?</button>
+    </nav>
+
+    <div class="scroll" id="scroll">
+
+      <!-- ─────────── PANEL: PROTOKOL ─────────── -->
+      <section class="panel" data-panel="protokol">
+        <header class="panel-head">
+          <h1>Protokol pazarlığı</h1>
+          <p>
+            Hangi MCP revizyonu konuşuluyor ve bu <strong>nasıl</strong> anlaşıldı?
+            Aşağıdaki ham JSON-RPC, sondanın kendisidir — özet değil, telin kaydı.
+          </p>
+        </header>
+
+        <div class="empty-state" id="protokol-bos">
+          Henüz bağlanmadınız. Soldan bir sunucu ve protokol revizyonu seçip <strong>Bağlan</strong>'a basın.
+        </div>
+
+        <div id="protokol-icerik" hidden>
+          <div class="cards" id="protokol-kartlar"></div>
+
+          <div class="explain" id="protokol-yorum"></div>
+
+          <h2 class="sec-title">Sonda adımları — ham JSON-RPC</h2>
+          <div id="sonda-adimlar"></div>
+
+          <h2 class="sec-title">
+            İki revizyonu yan yana çalıştır
+            <span class="sec-note">Aynı tool, iki ayrı süreç, iki farklı protokol.</span>
+          </h2>
+          <div class="explain">
+            <p>
+              <strong>Neden iki süreç?</strong> <code>initialize</code> yapılmış bir bağlantıya v2 zarflı
+              istek göndermek reddedilir (<em>"this connection serves the handshake protocol era"</em>).
+              İki revizyon aynı bağlantı üzerinde denenemez — bu ölçülmüş bir gerçektir, tercih değil.
+            </p>
+          </div>
+          <div class="karsilastir-bar">
+            <label>Tool
+              <select id="kars-tool"></select>
+            </label>
+            <button class="primary-btn" id="kars-btn" type="button">Yan yana çalıştır</button>
+            <span class="hint-sm" id="kars-durum"></span>
+          </div>
+          <div id="kars-sonuc"></div>
+        </div>
+      </section>
+
+      <!-- ─────────── PANEL: SÖZLEŞME ─────────── -->
+      <section class="panel" data-panel="sozlesme" hidden>
+        <header class="panel-head">
+          <h1>Sözleşme karşılaştırması</h1>
+          <p>
+            Sunucunun <code>tools/list</code> çıktısı, <code>contract/tools.json</code>'a karşı
+            <strong>canlı</strong> doğrulanır. Resmî inspector bunu yapamaz: bizim sözleşmemizi bilmez.
+          </p>
+        </header>
+
+        <div class="empty-state" id="sozlesme-bos">Bağlandıktan sonra doldurulur.</div>
+
+        <div id="sozlesme-icerik" hidden>
+          <div class="cards" id="sozlesme-kartlar"></div>
+          <div id="sozlesme-farklar"></div>
+          <h2 class="sec-title">Tool tool karşılaştırma</h2>
+          <div class="table-scroll">
+            <table class="grid" id="sozlesme-tablo">
+              <thead>
+                <tr>
+                  <th>#</th><th>Tool</th><th>Salt okunur</th><th>outputSchema</th>
+                  <th>Parametreler</th><th>Durum</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ─────────── PANEL: TOOL ─────────── -->
+      <section class="panel" data-panel="tool" hidden>
+        <div class="empty-state" id="tool-bos">
+          Bağlanın ve soldaki listeden bir tool seçin.
+        </div>
+        <div id="tool-icerik" hidden>
+          <header class="panel-head">
+            <h1 id="tool-adi"></h1>
+            <div class="badge-row" id="tool-rozetler"></div>
+            <p id="tool-ozet"></p>
+          </header>
+
+          <div id="tool-guvenlik"></div>
+
+          <h2 class="sec-title">
+            teachingNotes
+            <span class="sec-note">contract/tools.json'daki ders notları. Resmî inspector bunları bilmez.</span>
+          </h2>
+          <div id="tool-notlar"></div>
+
+          <h2 class="sec-title">
+            inputSchema → form
+            <span class="sec-note">Alan üzerine gelince sözleşmedeki açıklaması çıkar.</span>
+          </h2>
+          <form id="tool-form" autocomplete="off"></form>
+
+          <div class="cagir-bar">
+            <button class="primary-btn" id="cagir-btn" type="button">tools/call gönder</button>
+            <button class="ghost-btn" id="args-goster-btn" type="button">Argümanları göster</button>
+            <span class="hint-sm" id="cagir-durum"></span>
+          </div>
+          <div id="args-onizleme" hidden></div>
+
+          <h2 class="sec-title">outputSchema</h2>
+          <div id="tool-output-sema"></div>
+
+          <div id="mrtr-bolum" hidden>
+            <h2 class="sec-title">
+              Onay akışı — adım adım
+              <span class="sec-note">Yazma tool'u onay istedi. Protokol bunu nasıl taşıyor?</span>
+            </h2>
+            <div id="mrtr-icerik"></div>
+          </div>
+
+          <div id="yanit-bolum" hidden>
+            <h2 class="sec-title">
+              Yanıt anatomisi
+              <span class="sec-note">Bir tools/call cevabının her parçası ne işe yarar?</span>
+            </h2>
+            <div id="yanit-icerik"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ─────────── PANEL: HAM TRAFİK ─────────── -->
+      <section class="panel" data-panel="trafik" hidden>
+        <header class="panel-head">
+          <h1>Ham JSON-RPC trafiği</h1>
+          <p>
+            Protokolün tamamı satır-sonlu JSON-RPC 2.0'dır. Aşağıdakiler stdin/stdout'tan
+            geçen <strong>gerçek</strong> satırlardır — hiçbiri yeniden yazılmadı.
+          </p>
+        </header>
+        <div class="karsilastir-bar">
+          <button class="ghost-btn" id="trafik-yenile" type="button">Yenile</button>
+          <label class="chk"><input type="checkbox" id="trafik-otomatik" checked> Otomatik yenile</label>
+          <span class="hint-sm" id="trafik-ozet"></span>
+        </div>
+        <div id="trafik-liste" class="wire"></div>
+        <h2 class="sec-title">Sunucu stderr</h2>
+        <div class="explain">
+          <p>
+            stdio transport'ta <strong>stdout SADECE JSON-RPC içindir</strong>. Sunucunun logu
+            stderr'e akmak zorundadır; stdout'a düşen tek satır protokolü bozar.
+          </p>
+        </div>
+        <pre class="code" id="trafik-stderr">—</pre>
+      </section>
+
+      <!-- ─────────── PANEL: BU EKRAN NEDİR ─────────── -->
+      <section class="panel" data-panel="nedir" hidden>
+        <header class="panel-head">
+          <h1>Bu ekran nedir, resmî inspector'dan farkı ne?</h1>
+          <p>
+            <code>npx @modelcontextprotocol/inspector</code> genel amaçlı ve iyidir. Bu ekran onun
+            yerine geçmez; onun <strong>bilemeyeceği</strong> beş şeyi ekler.
+          </p>
+        </header>
+
+        <div class="table-scroll">
+          <table class="grid">
+            <thead><tr><th>Konu</th><th>Resmî inspector</th><th>Bu ekran</th></tr></thead>
+            <tbody>
+              <tr>
+                <td>Tool listeleme / çağırma</td>
+                <td class="ok">✔ Var, olgun</td>
+                <td class="ok">✔ Var</td>
+              </tr>
+              <tr>
+                <td>Protokol pazarlığının <em>nasıl</em> yapıldığı</td>
+                <td class="warn">Sonucu gösterir, sondayı göstermez</td>
+                <td class="ok">✔ <code>server/discover</code> vs <code>initialize</code> ham istek/cevabı</td>
+              </tr>
+              <tr>
+                <td>Sözleşmeye uygunluk</td>
+                <td class="err">✘ Bizim <code>contract/tools.json</code>'umuzu bilmez</td>
+                <td class="ok">✔ Canlı doğrulama, farklar kırmızı</td>
+              </tr>
+              <tr>
+                <td><code>teachingNotes</code></td>
+                <td class="err">✘ Böyle bir alan MCP'de yok; görmez</td>
+                <td class="ok">✔ Tool'un yanında</td>
+              </tr>
+              <tr>
+                <td>Yanıt anatomisi</td>
+                <td class="warn">JSON'ı gösterir, ne olduğunu anlatmaz</td>
+                <td class="ok">✔ Her parça Türkçe etiketli</td>
+              </tr>
+              <tr>
+                <td>MRTR / onay akışı</td>
+                <td class="warn">Elicitation'ı destekler, akışı çizmez</td>
+                <td class="ok">✔ Adım adım + <code>requestState</code> çözümü</td>
+              </tr>
+              <tr>
+                <td>İki revizyonu yan yana</td>
+                <td class="err">✘ Tek bağlantı, tek revizyon</td>
+                <td class="ok">✔ İki süreç, çıktılar karşılaştırılır</td>
+              </tr>
+              <tr>
+                <td>Genel MCP sunucularıyla çalışma</td>
+                <td class="ok">✔ Her sunucu</td>
+                <td class="warn">Yalnızca bu repodaki üç sunucu (allowlist)</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 class="sec-title">Neden allowlist?</h2>
+        <div class="explain">
+          <p>
+            Bu ekran tarayıcıdan gelen bir metni <em>komut olarak</em> çalıştırmaz. Seçilebilen üç
+            değer vardır: <code>ts</code>, <code>py</code>, <code>cs</code>. Bir inspector'ın en kolay
+            güvenlik hatası "komutu kullanıcıdan al, aynen çalıştır"dır; burada o kapı kapalıdır.
+          </p>
+          <p>
+            Sunucu ayrıca varsayılan olarak yalnızca <code>127.0.0.1</code>'i dinler ve çocuk süreçleri
+            <strong>her zaman <code>XURRENT_MODE=mock</code></strong> ile başlatır — bir inceleme aracı
+            gerçek bir ITSM hesabına yazmamalıdır.
+          </p>
+        </div>
+
+        <h2 class="sec-title">Derste hangi anda kullanılır?</h2>
+        <div class="explain">
+          <ol>
+            <li><strong>Protokol</strong> sekmesi — "MCP nedir" anlatıldıktan hemen sonra: pazarlığın ham hâli.</li>
+            <li><strong>Sözleşme</strong> sekmesi — "üç dil aynı sözleşme" iddiası burada ölçüye dönüşür.</li>
+            <li><strong>Tool</strong> sekmesi — şemadan form üretimi; LLM'in gördüğü şeyin insan hâli.</li>
+            <li>Bir <strong>yazma</strong> tool'u çağırılır — onay akışı ekranda canlı çizilir.</li>
+            <li><strong>Ham trafik</strong> — "aslında hepsi bu" anı: satır satır JSON.</li>
+          </ol>
+          <p>Anlatım: <code>docs/13-inspector.md</code></p>
+        </div>
+      </section>
+
+    </div>
+  </main>
+</div>
+
+<script src="/app.js" defer></script>
+</body>
+</html>

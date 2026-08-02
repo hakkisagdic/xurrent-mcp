@@ -96,9 +96,26 @@ public sealed class AppConfig
     public string DefaultTimeAllocationId { get; init; } = "";
     public string RoundingMode { get; init; } = "nearest";
 
-    // ── 6) Chatbot ───────────────────────────────────────────────────────────
-    public string AnthropicApiKey { get; init; } = "";
-    public string AnthropicModel { get; init; } = "claude-opus-5";
+    // ── 6) Chatbot (tek sağlayıcı: Gemini) ───────────────────────────────────
+    public string GeminiApiKey { get; init; } = "";
+
+    /// <summary>
+    /// VARSAYILAN SEÇİMİ — ezberden değil, ai.google.dev/gemini-api/docs/models sayfasından:
+    /// orada STABİL olarak listelenen flash modeller arasında gemini-3.6-flash "hızı zekâyla
+    /// dengeleyen en yeni model" ve AJANİK/tool-calling işler için önerilen seçenek olarak
+    /// geçiyor. Bu chatbot tam olarak o işi yapar (çok turlu tool döngüsü), o yüzden bu.
+    /// Preview modeller (gemini-3-flash-preview vb.) bilinçli olarak seçilmedi: ders
+    /// materyalinin varsayılanı sürpriz yapmamalı. GEMINI_MODEL ile her zaman ezilebilir.
+    /// Üç dil de aynı .env'i okur; TypeScript ve Python tarafı da aynı varsayılanı ilan eder.
+    /// </summary>
+    public string GeminiModel { get; init; } = Llm.GeminiClient.DefaultModel;
+
+    /// <summary>
+    /// API kökü. Sahte Gemini sunucusuna (tools/fake-gemini) yönlendirmek için değiştirilir:
+    /// GEMINI_BASE_URL=http://127.0.0.1:5100
+    /// </summary>
+    public string GeminiBaseUrl { get; init; } = Llm.GeminiClient.DefaultBaseUrl;
+
     public int WebPort { get; init; } = 8787;
     public int McpHttpPort { get; init; } = 8788;
 
@@ -177,8 +194,9 @@ public sealed class AppConfig
             DefaultTimeAllocationId = Env("DEFAULT_TIME_ALLOCATION_ID", "TW9jay9UaW1lQWxsb2NhdGlvbi8x"),
             RoundingMode = Env("ROUNDING_MODE", "nearest"),
 
-            AnthropicApiKey = Env("ANTHROPIC_API_KEY"),
-            AnthropicModel = Env("ANTHROPIC_MODEL", "claude-opus-5"),
+            GeminiApiKey = Env("GEMINI_API_KEY"),
+            GeminiModel = Env("GEMINI_MODEL", Llm.GeminiClient.DefaultModel),
+            GeminiBaseUrl = Env("GEMINI_BASE_URL", Llm.GeminiClient.DefaultBaseUrl),
             WebPort = EnvInt("WEB_PORT", 8787),
             McpHttpPort = EnvInt("MCP_HTTP_PORT", 8788),
         };

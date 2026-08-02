@@ -296,7 +296,8 @@
         "Kritik tasarım kararı: bu tool ASLA yazmaz. Sadece öneri üretir. Yapısal olarak yazma yeteneği yoktur.",
         "Neden? Çünkü eşleşme heuristiği ASLA %100 doğru olamaz. 'Standup' hangi ticket'a yazılacak? Bilemez. Sorması gerekir."
       ],
-      "callTool": { "name": "plan_time_entries_from_calendar", "args": { "personId": "$me" } },
+      "_providerNotu": "provider AÇIKÇA veriliyor. Verilmezse şema varsayılanı 'auto' devreye girer ve zincir (graph→google→ics→mock) fixtures/calendar.ics dosyası VARSA onu seçer. O dosya üretildiği güne aittir; ertesi gün aynı adım 0 öneri döndürür ve ders, kimsenin dokunmadığı bir yerden kırılır. Bir ders adımı ortam yapılandırmasına bağlı olmamalıdır — adım 09 da aynı sebeple mock veriyor.",
+      "callTool": { "name": "plan_time_entries_from_calendar", "args": { "personId": "$me", "provider": "mock" } },
       "expect": [
         { "path": "proposals.length", "equals": 5, "explain": "5 gerçek toplantı için 5 öneri." }
       ],

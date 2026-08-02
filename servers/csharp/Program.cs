@@ -2,16 +2,18 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using XurrentMcp;
 using XurrentMcp.Agent;
+using XurrentMcp.Llm;
 using XurrentMcp.Mcp;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // xurrent-mcp — C# / .NET implementasyonu
 //
-//   dotnet run -- stdio     MCP sunucusu, stdio transport (VARSAYILAN)
-//   dotnet run -- http      MCP sunucusu, Streamable HTTP transport
-//   dotnet run -- chat      Terminal chatbot   (ANTHROPIC_API_KEY gerekir)
-//   dotnet run -- web       Web arayüzü        (ANTHROPIC_API_KEY gerekir)
-//   dotnet run -- wizard    Sihirbaz / ders modu (API key GEREKMEZ)
+//   dotnet run -- stdio       MCP sunucusu, stdio transport (VARSAYILAN)
+//   dotnet run -- http        MCP sunucusu, Streamable HTTP transport
+//   dotnet run -- chat        Terminal chatbot   (GEMINI_API_KEY gerekir)
+//   dotnet run -- web         Web arayüzü        (GEMINI_API_KEY gerekir)
+//   dotnet run -- wizard      Sihirbaz / ders modu (API key GEREKMEZ)
+//   dotnet run -- sema-testi  Şema çeviricisinin birim testi (API key GEREKMEZ)
 // ─────────────────────────────────────────────────────────────────────────────
 
 var mode = args.Length > 0 ? args[0].ToLowerInvariant() : "stdio";
@@ -49,6 +51,11 @@ return mode switch
     "chat" => await RunChatAsync(),
     "web" => await WebHost.RunWebAsync(cfg, cts.Token),
     "wizard" => await Wizard.RunAsync(cfg, args.Contains("--pause"), cts.Token),
+
+    // Şema çevirisi ders anlatımının merkezinde; doğrulaması da çalıştırılabilir olmalı.
+    // Hata varsa 1 ile çıkar — CI'da doğrudan kullanılabilir.
+    "sema-testi" or "schema-test" => SchemaSelfTest.Run(cfg),
+
     _ => Usage(mode),
 };
 
@@ -85,7 +92,7 @@ async Task<int> RunChatAsync()
 
         Console.WriteLine("xurrent-mcp — terminal chatbot (C#)");
         Console.WriteLine($"Xurrent modu: {cfg.XurrentMode} · Takvim: {cfg.CalendarProvider} · " +
-                          $"Strateji: {cfg.BackdateStrategy} · Model: {cfg.AnthropicModel}");
+                          $"Strateji: {cfg.BackdateStrategy} · Model: {cfg.GeminiModel}");
         Console.WriteLine($"Tool'lar ({agent.ToolNames.Count}): {string.Join(", ", agent.ToolNames)}");
         Console.WriteLine("Çıkmak için boş satır veya Ctrl+C.\n");
 
@@ -113,6 +120,6 @@ async Task<int> RunChatAsync()
 int Usage(string unknown)
 {
     Console.Error.WriteLine($"Bilinmeyen mod: '{unknown}'");
-    Console.Error.WriteLine("Kullanım: dotnet run -- [stdio|http|chat|web|wizard]");
+    Console.Error.WriteLine("Kullanım: dotnet run -- [stdio|http|chat|web|wizard|sema-testi]");
     return 64;
 }

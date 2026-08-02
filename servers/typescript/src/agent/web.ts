@@ -23,9 +23,10 @@ import { randomUUID } from "node:crypto";
 import { loadConfig } from "../config.js";
 import { createToolContext, type ConfirmFn, type ConfirmOutcome } from "../core/context.js";
 import { TOOL_NAMES } from "../core/toolimpl.js";
+import { createGeminiClient } from "../llm/gemini.js";
 import { log } from "../util/log.js";
 import { createXurrentAdapter } from "../xurrent/index.js";
-import { createAnthropicClient, runTurn, type AgentEvent, type ChatMessage } from "./core.js";
+import { runTurn, toGeminiContents, type AgentEvent } from "./core.js";
 
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -84,8 +85,10 @@ async function main(): Promise<void> {
           mode: cfg.mode,
           strategy: cfg.backdateStrategy,
           calendarProvider: cfg.calendarProvider,
-          model: cfg.anthropicModel,
-          hasApiKey: cfg.anthropicApiKey.length > 0,
+          // Alan ADLARI sözleşmedir (clients/web/API.md §1); yalnızca KAYNAKLARI değişti:
+          // ANTHROPIC_MODEL/ANTHROPIC_API_KEY yerine GEMINI_MODEL/GEMINI_API_KEY.
+          model: cfg.geminiModel,
+          hasApiKey: cfg.geminiApiKey.length > 0,
           language: "typescript",
           dryRunForced: cfg.forceDryRun,
           timeZone: cfg.timeZone,
@@ -122,7 +125,10 @@ async function main(): Promise<void> {
 
       // ── POST /api/chat (SSE) ─────────────────────────────────────────────
       if (req.method === "POST" && url.pathname === "/api/chat") {
-        let body: { messages?: ChatMessage[] };
+        // messages ARAYÜZ TARAFINDAN YORUMLANMAZ (API.md §2): arayüz `done` olayında
+        // ne aldıysa aynen geri gönderir. Tek istisna, yeni kullanıcı mesajıdır ve o
+        // { role, content: "metin" } biçiminde gelir — toGeminiContents ikisini de kabul eder.
+        let body: { messages?: unknown };
         try {
           body = JSON.parse((await readBody(req)) || "{}");
         } catch {
@@ -190,9 +196,9 @@ async function main(): Promise<void> {
 
         let client;
         try {
-          client = createAnthropicClient(cfg);
+          client = createGeminiClient(cfg);
         } catch (err) {
-          // En yaygın sebep: ANTHROPIC_API_KEY yok. Sessiz boş akış yerine sebebi söylenir.
+          // En yaygın sebep: GEMINI_API_KEY yok. Sessiz boş akış yerine sebebi söylenir.
           sse(res, "error", { message: err instanceof Error ? err.message : String(err), code: "no_api_key" });
           res.end();
           return;
@@ -203,7 +209,7 @@ async function main(): Promise<void> {
           sse(res, type, rest);
         };
 
-        await runTurn(client, cfg, ctx, body.messages ?? [], emit, abort.signal);
+        await runTurn(client, cfg, ctx, toGeminiContents(body.messages), emit, abort.signal);
         res.end();
         return;
       }

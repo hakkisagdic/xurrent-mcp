@@ -9,11 +9,12 @@
 ```bash
 dotnet build
 
-dotnet run -- stdio     # MCP sunucusu, stdio transport (VARSAYILAN — .mcp.json bunu kullanır)
-dotnet run -- http      # MCP sunucusu, Streamable HTTP (MCP_HTTP_PORT, varsayılan 8788)
-dotnet run -- wizard    # Sihirbaz / ders modu — API key GEREKMEZ
-dotnet run -- chat      # Terminal chatbot   (ANTHROPIC_API_KEY gerekir)
-dotnet run -- web       # Web arayüzü        (WEB_PORT, varsayılan 8787)
+dotnet run -- stdio       # MCP sunucusu, stdio transport (VARSAYILAN — .mcp.json bunu kullanır)
+dotnet run -- http        # MCP sunucusu, Streamable HTTP (MCP_HTTP_PORT, varsayılan 8788)
+dotnet run -- wizard      # Sihirbaz / ders modu — API key GEREKMEZ
+dotnet run -- chat        # Terminal chatbot   (GEMINI_API_KEY gerekir)
+dotnet run -- web         # Web arayüzü        (WEB_PORT, varsayılan 8787)
+dotnet run -- sema-testi  # Şema çeviricisinin birim testi — API key GEREKMEZ
 ```
 
 `wizard` modu `docs/wizard/steps.json` dosyasını süreç içi bir MCP client ile yürütür:
@@ -43,6 +44,9 @@ sağlanmadığı için çalıştırılamıyorsa **SKIP**'tir, FAIL değil.
 | `Calendar/*` | mock / ics / google / graph sağlayıcıları + ortak normalizasyon |
 | `Mcp/McpTools.cs` | ★ **İnce MCP adaptörü**: sonucu `CallToolResult`'a, onayı protokole çevirir |
 | `Mcp/ServerSetup.cs` | DI kaydı, protokol seçimi, tools/list cache metadata'sı, süreç içi oturum |
+| `Llm/GeminiClient.cs` | Gemini `generateContent` istemcisi — düz `HttpClient`, SDK yok |
+| `Llm/SchemaTranslator.cs` | ★ **MCP JSON Schema 2020-12 → Gemini functionDeclarations** çevirisi + ne atıldığının kaydı |
+| `Llm/SchemaSelfTest.cs` | `dotnet run -- sema-testi` — çeviricinin birim testi (83 iddia) |
 | `Agent/*` | Chatbot beyni + web sunucusu (`clients/web/API.md` sözleşmesi) |
 | `Wizard.cs` | Ders akışı yürütücüsü |
 
@@ -72,6 +76,82 @@ biçimindeki tepe referanslar AÇILIR (2026-07-28 öncesi revizyonlar `outputSch
 "object"` şartı koyar) ve `$defs` bloğu şemanın içine kopyalanır.
 
 Sonuç: **8/8 tool `outputSchema` bildirir ve `tools/call` cevabında `structuredContent` döner.**
+
+## ★ Gemini: aynı sözleşme, iki farklı tool-calling lehçesi
+
+Chatbot tek sağlayıcı kullanır: **Gemini**. Paket bağımlılığı **yoktur** —
+`Llm/GeminiClient.cs` düz `HttpClient` + `System.Text.Json` ile konuşur:
+
+```
+POST {GEMINI_BASE_URL}/v1beta/models/{GEMINI_MODEL}:generateContent
+x-goog-api-key: <anahtar>        ← ★ HEADER. Query string'e KOYULMAZ: erişim loglarına düşer.
+```
+
+Gövde dört alandır: `contents`, `tools[].functionDeclarations`, `systemInstruction`,
+`generationConfig`. Üç tuzak, üçü de kodda yorumlu:
+
+1. **Sistem promptu `contents` içine KONMAZ** — ayrı `systemInstruction` alanına konur.
+   Gemini'de `system` diye bir rol yoktur; roller yalnızca `user` ve `model`'dir
+   (`assistant` → `model`).
+2. **Tool sonucu `user` rolüyle döner** (`functionResponse`), ve
+   **`functionResponse.id`, `functionCall.id` ile AYNI olmak zorundadır** — yoksa API
+   sonucu çağrısına bağlayamaz. Çağrıda `id` yoksa cevaba da **uydurulmuş bir id konmaz**.
+   `response` alanı bir **obje** olmalıdır; düz string kabul edilmez.
+3. **HTTP 200 olsa bile gövdede `error` gelebilir.** İkisi de kontrol edilir.
+
+### Asıl iş: şema çevirisi
+
+MCP `inputSchema` **tam JSON Schema 2020-12**'dir. Gemini `functionDeclarations` ise
+OpenAPI şemasının **dar bir alt kümesini** alır. Şema olduğu gibi geçirilemez;
+`Llm/SchemaTranslator.cs` çevirir — ve **ne attığını kaydeder**:
+
+| Kural | Davranış |
+|---|---|
+| `type`, `properties`, `required`, `description`, `enum`, `items` | korunur |
+| `$defs` → `defs`, `$ref` → `ref` | **dolar işareti kalkar**; `ref` yalnızca kök `defs`'in *doğrudan* çocuğunu gösterebilir |
+| dış referans / `#/$defs/A/properties/b` | atılır (Gemini adresleyemez) |
+| `["string","null"]` birleşim tipi | `type=string` + `nullable=true` |
+| tipsiz `enum` | `type="string"` eklenir — Gemini enum'u yalnızca string ile kabul eder |
+| `default` | **atılır ama kaybolmaz**: değeri `description`'a *"Varsayılan: X."* olarak yazılır — açıklama zaten *"… Varsayılan '$me'."* diyorsa cümle **ikinci kez eklenmez** |
+| `additionalProperties`, `pattern`, `minimum`/`maximum`, `minLength`/`maxLength`, `minItems`/`maxItems`, `oneOf`/`anyOf`/`allOf`, `const`, `format`, `$schema` | atılır ve **raporlanır** |
+| iç içe derinlik > 32 | dal kesilir ve raporlanır |
+| parametresiz tool | `parameters` alanı **hiç gönderilmez** |
+
+`SchemaTranslator.Translate` **saf bir fonksiyondur**: girdiyi değiştirmez, IO yapmaz,
+log basmaz. Loglamak çağıranın işidir — `stdio` modunda `stdout` yalnızca JSON-RPC'nindir.
+
+```bash
+dotnet run -- sema-testi     # 8 tool'u çevirir, atılan anahtarları listeler, 83 iddiayı doğrular
+```
+
+Ölçülen sonuç (sözleşme şemaları): `additionalProperties`×8, `pattern`×3, `minimum`,
+`maximum`, `minItems`, `maxItems`, `maxLength` birer kez atıldı; **19 `default` açıklamaya
+taşındı** (biri zaten açıklamada geçtiği için yeniden yazılmadı); hiçbir alan kaybolmadı.
+
+> **Buradaki tuzak neden ölçülüyor:** "değer açıklamada geçiyor mu" diye bakmak yetmez.
+> `stopOnError`'ın açıklaması *"true ise ilk hatada durur"*tur; içindeki `true` varsayılanı
+> değil, doğru değerin **anlamını** anlatır. Naif kontrol burada eşleşir, varsayılanı hiç
+> yazmaz ve model onu bilemez. Bu yüzden atlama koşulu dardır: açıklamada **"Varsayılan"
+> sözcüğü** geçecek **ve** değer o sözcükten *sonra* görünecek. `sema-testi` her iki dalı da
+> tutar.
+
+Çalışma anında MCP SDK'sının ürettiği şemalarda tablo başkadır — aynı çeviri, farklı
+kayıp profili: `default`×39 açıklamaya taşınır, `["...","null"]`×33 `nullable`'a çevrilir.
+Özet her açılışta **stderr**'e basılır:
+
+```
+[gemini] şema çevirisi: 8 tool · MCP JSON Schema 2020-12 → Gemini functionDeclarations
+[gemini]   atılan           : parameters×1
+[gemini]   açıklamaya taşınan : default×39
+[gemini]   dönüştürülen     : type[]×33
+```
+
+### Sahte Gemini'ye karşı çalıştırma (API anahtarı gerekmez)
+
+```bash
+node tools/fake-gemini/server.mjs --mod otomatik --port 5103
+GEMINI_BASE_URL=http://127.0.0.1:5103 GEMINI_API_KEY=sahte dotnet run -- chat
+```
 
 ## ★ requestState bir güvenlik sınırıdır
 
@@ -107,6 +187,9 @@ Doğrulama başarısızsa **yazma YAPILMAZ**: `isError=true` + Türkçe açıkla
 | `XURRENT_CONFIRM_POLICY` | `closed` | `open` = hiç sorma (CI) · `closed` = yalnızca **live** modda sor · `strict` = mock'ta da sor (ders/gösterim) |
 | `XURRENT_STATE_SECRET` | (rastgele) | `requestState` HMAC anahtarı. Verilmezse süreç başında üretilir → yeniden başlatınca eski state'ler geçersiz olur (İSTENEN davranış) |
 | `XURRENT_STATE_TTL` | `300` | `requestState` yaşam süresi (saniye) |
+| `GEMINI_API_KEY` | (boş) | Chatbot (`chat` / `web`) için zorunlu. `stdio`/`wizard`/`sema-testi` için GEREKMEZ |
+| `GEMINI_MODEL` | `gemini-3.6-flash` | Güncel **stabil** flash modeli; ai.google.dev/gemini-api/docs/models sayfasında ajanik/tool-calling işler için önerilen seçenek. TypeScript ve Python tarafı da aynı varsayılanı ilan eder |
+| `GEMINI_BASE_URL` | `https://generativelanguage.googleapis.com` | Sahte sunucuya yönlendirmek için: `http://127.0.0.1:5103` |
 
 **K5 — mock modda yazma engellenmez.** Mock adapter hiçbir yere yazmaz; orada onay istemek
 güvenlik değil gürültüdür. Gerçek risk yalnızca live moddadır. Onay akışını mock'ta görmek
@@ -129,8 +212,11 @@ okunur; dahası `resetAt`'e gerçek zaman damgası koymak çıktıyı determinis
   edilir (`AddListToolsFilter`) — tool koleksiyonu bir sözlüktür, sırası kendiliğinden sabit değildir.
 - `Json.Options` içinde `TypeInfoResolver` **açıkça** verilir: SDK bu options'ı
   `MakeReadOnly()` ile dondurur ve çözücüsü atanmamış bir options donarken hata atar.
-- **Anthropic.SDK 5.10.0** — `Function(name, description, JsonNode)` kurucusu MCP'den gelen
-  ham JSON Schema'yı doğrudan kabul ettiği için düz `HttpClient`'a düşmeye gerek kalmadı.
+- **LLM tarafında SDK paketi YOKTUR.** Gemini `generateContent` tek uç noktadır; gövde
+  dokümandakinin aynısı olsun diye düz `HttpClient` kullanıldı (`Llm/GeminiClient.cs`).
+  Bir SDK, derste göstermek istediğimiz wire biçimini soyutlamanın arkasına saklardı.
+  Bedeli şudur: MCP şeması **artık olduğu gibi geçirilemiyor** — `Llm/SchemaTranslator.cs`
+  bu yüzden var (bkz. yukarıdaki bölüm).
 
 ## Uyarılar
 

@@ -28,6 +28,9 @@ fixtures/.time-entries.local.json
 # üretilmiş .ics (scripts/gen-ics.mjs ile yeniden üretilir)
 fixtures/calendar.ics
 
+# sahte Gemini "sor" modunun geçici kuyruğu (kayitlar/ COMMIT EDİLİR — oynatılabilir olsun)
+tools/fake-gemini/kuyruk/
+
 # iCloud sync duplikatları
 * 2.*
 *\ 2/

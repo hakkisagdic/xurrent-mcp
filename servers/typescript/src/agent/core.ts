@@ -1,5 +1,5 @@
 /**
- * Chatbot çekirdeği — Anthropic toolRunner döngüsü.
+ * Chatbot çekirdeği — Gemini tool döngüsü.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * MİMARİ KARAR: Chatbot, MCP client OLARAK DEĞİL, tool'ları DOĞRUDAN (in-process)
@@ -10,27 +10,38 @@
  *      yaşam döngüsü). Protokol vaadi zaten clients/wizard ile kanıtlanıyor:
  *      o GERÇEK bir MCP client'tır ve üç sunucuya da bağlanır.
  *
- *   2) Bilinen bir tip uyumsuzluğu var: MCP Client.callTool() legacy {toolResult}
- *      şeklini içeren bir union döndürür ve mcpTools()'a doğrudan verilemez.
- *      Çözümü unsafe cast değil, ince bir adapter'dır:
- *          { callTool: (p) => mcp.callTool(p) as Promise<{content: ...; isError?: boolean}> }
- *      Bu adapter'ı yazmak mümkündü; ama (1)'deki maliyet karşılığında faydası yoktu.
- *
- *   3) ONAY doğrudan yolda daha dürüst çalışıyor: terminalde readline, web'de SSE
+ *   2) ONAY doğrudan yolda daha dürüst çalışıyor: terminalde readline, web'de SSE
  *      `elicit` olayı. MCP client üzerinden gitseydik onay isteğini yine bu katmanın
  *      protokole çevirmesi gerekirdi — yani aynı kod, bir sarmalayıcı fazlası.
  *
- * Tool tanımları SÖZLEŞMENİN AYNISIDIR: JSON Schema'lar tools/schemas.ts'teki zod
+ * Tool tanımları SÖZLEŞMENİN AYNISIDIR: JSON Schema'lar core/schemas.ts'teki zod
  * şemalarından üretilir; MCP tools/list ile chatbot'un gördüğü şema TEK kaynaktan gelir.
+ *
+ * ★ AMA AYNI ŞEMA AYNEN GÖNDERİLEMEZ. MCP inputSchema tam JSON Schema 2020-12'dir;
+ *   Gemini functionDeclarations yalnızca OpenAPI'nin bir alt kümesini kabul eder.
+ *   Aradaki çeviriyi llm/schema.ts yapar ve NE ATTIĞINI stderr'e raporlar.
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
-import Anthropic from "@anthropic-ai/sdk";
-import type { BetaRunnableTool } from "@anthropic-ai/sdk/lib/tools/BetaRunnableTool.mjs";
 import { z } from "zod";
 import type { AppConfig } from "../config.js";
-import { runCalendarListToday } from "../tools/calendar-list-today.js";
 import type { ToolContext } from "../core/context.js";
+import {
+  candidateParts,
+  functionCalls,
+  plainText,
+  type GeminiClient,
+  type GeminiContent,
+  type GeminiFunctionDeclaration,
+  type GeminiPart,
+} from "../llm/gemini.js";
+import {
+  formatTranslationReport,
+  mcpSchemaToGemini,
+  type SchemaTranslation,
+  type TranslationReportEntry,
+} from "../llm/schema.js";
+import { runCalendarListToday } from "../tools/calendar-list-today.js";
 import { runBulk } from "../tools/create-time-entries-bulk.js";
 import { runCreateTimeEntry } from "../tools/create-time-entry.js";
 import { runFindPerson } from "../tools/find-person.js";
@@ -49,8 +60,21 @@ import {
   whoamiInput,
 } from "../core/schemas.js";
 
-/** Opus 5'te thinking varsayılan AÇIKTIR ve max_tokens thinking+text'i BİRLİKTE sınırlar. */
-export const MAX_TOKENS = 16000;
+/**
+ * Gemini 3.x'te düşünme (thinking) varsayılan açıktır ve maxOutputTokens düşünme +
+ * metni BİRLİKTE sınırlar. Düşük bir değer verilirse model "düşünürken" biter ve
+ * boş cevap gelir — bu, sessiz ve teşhisi zor bir hatadır.
+ */
+export const MAX_OUTPUT_TOKENS = 16000;
+
+/** Ders çıktıları deterministik olsun diye sıcaklık 0. */
+export const TEMPERATURE = 0;
+
+/**
+ * Tool döngüsünün azami tur sayısı. Sonsuz döngüye karşı sigorta: kötü bir model
+ * (veya sahte bir sunucu) aynı tool'u sonsuza kadar çağırabilir.
+ */
+export const MAX_TOOL_STEPS = 12;
 
 export const SYSTEM_PROMPT = `Sen Xurrent (ITSM) zaman takibi asistanısın. Kullanıcıyla TÜRKÇE konuşursun.
 
@@ -82,15 +106,10 @@ DEĞİŞMEZ KURALLAR
 
 ÜSLUP: Kısa, net, teknik ama anlaşılır. Sayıları ve id'leri açıkça yaz. Emoji kullanma.`;
 
-/** zod raw shape → Anthropic input_schema (JSON Schema). Tek gerçek kaynak: schemas.ts */
-function toInputSchema(shape: Record<string, z.ZodTypeAny>): {
-  type: "object";
-  properties?: Record<string, unknown>;
-  required?: string[];
-} {
+/** zod raw shape → JSON Schema (MCP tarafının gördüğü şeyin AYNISI). */
+function toInputSchema(shape: Record<string, z.ZodTypeAny>): Record<string, unknown> {
   const json = z.toJSONSchema(z.object(shape), { io: "input" }) as Record<string, unknown>;
-  delete json["$schema"];
-  return { ...(json as { type: "object" }), type: "object" };
+  return { ...json, type: "object" };
 }
 
 /**
@@ -150,103 +169,152 @@ export interface ToolHooks {
   }) => void;
 }
 
-/** Sözleşmedeki 8 tool'u Anthropic runnable tool'larına çevirir. */
-export function buildTools(ctx: ToolContext, hooks: ToolHooks = {}): BetaRunnableTool<any>[] {
+/** Sözleşmedeki bir tool'un chatbot tarafındaki çalıştırılabilir hâli. */
+export interface AgentTool {
+  name: string;
+  /** Gemini'ye gönderilen bildirim (şema ÇEVRİLMİŞ hâliyle). */
+  declaration: GeminiFunctionDeclaration;
+  /** Şema çevirisinin raporu — ders artifaktı; testte de kullanılır. */
+  translation: SchemaTranslation;
+  run: (args: Record<string, unknown>) => Promise<unknown>;
+}
+
+/**
+ * Bildirimler ctx'e BAĞLI DEĞİLDİR: aynı sözleşme, aynı şema, aynı çeviri.
+ * Bir kez hesaplanır — her turda 8 şemayı yeniden çevirmek boş iştir.
+ */
+interface ToolSpec {
+  name: string;
+  declaration: GeminiFunctionDeclaration;
+  translation: SchemaTranslation;
+  bind: (ctx: ToolContext) => (args: Record<string, unknown>) => Promise<unknown>;
+}
+
+let cachedSpecs: ToolSpec[] | null = null;
+
+/** Rapor süreç başına BİR KEZ basılır; her tur tekrar basmak logu boğar. */
+let reportPrinted = false;
+
+function toolSpecs(): ToolSpec[] {
+  if (cachedSpecs) return cachedSpecs;
+
   const mk = (
     name: string,
     description: string,
     shape: Record<string, z.ZodTypeAny>,
-    run: (args: any) => Promise<unknown>,
-  ): BetaRunnableTool<any> => ({
-    name,
-    description,
-    input_schema: toInputSchema(shape),
-    parse: (content: unknown) => (content ?? {}) as Record<string, unknown>,
-    run: async (args: Record<string, unknown>, context) => {
-      const id = (context?.toolUse as { id?: string } | undefined)?.id ?? `${name}-${Date.now()}`;
-      hooks.onStart?.(id, name, args);
-      const started = Date.now();
-      try {
-        const result = await run(args);
-        hooks.onEnd?.({
-          id,
-          name,
-          isError: false,
-          durationMs: Date.now() - started,
-          summary: summarizeToolResult(name, result),
-          result,
-        });
-        // Modele metin gider; arayüze yapılandırılmış nesne (hook üzerinden).
-        return JSON.stringify(result, null, 2);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        hooks.onEnd?.({
-          id,
-          name,
-          isError: true,
-          durationMs: Date.now() - started,
-          summary: `hata: ${message}`,
-          result: { error: message },
-        });
-        throw err;
-      }
-    },
-  });
+    run: (ctx: ToolContext, args: any) => Promise<unknown>,
+  ): ToolSpec => {
+    const mcpSchema = toInputSchema(shape);
+    // ★ ÇEVİRİ BURADA: MCP (JSON Schema 2020-12) → Gemini (OpenAPI alt kümesi).
+    const translation = mcpSchemaToGemini(mcpSchema);
 
-  return [
-    mk("xurrent_whoami", "Authenticated kullanıcıyı, hesabı ve modu döner. Bağlantı smoke test'i.", whoamiInput, () =>
-      runWhoami(ctx),
+    // ★ Parametresiz tool'da `parameters` HİÇ GÖNDERİLMEZ.
+    //
+    // Gemini'de bu alan opsiyoneldir ve `{type:"object", properties:{}}` göndermek
+    // "argümanı olmayan fonksiyon"u ifade etmenin garantili yolu DEĞİLDİR — boş
+    // properties bazı sürümlerde reddedilir. Opsiyonel bir alanı hiç göndermemek
+    // reddedilemez; boş göndermek edilebilir. Gerçek API'ye soramadığımız için
+    // ihtiyatlı taraf açık.
+    //
+    // Python ve C# implementasyonları bunu baştan doğru yapıyordu; TypeScript
+    // ayrık kalmıştı. Wire denetimi (tools/fake-gemini yanındaki sonda) yakaladı.
+    const bosSema =
+      translation.schema?.type === "object" &&
+      Object.keys(translation.schema.properties ?? {}).length === 0;
+
+    return {
+      name,
+      declaration: bosSema
+        ? { name, description }
+        : { name, description, parameters: translation.schema },
+      translation,
+      bind: (ctx) => (args) => run(ctx, args ?? {}),
+    };
+  };
+
+  cachedSpecs = [
+    mk(
+      "xurrent_whoami",
+      "Authenticated kullanıcıyı, hesabı ve modu döner. Bağlantı smoke test'i.",
+      whoamiInput,
+      (ctx) => runWhoami(ctx),
     ),
     mk(
       "xurrent_find_person",
       "Kişiyi birincil e-posta ile bulur. TAM eşleşme yapar (substring değil).",
       findPersonInput,
-      (a) => runFindPerson(ctx, a),
+      (ctx, a) => runFindPerson(ctx, a),
     ),
     mk(
       "xurrent_list_open_work",
       "Bir kişinin üzerindeki AÇIK Request ve Task'ları id + açıklama ile listeler.",
       listOpenWorkInput,
-      (a) => runListOpenWork(ctx, a),
+      (ctx, a) => runListOpenWork(ctx, a),
     ),
     mk(
       "xurrent_get_time_tracking_context",
       "ZAMAN YAZMADAN ÖNCE ZORUNLU: timeIncrement, effort class'lar, timesheet kısıtları.",
       timeTrackingContextInput,
-      (a) => runTimeTrackingContext(ctx, a),
+      (ctx, a) => runTimeTrackingContext(ctx, a),
     ),
     mk(
       "xurrent_create_time_entry",
       "Tek bir zaman girişi oluşturur. dryRun=true ile hiçbir mutation gönderilmez.",
       createTimeEntryInput,
-      (a) => runCreateTimeEntry(ctx, a),
+      (ctx, a) => runCreateTimeEntry(ctx, a),
     ),
     mk(
       "xurrent_create_time_entries_bulk",
       "Birden çok zaman girişini sırayla oluşturur. ATOMİK DEĞİLDİR.",
       bulkInput,
-      (a) => runBulk(ctx, a),
+      (ctx, a) => runBulk(ctx, a),
     ),
     mk(
       "calendar_list_today",
       "Günün takvimini okur, normalize eder, gerçek toplantıları filtreler.",
       calendarInput,
-      (a) => runCalendarListToday(ctx, a),
+      (ctx, a) => runCalendarListToday(ctx, a),
     ),
     mk(
       "plan_time_entries_from_calendar",
       "Takvim + açık işlerden zaman girişi ÖNERİSİ üretir. ASLA YAZMAZ.",
       planInput,
-      (a) => runPlanFromCalendar(ctx, a),
+      (ctx, a) => runPlanFromCalendar(ctx, a),
     ),
   ];
+
+  if (!reportPrinted) {
+    reportPrinted = true;
+    const entries: TranslationReportEntry[] = cachedSpecs.map((t) => ({ name: t.name, translation: t.translation }));
+    // stdout DEĞİL stderr: stdio modunda stdout yalnızca JSON-RPC taşır.
+    process.stderr.write(formatTranslationReport(entries) + "\n");
+  }
+
+  return cachedSpecs;
+}
+
+/** Sözleşmedeki 8 tool'u, verilen bağlama bağlanmış hâlde döner. */
+export function buildTools(ctx: ToolContext): AgentTool[] {
+  return toolSpecs().map((spec) => ({
+    name: spec.name,
+    declaration: spec.declaration,
+    translation: spec.translation,
+    run: spec.bind(ctx),
+  }));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Tur yürütme
 // ─────────────────────────────────────────────────────────────────────────────
 
-export type ChatMessage = Anthropic.Beta.Messages.BetaMessageParam;
+/**
+ * Sohbet mesajı = Gemini `Content`.
+ *
+ * clients/web/API.md §2: `messages` dizisi ARAYÜZ TARAFINDAN YORUMLANMAZ; arayüz
+ * `done` olayında ne aldıysa aynen geri gönderir. Yani backend kendi doğal biçimini
+ * kullanabilir — burada o biçim Gemini'nin `contents` dizisidir.
+ */
+export type ChatMessage = GeminiContent;
 
 /** clients/web/API.md'deki SSE olaylarının birebir karşılığı. */
 export type AgentEvent =
@@ -261,69 +329,175 @@ export type AgentEvent =
       summary: string | null;
       result: unknown;
     }
-  | { type: "done"; stopReason: string | null; messages: ChatMessage[]; usage?: { inputTokens: number; outputTokens: number } }
+  | {
+      type: "done";
+      stopReason: string | null;
+      messages: ChatMessage[];
+      usage?: { inputTokens: number; outputTokens: number };
+    }
   | { type: "error"; message: string; code?: string };
 
-export function createAnthropicClient(cfg: AppConfig): Anthropic {
-  if (!cfg.anthropicApiKey) {
-    throw new Error(
-      "ANTHROPIC_API_KEY tanımlı değil. Chatbot için gereklidir. " +
-        "(Yalnızca MCP sunucusu olarak kullanacaksanız gerekmez — LLM'i host uygulama sağlar.)",
-    );
+/**
+ * Arayüzden gelen mesajları Gemini `contents` biçimine normalize eder.
+ *
+ * İki biçim gelebilir:
+ *   1) Arayüzün ürettiği yeni kullanıcı mesajı: { role: "user", content: "metin" }
+ *   2) Bizim `done` olayında verdiğimiz doğal biçim: { role: "user"|"model", parts: [...] }
+ *
+ * ★ Rol eşlemesi: "assistant" → "model". Gemini'de "assistant" rolü YOKTUR ve
+ *   "system" rolü de yoktur (sistem mesajı systemInstruction alanına gider).
+ */
+export function toGeminiContents(input: unknown): ChatMessage[] {
+  if (!Array.isArray(input)) return [];
+  const out: ChatMessage[] = [];
+  for (const raw of input) {
+    if (typeof raw !== "object" || raw === null) continue;
+    const m = raw as Record<string, unknown>;
+    const role = m["role"] === "model" || m["role"] === "assistant" ? "model" : "user";
+
+    if (Array.isArray(m["parts"])) {
+      out.push({ role, parts: m["parts"] as GeminiPart[] });
+      continue;
+    }
+    const content = m["content"];
+    if (typeof content === "string") {
+      out.push({ role, parts: [{ text: content }] });
+      continue;
+    }
+    if (Array.isArray(content)) {
+      // Savunma amaçlı: blok dizisi geldiyse metin bloklarını topla.
+      const text = content
+        .map((b) => (typeof b === "string" ? b : ((b as Record<string, unknown>)?.["text"] as string) ?? ""))
+        .join("");
+      if (text) out.push({ role, parts: [{ text }] });
+    }
   }
-  return new Anthropic({ apiKey: cfg.anthropicApiKey });
+  return out;
+}
+
+/** `functionResponse.response` OBJE olmak zorundadır; düz değerler sarmalanır. */
+function asResponseObject(value: unknown): Record<string, unknown> {
+  if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  return { result: value };
 }
 
 /**
  * Tek bir konuşma turu. DURUM TUTMAZ: gelen messages dizisi girdidir, dönen
  * messages dizisi çıktıdır. Web sözleşmesi (clients/web/API.md §2) bunu şart koşuyor
  * ve aynı zamanda doğru tasarım: sohbet durumu sunucunun belleğinde yaşamaz.
+ *
+ * ★ TOOL DÖNGÜSÜ (Gemini lehçesi):
+ *     contents += { role: "model", parts: [{ functionCall: {id, name, args} }] }
+ *     contents += { role: "user",  parts: [{ functionResponse: {id, name, response} }] }
+ *   Sıra ve id eşleşmesi ZORUNLUDUR. Tool sonucu "user" rolüyle döner — Gemini'de
+ *   "tool" diye bir rol yoktur.
  */
 export async function runTurn(
-  client: Anthropic,
+  client: GeminiClient,
   cfg: AppConfig,
   ctx: ToolContext,
   messages: ChatMessage[],
   onEvent: (e: AgentEvent) => void,
   signal?: AbortSignal,
 ): Promise<ChatMessage[]> {
-  const tools = buildTools(ctx, {
-    onStart: (id, name, args) => onEvent({ type: "tool_use", id, name, args }),
-    onEnd: (p) => onEvent({ type: "tool_result", ...p }),
-  });
+  const tools = buildTools(ctx);
+  const byName = new Map(tools.map((t) => [t.name, t]));
+  const contents: ChatMessage[] = [...messages];
 
-  const runner = client.beta.messages.toolRunner({
-    model: cfg.anthropicModel,
-    // Opus 5'te thinking varsayılan açıktır ve max_tokens thinking + text'i BİRLİKTE
-    // sınırlar. Düşük bir değer verilirse model "düşünürken" biter ve boş cevap gelir.
-    max_tokens: MAX_TOKENS,
-    system: SYSTEM_PROMPT,
-    messages: [...messages],
-    tools,
-  });
-
-  if (signal) runner.setRequestOptions({ signal });
+  let stopReason: string | null = null;
+  let inputTokens = 0;
+  let outputTokens = 0;
 
   try {
-    for await (const message of runner) {
-      for (const block of message.content) {
-        // tool_use bloklarını burada yayınlamıyoruz: hook zaten ARGÜMANLARLA
-        // birlikte ve tool_result ile AYNI id üzerinden yayınlıyor.
-        if (block.type === "text") onEvent({ type: "text", delta: block.text });
+    for (let step = 0; step < MAX_TOOL_STEPS; step++) {
+      const res = await client.generateContent(
+        {
+          contents,
+          tools: [{ functionDeclarations: tools.map((t) => t.declaration) }],
+          // ★ Sistem mesajı contents içine KONMAZ.
+          systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+          generationConfig: { temperature: TEMPERATURE, maxOutputTokens: MAX_OUTPUT_TOKENS },
+        },
+        signal,
+      );
+
+      inputTokens += res.usageMetadata?.promptTokenCount ?? 0;
+      outputTokens += res.usageMetadata?.candidatesTokenCount ?? 0;
+
+      const parts = candidateParts(res);
+      stopReason = res.candidates?.[0]?.finishReason ?? null;
+
+      const text = plainText(parts);
+      if (text) onEvent({ type: "text", delta: text });
+
+      const calls = functionCalls(parts);
+
+      // Modelin turu geçmişe AYNEN eklenir. functionCall part'ları burada durmalı,
+      // yoksa bir sonraki istekte functionResponse'un eşleşeceği çağrı kalmaz.
+      if (parts.length > 0) contents.push({ role: "model", parts });
+
+      if (calls.length === 0) break;
+
+      const responseParts: GeminiPart[] = [];
+      for (let i = 0; i < calls.length; i++) {
+        const call = calls[i] as (typeof calls)[number];
+        // Arayüz kartı id ile eşleşir. Model id vermediyse deterministik bir tane üretilir
+        // — ama bu id API'ye GÖNDERİLMEZ (aşağıya bak).
+        const eventId = call.id ?? `${call.name}-${step}-${i}`;
+        const args = (call.args ?? {}) as Record<string, unknown>;
+        onEvent({ type: "tool_use", id: eventId, name: call.name, args });
+
+        const started = Date.now();
+        const tool = byName.get(call.name);
+        let result: unknown;
+        let isError = false;
+
+        if (!tool) {
+          isError = true;
+          result = { error: `Bilinmeyen tool: ${call.name}` };
+        } else {
+          try {
+            result = await tool.run(args);
+          } catch (err) {
+            isError = true;
+            result = { error: err instanceof Error ? err.message : String(err) };
+          }
+        }
+
+        onEvent({
+          type: "tool_result",
+          id: eventId,
+          name: call.name,
+          isError,
+          durationMs: Date.now() - started,
+          summary: isError
+            ? `hata: ${(result as { error?: string }).error ?? "bilinmiyor"}`
+            : summarizeToolResult(call.name, result),
+          result,
+        });
+
+        // ★ id EŞLEŞMESİ: functionCall.id ile functionResponse.id AYNI olmak ZORUNDA.
+        //   Model id göndermediyse biz de göndermeyiz — uydurulmuş bir id, API'nin
+        //   hiçbir çağrıyla eşleştiremeyeceği bir yanıt üretir.
+        const responsePart: GeminiPart = {
+          functionResponse: {
+            ...(call.id !== undefined ? { id: call.id } : {}),
+            name: call.name,
+            // response OBJE olmak zorunda; hata da yapılandırılmış olarak gider.
+            response: asResponseObject(result),
+          },
+        };
+        responseParts.push(responsePart);
       }
+
+      // ★ Tool sonuçları "user" rolüyle döner. Gemini'de "tool" rolü YOKTUR.
+      contents.push({ role: "user", parts: responseParts });
     }
-    const final = await runner.done();
-    // Runner her turda assistant mesajını ve tool_result mesajını KENDİ listesine
-    // ekler. Elle eklemeye kalkarsak tool_use/tool_result çiftleri bozulur ve
-    // sonraki turda API 400 döner. Kopyalıyoruz: liste aynı referans olabilir.
-    const updated = [...(runner.params.messages as ChatMessage[])];
-    onEvent({
-      type: "done",
-      stopReason: final.stop_reason ?? null,
-      messages: updated,
-      usage: { inputTokens: final.usage.input_tokens, outputTokens: final.usage.output_tokens },
-    });
-    return updated;
+
+    onEvent({ type: "done", stopReason, messages: contents, usage: { inputTokens, outputTokens } });
+    return contents;
   } catch (err) {
     onEvent({ type: "error", message: err instanceof Error ? err.message : String(err) });
     return messages;
@@ -336,15 +510,14 @@ export interface AgentSession {
   readonly history: ChatMessage[];
 }
 
-export function createAgent(cfg: AppConfig, ctx: ToolContext): AgentSession {
-  const client = createAnthropicClient(cfg);
+export function createAgent(cfg: AppConfig, ctx: ToolContext, client: GeminiClient): AgentSession {
   let history: ChatMessage[] = [];
   return {
     get history() {
       return history;
     },
     async ask(userText, onEvent, signal) {
-      const next: ChatMessage[] = [...history, { role: "user", content: userText }];
+      const next: ChatMessage[] = [...history, { role: "user", parts: [{ text: userText }] }];
       history = await runTurn(client, cfg, ctx, next, onEvent, signal);
     },
   };

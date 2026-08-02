@@ -1,11 +1,8 @@
 using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using Anthropic.SDK;
-using Anthropic.SDK.Common;
-using Anthropic.SDK.Messaging;
-using ModelContextProtocol.Protocol;
 using XurrentMcp.Core;
+using XurrentMcp.Llm;
 using XurrentMcp.Mcp;
 
 namespace XurrentMcp.Agent;
@@ -33,14 +30,17 @@ public interface IAgentSink
 /// tools/call üzerinden konuşur — yani Claude Code'un yaptığı işin AYNISINI yapar.
 /// Ders bunu vurgular: "MCP host" özel bir şey değildir; sen de yazabilirsin.
 ///
-/// SDK KARARI: Anthropic.SDK 5.10.0 kullanılıyor. MCP tool şemaları JSON Schema olarak gelir
-/// ve Anthropic.SDK'nın Function(name, description, JsonNode) kurucusu ham şemayı DOĞRUDAN
-/// kabul eder — C# metot yansımasına ihtiyaç duymaz. MCP ile SDK arasında gereken tek
-/// entegrasyon noktası budur; bu yüzden düz HttpClient'a düşmeye gerek kalmadı.
+/// SAĞLAYICI KARARI: tek sağlayıcı, GEMINI. Paket bağımlılığı yok; düz HttpClient
+/// (bkz. Llm/GeminiClient.cs). MCP ile Gemini arasındaki entegrasyon noktası TEK ve
+/// ÖNEMSİZ DEĞİL: tool şemaları. MCP inputSchema tam JSON Schema 2020-12'dir, Gemini
+/// functionDeclarations ise OpenAPI'nin dar bir alt kümesini alır. Şema OLDUĞU GİBİ
+/// GEÇİRİLEMEZ; Llm/SchemaTranslator.cs çevirir ve neyi attığını stderr'e raporlar.
 ///
 /// DURUM YÖNETİMİ: sohbet geçmişi BACKEND'DE TUTULMAZ. clients/web/API.md sözleşmesi gereği
-/// istemci her istekte tüm 'messages' dizisini geri gönderir. Wire biçimi Anthropic'in
-/// content-block biçimidir; arayüz onu yorumlamaz, sadece saklayıp geri yollar.
+/// istemci her istekte tüm 'messages' dizisini geri gönderir ve dizinin İÇERİĞİNİ YORUMLAMAZ.
+/// Bu yüzden wire biçimi olarak Gemini'nin KENDİ contents biçimini saklıyoruz
+/// ({role, parts[]}): ara bir biçime çevirmek functionCall.id'yi kaybettirir ve
+/// id eşleşmesi bozulunca API tool sonucunu çağrısına bağlayamaz.
 /// </summary>
 public sealed class AgentCore : IAsyncDisposable
 {
@@ -63,15 +63,25 @@ public sealed class AgentCore : IAsyncDisposable
            two_step atomik değil, link_first tarihi bugüne çeker, date_first ticket'a bağlamaz.
         """;
 
+    /// <summary>Bir kullanıcı mesajının tetikleyebileceği azami tool turu (sonsuz döngü kalkanı).</summary>
+    private const int MaxRounds = 12;
+
     private readonly AppConfig _cfg;
     private readonly InProcessMcpSession _session;
-    private readonly AnthropicClient? _client;
-    private readonly List<Anthropic.SDK.Common.Tool> _tools = [];
+    private readonly GeminiClient? _client;
+
+    /// <summary>Gemini'ye gönderilen tool tanımları — çevrilmiş şemalarla.</summary>
+    private readonly JsonArray _declarations = [];
+    private readonly List<string> _toolNames = [];
+    private readonly List<SchemaNote> _schemaNotes = [];
+
+    /// <summary>functionCall.id gelmediğinde arayüz kartlarını eşleştirmek için üretilen sayaç.</summary>
+    private int _callSeq;
 
     /// <summary>Terminal chatbot için tutulan yerel geçmiş (web tarafı durumsuzdur).</summary>
     private readonly JsonArray _terminalHistory = [];
 
-    private AgentCore(AppConfig cfg, InProcessMcpSession session, AnthropicClient? client)
+    private AgentCore(AppConfig cfg, InProcessMcpSession session, GeminiClient? client)
     {
         _cfg = cfg;
         _session = session;
@@ -79,7 +89,10 @@ public sealed class AgentCore : IAsyncDisposable
     }
 
     public bool HasLlm => _client is not null;
-    public IReadOnlyList<string> ToolNames => _tools.Select(t => t.Function.Name).ToList();
+    public IReadOnlyList<string> ToolNames => _toolNames;
+
+    /// <summary>Şema çevirisinin tuttuğu kayıtlar — derste "ne kaybettik" sorusunun cevabı.</summary>
+    public IReadOnlyList<SchemaNote> SchemaNotes => _schemaNotes;
 
     /// <summary>LLM'siz kurulum: tool listesi bilinir ama sohbet yapılamaz (/api/config için).</summary>
     public static Task<AgentCore> CreateAsync(AppConfig cfg, CancellationToken ct = default)
@@ -87,19 +100,33 @@ public sealed class AgentCore : IAsyncDisposable
 
     public static async Task<AgentCore> CreateAsync(AppConfig cfg, bool requireLlm, CancellationToken ct = default)
     {
-        var hasKey = !string.IsNullOrWhiteSpace(cfg.AnthropicApiKey);
+        var hasKey = !string.IsNullOrWhiteSpace(cfg.GeminiApiKey);
         if (requireLlm && !hasKey)
             throw new InvalidOperationException(
-                "ANTHROPIC_API_KEY tanımlı değil. Chatbot bunu gerektirir. " +
+                "GEMINI_API_KEY tanımlı değil. Chatbot bunu gerektirir. " +
                 "Sadece MCP sunucusu olarak kullanacaksanız 'stdio' modunu çalıştırın — orada LLM'i host sağlar.");
 
         var session = await InProcessMcpSession.StartAsync(cfg, ct);
-        var client = hasKey ? new AnthropicClient(new APIAuthentication(cfg.AnthropicApiKey)) : null;
+        var client = hasKey ? new GeminiClient(cfg.GeminiApiKey, cfg.GeminiModel, cfg.GeminiBaseUrl) : null;
         var agent = new AgentCore(cfg, session, client);
 
-        // MCP tools/list -> Anthropic tool tanımları. Şema DÖNÜŞTÜRÜLMEZ, olduğu gibi geçer.
+        // ★ MCP tools/list → Gemini functionDeclarations. ŞEMA BURADA ÇEVRİLİR.
+        // Anthropic'te ham JSON Schema doğrudan kabul ediliyordu; Gemini'de EDİLMEZ.
+        // Aynı sözleşme, iki farklı tool-calling lehçesi — çevirinin bedeli aşağıda raporlanır.
         foreach (var t in await session.Client.ListToolsAsync(cancellationToken: ct))
-            agent._tools.Add(new Function(t.Name, t.Description ?? t.Name, JsonNode.Parse(t.JsonSchema.GetRawText())));
+        {
+            var schema = JsonNode.Parse(t.JsonSchema.GetRawText());
+            var (declaration, translation) = SchemaTranslator.Declare(t.Name, t.Description, schema);
+
+            agent._declarations.Add(declaration);
+            agent._toolNames.Add(t.Name);
+            agent._schemaNotes.AddRange(translation.Notes);
+        }
+
+        // Özet stderr'e basılır. stdout'a BASILAMAZ: stdio modunda orası yalnızca JSON-RPC'nindir
+        // ve chat/web modları da aynı süreç kurulumunu paylaşır.
+        foreach (var line in SchemaTranslator.Summarize(agent._schemaNotes, agent._toolNames.Count))
+            Console.Error.WriteLine(line);
 
         return agent;
     }
@@ -114,7 +141,7 @@ public sealed class AgentCore : IAsyncDisposable
     {
         if (_client is null)
         {
-            await sink.ErrorAsync("ANTHROPIC_API_KEY tanımlı değil; chatbot devre dışı.", "no_api_key", ct);
+            await sink.ErrorAsync("GEMINI_API_KEY tanımlı değil; chatbot devre dışı.", "no_api_key", ct);
             return;
         }
 
@@ -123,61 +150,65 @@ public sealed class AgentCore : IAsyncDisposable
         _session.OnConfirm = async (parameters, cancel) =>
             await sink.ConfirmAsync("mcp_elicit", parameters.Message ?? "Onay gerekiyor.", [], cancel);
 
+        var contents = ToContents(messages);
+
         try
         {
-            // Sonsuz döngüye karşı sert sınır: bir kullanıcı mesajı en fazla 12 tool turu tetikleyebilir.
-            for (var round = 0; round < 12; round++)
+            for (var round = 0; round < MaxRounds; round++)
             {
-                var parameters = new MessageParameters
+                var turn = await _client.GenerateContentAsync(contents, _declarations, SystemPrompt, ct);
+
+                if (!string.IsNullOrEmpty(turn.Text)) await sink.TextAsync(turn.Text, ct);
+
+                // Modelin turu HAM parts[] ile eklenir. Yeniden inşa etmek functionCall.id'yi
+                // kaybettirir ve bir sonraki istekte eşleştirme kopar.
+                contents.Add(new JsonObject { ["role"] = "model", ["parts"] = turn.Parts.DeepClone() });
+
+                if (turn.Calls.Count == 0)
                 {
-                    Model = _cfg.AnthropicModel,
-                    MaxTokens = 4096,
-                    Messages = ToAnthropic(messages),
-                    System = [new SystemMessage(SystemPrompt)],
-                    Tools = _tools,
-                };
-
-                var response = await _client.Messages.GetClaudeMessageAsync(parameters, ct);
-
-                var text = string.Concat(response.Content.OfType<TextContent>().Select(c => c.Text));
-                if (!string.IsNullOrEmpty(text)) await sink.TextAsync(text, ct);
-
-                messages.Add(ToWire(response));
-
-                var toolUses = response.Content.OfType<ToolUseContent>().ToList();
-                if (toolUses.Count == 0)
-                {
-                    await sink.DoneAsync(response.StopReason ?? "end_turn", messages, ct);
+                    Sync(messages, contents);
+                    await sink.DoneAsync(turn.FinishReason ?? "STOP", messages, ct);
                     return;
                 }
 
-                var results = new JsonArray();
-                foreach (var use in toolUses)
+                var responses = new JsonArray();
+                foreach (var call in turn.Calls)
                 {
-                    await sink.ToolUseAsync(use.Id, use.Name, use.Input?.DeepClone(), ct);
-                    var (raw, isError, parsed, ms) = await InvokeToolAsync(use, sink, ct);
+                    // Arayüz kartı tool_use ve tool_result'ı AYNI id ile eşleştirir (API.md §4).
+                    // Model id vermediyse (tek çağrıda olabiliyor) yerel bir id üretiyoruz —
+                    // ama bu id functionResponse'a KONMAZ, aşağıya bak.
+                    var eventId = call.Id is { Length: > 0 } ? call.Id : $"fc_{Interlocked.Increment(ref _callSeq)}";
 
-                    await sink.ToolResultAsync(use.Id, use.Name, isError, ms,
-                        Summaries.Describe(use.Name, parsed), parsed?.DeepClone(), ct);
+                    await sink.ToolUseAsync(eventId, call.Name, call.Args.DeepClone(), ct);
+                    var (payload, isError, parsed, ms) = await InvokeToolAsync(call, eventId, sink, ct);
 
-                    results.Add(new JsonObject
-                    {
-                        ["type"] = "tool_result",
-                        ["tool_use_id"] = use.Id,
-                        ["content"] = raw,
-                        ["is_error"] = isError,
-                    });
+                    await sink.ToolResultAsync(eventId, call.Name, isError, ms,
+                        Summaries.Describe(call.Name, parsed), parsed?.DeepClone(), ct);
+
+                    // ★ ID EŞLEŞMESİ: functionResponse.id, functionCall.id ile AYNI olmak ZORUNDA;
+                    // aksi hâlde API sonucu çağrısına bağlayamaz. Çağrıda id YOKSA burada da
+                    // GÖNDERİLMEZ — uydurulmuş bir id, eşleşmeme demektir (eşleşme isim+sıra ile yapılır).
+                    var functionResponse = new JsonObject { ["name"] = call.Name, ["response"] = payload };
+                    if (call.Id is { Length: > 0 }) functionResponse["id"] = call.Id;
+
+                    responses.Add(new JsonObject { ["functionResponse"] = functionResponse });
                 }
 
-                messages.Add(new JsonObject { ["role"] = "user", ["content"] = results });
+                // ★ Tool sonuçları "user" rolüyle döner. Gemini'de "tool" veya "function" rolü YOKTUR.
+                contents.Add(new JsonObject { ["role"] = "user", ["parts"] = responses });
             }
 
-            await sink.TextAsync("Tool turu sınırına ulaşıldı (12). İsteği daha küçük adımlara bölün.", ct);
+            await sink.TextAsync($"Tool turu sınırına ulaşıldı ({MaxRounds}). İsteği daha küçük adımlara bölün.", ct);
+            Sync(messages, contents);
             await sink.DoneAsync("max_rounds", messages, ct);
         }
         catch (OperationCanceledException)
         {
             // İstemci bağlantıyı kapattı; sessizce çık (bekleyen onay fail-closed sayılır).
+        }
+        catch (GeminiException ex)
+        {
+            await sink.ErrorAsync(ex.Message, "gemini_error", ct);
         }
         catch (Exception ex)
         {
@@ -185,35 +216,35 @@ public sealed class AgentCore : IAsyncDisposable
         }
     }
 
-    private async Task<(string Raw, bool IsError, JsonNode? Parsed, long Ms)> InvokeToolAsync(
-        ToolUseContent use, IAgentSink sink, CancellationToken ct)
+    private async Task<(JsonObject Response, bool IsError, JsonNode? Parsed, long Ms)> InvokeToolAsync(
+        GeminiFunctionCall call, string eventId, IAgentSink sink, CancellationToken ct)
     {
         var sw = Stopwatch.StartNew();
 
         // ── PROTOKOL SEVİYESİNDE ONAY ────────────────────────────────────────
         // Onay diyaloğunu LLM'e BIRAKMIYORUZ: LLM ikna edilebilir, protokol edilemez.
         // Elicitation desteklemeyen bir istemcide politika fail-closed'dur.
-        if (IsRealWrite(use, out var confirmDetails))
+        if (IsRealWrite(call, out var confirmDetails))
         {
-            var accepted = await sink.ConfirmAsync(use.Id, ConfirmMessage(use), confirmDetails, ct);
+            var accepted = await sink.ConfirmAsync(eventId, ConfirmMessage(call), confirmDetails, ct);
             if (!accepted)
             {
                 sw.Stop();
                 const string msg = "Kullanıcı onayı VERİLMEDİ — hiçbir kayıt oluşturulmadı.";
-                return (msg, true, new JsonObject { ["cancelled"] = true, ["message"] = msg }, sw.ElapsedMilliseconds);
+                return (Error(msg), true, new JsonObject { ["cancelled"] = true, ["message"] = msg },
+                    sw.ElapsedMilliseconds);
             }
         }
 
         try
         {
-            var args = (use.Input as JsonObject ?? [])
-                .ToDictionary(kv => kv.Key, kv => (object?)JsonSerializer.Deserialize<JsonElement>(kv.Value ?? "null"));
-
-            var result = await _session.Client.CallToolAsync(use.Name, args, cancellationToken: ct);
+            var result = await _session.Client.CallToolAsync(call.Name, ToArguments(call.Args), cancellationToken: ct);
 
             // Modele GİDEN metin okunabilir Türkçe bloktur; makine tarafı structuredContent'tir.
             // İkisi aynı gerçeğin iki sunumudur — LLM metni, arayüz yapıyı kullanır.
-            var raw = string.Concat(result.Content.OfType<TextContentBlock>().Select(c => c.Text));
+            var raw = string.Concat(result.Content
+                .OfType<ModelContextProtocol.Protocol.TextContentBlock>()
+                .Select(c => c.Text));
             sw.Stop();
 
             JsonNode? parsed = result.StructuredContent is { } sc
@@ -224,7 +255,8 @@ public sealed class AgentCore : IAsyncDisposable
             if (parsed is null)
                 try { parsed = JsonNode.Parse(raw); } catch (JsonException) { /* düz metin */ }
 
-            return (raw, result.IsError ?? false, parsed, sw.ElapsedMilliseconds);
+            var isError = result.IsError ?? false;
+            return (isError ? Error(raw) : Success(raw, parsed), isError, parsed, sw.ElapsedMilliseconds);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -232,142 +264,181 @@ public sealed class AgentCore : IAsyncDisposable
             // kullanıcıya anlamlı bir açıklama yapabilsin.
             sw.Stop();
             var msg = $"Tool hatası: {ex.Message}";
-            return (msg, true, new JsonObject { ["error"] = msg }, sw.ElapsedMilliseconds);
+            return (Error(msg), true, new JsonObject { ["error"] = msg }, sw.ElapsedMilliseconds);
         }
     }
 
+    // ★ functionResponse.response bir OBJE olmak ZORUNDA — düz string kabul edilmez.
+    private static JsonObject Success(string text, JsonNode? structured)
+    {
+        var payload = new JsonObject { ["output"] = text };
+        if (structured is not null) payload["structured"] = structured.DeepClone();
+        return payload;
+    }
+
+    private static JsonObject Error(string message) => new() { ["error"] = message };
+
     /// <summary>dryRun=false ile çağrılan yazma tool'ları — yalnızca bunlar onay ister.</summary>
-    private static bool IsRealWrite(ToolUseContent use, out JsonObject details)
+    private static bool IsRealWrite(GeminiFunctionCall call, out JsonObject details)
     {
         details = [];
-        if (use.Name is not (Core.ToolNames.CreateTimeEntry or Core.ToolNames.CreateTimeEntriesBulk))
+        if (call.Name is not (Core.ToolNames.CreateTimeEntry or Core.ToolNames.CreateTimeEntriesBulk))
             return false;
 
-        var input = use.Input as JsonObject ?? [];
-        if (input["dryRun"]?.GetValue<bool>() == true) return false;
+        if (AsBool(call.Args["dryRun"]) == true) return false;
 
-        if (use.Name == Core.ToolNames.CreateTimeEntry)
+        if (call.Name == Core.ToolNames.CreateTimeEntry)
         {
-            details["Hedef"] = $"{input["targetType"]?.GetValue<string>()} · {input["targetId"]?.GetValue<string>()}";
-            details["Süre"] = $"{input["minutes"]?.GetValue<int>() ?? 0} dakika";
-            details["Tarih"] = input["date"]?.GetValue<string>() ?? "bugün";
-            details["Strateji"] = input["backdateStrategy"]?.GetValue<string>() ?? "(env varsayılanı)";
+            details["Hedef"] = $"{AsText(call.Args["targetType"])} · {AsText(call.Args["targetId"])}";
+            details["Süre"] = $"{AsInt(call.Args["minutes"]) ?? 0} dakika";
+            details["Tarih"] = AsText(call.Args["date"]) ?? "bugün";
+            details["Strateji"] = AsText(call.Args["backdateStrategy"]) ?? "(env varsayılanı)";
         }
         else
         {
-            var count = (input["entries"] as JsonArray)?.Count ?? 0;
-            details["Satır sayısı"] = count.ToString();
+            details["Satır sayısı"] = ((call.Args["entries"] as JsonArray)?.Count ?? 0).ToString();
             details["Uyarı"] = "Toplu yazma ATOMİK DEĞİLDİR — kısmi başarı mümkündür.";
         }
 
         return true;
     }
 
-    private static string ConfirmMessage(ToolUseContent use)
+    private static string ConfirmMessage(GeminiFunctionCall call)
+        => call.Name == Core.ToolNames.CreateTimeEntriesBulk
+            ? $"{(call.Args["entries"] as JsonArray)?.Count ?? 0} zaman girişi Xurrent'a YAZILACAK. Onaylıyor musun?"
+            : $"{AsInt(call.Args["minutes"]) ?? 0} dakikalık zaman girişi Xurrent'a YAZILACAK. Onaylıyor musun?";
+
+    // ── Wire <-> Gemini contents dönüşümü ────────────────────────────────────
+
+    /// <summary>
+    /// İstemciden gelen 'messages' dizisini Gemini contents'ine çevirir.
+    /// Üç girdi biçimini de kabul eder, çünkü arayüz yeni kullanıcı mesajını
+    /// { role, content: "metin" } olarak ekler (clients/web/API.md §2) ama geçmişi
+    /// bizim döndürdüğümüz biçimde saklar.
+    /// </summary>
+    private static JsonArray ToContents(JsonArray wire)
     {
-        var input = use.Input as JsonObject ?? [];
-        if (use.Name == Core.ToolNames.CreateTimeEntriesBulk)
-            return $"{(input["entries"] as JsonArray)?.Count ?? 0} zaman girişi Xurrent'a YAZILACAK. Onaylıyor musun?";
+        var contents = new JsonArray();
 
-        return $"{input["minutes"]?.GetValue<int>() ?? 0} dakikalık zaman girişi Xurrent'a YAZILACAK. Onaylıyor musun?";
-    }
-
-    // ── Wire <-> Anthropic dönüşümü ──────────────────────────────────────────
-
-    private static List<Message> ToAnthropic(JsonArray wire)
-    {
-        var list = new List<Message>();
         foreach (var node in wire)
         {
-            var m = node!.AsObject();
-            var role = m["role"]?.GetValue<string>() == "assistant" ? RoleType.Assistant : RoleType.User;
+            if (node is not JsonObject m) continue;
 
-            if (m["content"] is JsonValue v && v.GetValueKind() == JsonValueKind.String)
+            // ★ ROL EŞLEMESİ: assistant → "model". Gemini'de "system" ve "tool" rolü YOKTUR;
+            // sistem promptu systemInstruction alanına, tool sonucu "user" rolüne gider.
+            var role = AsText(m["role"]) is "assistant" or "model" ? "model" : "user";
+
+            if (m["parts"] is JsonArray parts)
             {
-                list.Add(new Message(role, v.GetValue<string>()));
+                contents.Add(new JsonObject { ["role"] = role, ["parts"] = parts.DeepClone() });
                 continue;
             }
 
-            var content = new List<ContentBase>();
-            foreach (var b in m["content"] as JsonArray ?? [])
+            if (AsText(m["content"]) is { } text)
             {
-                var block = b!.AsObject();
-                switch (block["type"]?.GetValue<string>())
+                contents.Add(new JsonObject
                 {
-                    case "text":
-                        content.Add(new TextContent { Text = block["text"]?.GetValue<string>() ?? "" });
-                        break;
-                    case "tool_use":
-                        content.Add(new ToolUseContent
-                        {
-                            Id = block["id"]?.GetValue<string>() ?? "",
-                            Name = block["name"]?.GetValue<string>() ?? "",
-                            Input = block["input"]?.DeepClone(),
-                        });
-                        break;
-                    case "tool_result":
-                        content.Add(new ToolResultContent
-                        {
-                            ToolUseId = block["tool_use_id"]?.GetValue<string>() ?? "",
-                            Content = [new TextContent { Text = block["content"]?.GetValue<string>() ?? "" }],
-                            IsError = block["is_error"]?.GetValue<bool>() ?? false,
-                        });
-                        break;
-                }
+                    ["role"] = role,
+                    ["parts"] = new JsonArray(new JsonObject { ["text"] = text }),
+                });
+                continue;
             }
 
-            if (content.Count > 0) list.Add(new Message { Role = role, Content = content });
-        }
-        return list;
-    }
-
-    private static JsonObject ToWire(MessageResponse response)
-    {
-        var blocks = new JsonArray();
-        foreach (var c in response.Content)
-        {
-            switch (c)
+            // Blok dizisi taşıyan eski bir sekme: metin bloklarını kurtar, gerisini bırak.
+            if (m["content"] is JsonArray blocks)
             {
-                case TextContent t:
-                    blocks.Add(new JsonObject { ["type"] = "text", ["text"] = t.Text });
-                    break;
-                case ToolUseContent u:
-                    blocks.Add(new JsonObject
-                    {
-                        ["type"] = "tool_use",
-                        ["id"] = u.Id,
-                        ["name"] = u.Name,
-                        ["input"] = u.Input?.DeepClone() ?? new JsonObject(),
-                    });
-                    break;
+                var salvaged = new JsonArray();
+                foreach (var b in blocks)
+                    if (AsText(b?["text"]) is { } bt)
+                        salvaged.Add(new JsonObject { ["text"] = bt });
+
+                if (salvaged.Count > 0)
+                    contents.Add(new JsonObject { ["role"] = role, ["parts"] = salvaged });
             }
         }
-        return new JsonObject { ["role"] = "assistant", ["content"] = blocks };
+
+        return contents;
     }
+
+    /// <summary>Güncel contents'i istemciye dönecek 'messages' dizisine yazar (yerinde).</summary>
+    private static void Sync(JsonArray messages, JsonArray contents)
+    {
+        messages.Clear();
+        foreach (var c in contents) messages.Add(c?.DeepClone());
+    }
+
+    /// <summary>
+    /// Gemini args'ını MCP tools/call argümanlarına çevirir.
+    /// Sayı normalizasyonu ŞART: Gemini args'ı protobuf Struct üzerinden taşır ve
+    /// tam sayılar 120.0 gibi kesirli görünebilir; int bekleyen bir parametreye bağlanamaz.
+    /// </summary>
+    private static Dictionary<string, object?> ToArguments(JsonObject args)
+    {
+        var dict = new Dictionary<string, object?>(StringComparer.Ordinal);
+        foreach (var (key, value) in args)
+        {
+            var json = NormalizeNumbers(value)?.ToJsonString(Json.Options) ?? "null";
+            dict[key] = JsonSerializer.Deserialize<JsonElement>(json);
+        }
+        return dict;
+    }
+
+    private static JsonNode? NormalizeNumbers(JsonNode? node)
+    {
+        switch (node)
+        {
+            case JsonObject o:
+                var mapped = new JsonObject();
+                foreach (var (k, v) in o) mapped[k] = NormalizeNumbers(v);
+                return mapped;
+
+            case JsonArray a:
+                return new JsonArray([.. a.Select(NormalizeNumbers)]);
+
+            case JsonValue v when v.TryGetValue<double>(out var d)
+                                  && double.IsInteger(d) && Math.Abs(d) <= 9007199254740992d:
+                return JsonValue.Create((long)d);
+
+            default:
+                return node?.DeepClone();
+        }
+    }
+
+    private static string? AsText(JsonNode? node)
+        => node is JsonValue v && v.TryGetValue<string>(out var s) ? s : null;
+
+    private static bool? AsBool(JsonNode? node)
+        => node is JsonValue v && v.TryGetValue<bool>(out var b) ? b : null;
+
+    private static int? AsInt(JsonNode? node)
+        => node is JsonValue v && v.TryGetValue<double>(out var d) ? (int)d : null;
 
     // ── Terminal yardımcısı ──────────────────────────────────────────────────
 
     public async Task<string> SendAsync(string userText, IAgentSink sink, CancellationToken ct = default)
     {
-        _terminalHistory.Add(new JsonObject { ["role"] = "user", ["content"] = userText });
+        _terminalHistory.Add(new JsonObject
+        {
+            ["role"] = "user",
+            ["parts"] = new JsonArray(new JsonObject { ["text"] = userText }),
+        });
+
         await RunTurnAsync(_terminalHistory, sink, ct);
 
-        // Son asistan mesajının metin blokları.
-        var last = _terminalHistory.LastOrDefault(m =>
-            m?["role"]?.GetValue<string>() == "assistant") as JsonObject;
+        // Son model mesajının metin parçaları.
+        var last = _terminalHistory.LastOrDefault(m => AsText(m?["role"]) == "model") as JsonObject;
 
-        return string.Concat((last?["content"] as JsonArray ?? [])
-            .Select(b => b!.AsObject())
-            .Where(b => b["type"]?.GetValue<string>() == "text")
-            .Select(b => b["text"]?.GetValue<string>() ?? ""));
+        return string.Concat((last?["parts"] as JsonArray ?? [])
+            .Select(p => AsText(p?["text"]))
+            .OfType<string>());
     }
 
     public void Reset() => _terminalHistory.Clear();
 
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
     {
         _client?.Dispose();
-        await _session.DisposeAsync();
+        return _session.DisposeAsync();
     }
 }
 

@@ -21,8 +21,109 @@ uv run xurrent-mcp --wizard
 | `uv run xurrent-mcp` | **stdio MCP sunucusu** (varsayılan). `.mcp.json` bunu bekler | gerekmez |
 | `uv run xurrent-mcp --http` | Streamable HTTP MCP sunucusu (`MCP_HTTP_PORT`, `/mcp`) | gerekmez |
 | `uv run xurrent-mcp --wizard` | Sihirbaz — `docs/wizard/steps.json`'ı yürütür, LLM kullanmaz | gerekmez |
-| `uv run xurrent-mcp --chat` | Terminal chatbot | `ANTHROPIC_API_KEY` |
-| `uv run xurrent-mcp --web` | Web arayüzü (`WEB_PORT`, `clients/web` servis edilir) | `ANTHROPIC_API_KEY` |
+| `uv run xurrent-mcp --chat` | Terminal chatbot | `GEMINI_API_KEY` |
+| `uv run xurrent-mcp --web` | Web arayüzü (`WEB_PORT`, `clients/web` servis edilir) | `GEMINI_API_KEY` |
+
+## LLM sağlayıcısı: Gemini (tek sağlayıcı)
+
+Chatbot ve web sohbeti **Google Gemini** kullanır. Anthropic kodu, bağımlılığı ve
+env değişkenleri **kaldırılmıştır**.
+
+| Değişken | Varsayılan | Ne yapar |
+|---|---|---|
+| `GEMINI_API_KEY` | *(boş)* | Chatbot/web için gerekir. MCP sunucusu için **gerekmez** — LLM'i host uygulama sağlar |
+| `GEMINI_MODEL` | `gemini-3.6-flash` | Model kimliği |
+| `GEMINI_BASE_URL` | `https://generativelanguage.googleapis.com` | Uç nokta kökü. Sahte sunucuya yönlendirmek için değiştirilir |
+
+**Neden `gemini-3.6-flash`:** [ai.google.dev/gemini-api/docs/models](https://ai.google.dev/gemini-api/docs/models)
+listesinde **Stable** işaretli en güncel flash modelidir ve "agentic" görevler
+için önerilen dengeli seçenektir. Preview modeller (ör. `gemini-3-flash-preview`)
+2 hafta ihbarla kaldırılabildiği için ders materyalinde kullanılmaz.
+
+**SDK yok, düz `httpx`.** `generateContent` tek bir POST'tur; `httpx` zaten
+Xurrent GraphQL için bağımlılık listesinde. Wire formatının görünür kalması
+bilinçli bir ders tercihidir.
+
+```
+POST {GEMINI_BASE_URL}/v1beta/models/{model}:generateContent
+x-goog-api-key: <anahtar>
+```
+
+> ⚠️ **Anahtar URL'e KOYULMAZ.** Query string ters vekil, CDN ve erişim
+> loglarına düşer; bir kez düştü mü anahtar sızmış sayılır. `config.warnings()`
+> `GEMINI_BASE_URL` içinde `key=` görürse uyarır.
+
+### Gemini'nin Anthropic'ten ayrıldığı dört nokta
+
+| | Anthropic Messages | Gemini `generateContent` |
+|---|---|---|
+| Sistem mesajı | `system` parametresi | ayrı `systemInstruction` alanı — `contents` içine **konmaz**, `"system"` diye bir rol **yoktur** |
+| Roller | `user` / `assistant` | `user` / **`model`** |
+| Tool sonucu | `tool_result` bloğu, `user` mesajında | `functionResponse` parçası, yine **`user`** rolünde; `response` bir **obje** olmalı |
+| Eşleştirme | `tool_use_id` | `functionResponse.id` = `functionCall.id` — **aynı olmak zorunda**, yoksa API eşleştiremez |
+
+Model bir `functionCall` için `id` üretmediyse (tek çağrıda sık olur) biz de `id`
+**göndermeyiz**; uydurulmuş bir id eşleşmeyi bozar.
+
+### ★ Şema çevirisi — asıl mühendislik problemi
+
+MCP `inputSchema` **tam JSON Schema 2020-12**'dir (2026-07-28 revizyonu bunu
+bilerek gevşetti). Gemini `functionDeclarations.parameters` ise OpenAPI
+şemasının **dar bir alt kümesini** kabul eder:
+
+```
+type · properties · required · description · enum · items
+$defs -> defs   ve   $ref -> ref     ← dolar işareti YOK
+ref yalnızca defs'in DOĞRUDAN çocuğunu gösterebilir; dış referans yok
+defs yalnızca KÖK seviyede; azami iç içe derinlik 32
+```
+
+Aradaki çevirici `src/xurrent_mcp/llm/schema.py`'dedir. **Saf bir fonksiyondur**
+(girdiyi değiştirmez, I/O yapmaz) ve **ne attığını kaydeder**. Rapor açılışta
+stderr'e basılır — bu bir ders artifaktıdır:
+
+```
+Sema cevirisi (MCP JSON Schema 2020-12 -> Gemini OpenAPI alt kumesi): 8 tool, 35 anahtar atildi.
+  calendar_list_today: 7 anahtar atildi -> additionalProperties, default, pattern
+  xurrent_list_open_work: 7 anahtar atildi -> additionalProperties, default, maximum, minimum
+  ...
+  Toplam dagilim: defaultx19, additionalPropertiesx8, patternx3, maxItemsx1,
+                  maxLengthx1, maximumx1, minItemsx1, minimumx1
+```
+
+İki incelik:
+
+- **`default` kaybolmaz** — description'a metin olarak eklenir
+  (`"Person node ID veya '$me'. Varsayilan: '$me'."`). Gemini şemasında `default`
+  alanı yok; modelin "boş bırakırsam ne olur" bilgisini taşıyacak tek yer burası.
+- **Tipsiz `enum`'a `type: "string"` eklenir.** Sözleşmede `{"enum": [...]}` biçimi
+  bol; Gemini enum'u tip olmadan değerlendiremez.
+- **Parametresiz tool'da `parameters` hiç gönderilmez.** Boş bir
+  `{"type":"object","properties":{}}` bazı sürümlerde `INVALID_ARGUMENT` verir.
+
+Birim testi: `tests/test_schema.py` — 8 tool'un hepsinin çevrildiğini ve atılan
+anahtarların listelenebildiğini doğrular.
+
+```bash
+uv run pytest tests/test_schema.py -q      # 16 passed
+uv run python tests/test_schema.py         # pytest'siz düz assert koşucusu
+```
+
+### API anahtarsız uçtan uca test
+
+`tools/fake-gemini` Gemini wire formatını taklit eder. Model **değildir** —
+doğru şekilli bir `candidates[].content.parts[]` döndürür; tool döngüsünü, şema
+çevirisini ve id eşleşmesini test eder.
+
+```bash
+node tools/fake-gemini/server.mjs --mod otomatik --port 5102
+
+GEMINI_BASE_URL=http://127.0.0.1:5102 GEMINI_API_KEY=sahte \
+  uv run xurrent-mcp --chat
+```
+
+`GEMINI_BASE_URL` varsayılandan farklıysa `config.warnings()` bunu açıkça söyler
+— "gerçek Gemini'ye değil, bu adrese istek gidiyor".
 
 ## ⚠️ MCP sürüm kararı: `mcp==2.0.0` (1.x'e DÜŞÜLMEDİ)
 
@@ -147,11 +248,20 @@ src/xurrent_mcp/
     __init__.py          8 tool'un sözleşmesi ve kayıt defteri
     read_tools.py  write_tools.py  calendar_tools.py  matching.py  runtime.py
   server.py              MCP server kurulumu; ctx.protocol_version'a göre v1/v2 seçimi
-  agent.py               Anthropic tool loop + Türkçe sistem promptu
-  web.py                 statik clients/web + /api/chat + /api/tool
+  llm/                   ★ TEK SAĞLAYICI: Gemini
+    gemini.py            generateContent wire formatı (httpx, SDK yok)
+    schema.py            ★ JSON Schema 2020-12 -> Gemini OpenAPI alt kümesi çevirisi (saf)
+  agent.py               Gemini tool loop + Türkçe sistem promptu
+  web.py                 statik clients/web + /api/config + /api/chat + /api/tool
   wizard.py              docs/wizard/steps.json yürütücü (PASS/FAIL/SKIP)
   __main__.py            CLI
+tests/
+  test_schema.py         şema çevirisi birim testleri (pytest veya düz koşucu)
 ```
+
+Sunucunun geri kalanı `llm/` paketine bağımlı **değildir**: tool uygulamaları
+LLM'den hiç haberdar değildir, `llm/` yalnızca `agent.py` tarafından kullanılır.
+Sağlayıcı değişimi bu yüzden tek bir dizine dokunarak yapılabildi.
 
 `core/toolimpl` onay gerektiğinde `ConfirmationRequired` döner ve **nasıl
 sorulacağını bilmez**. Aynı iş mantığı, iki farklı protokol kabuğu.
