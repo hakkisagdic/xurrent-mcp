@@ -1,0 +1,20 @@
+{
+  "name": "xurrent-mcp-atolye",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "xurrent-mcp atölyesi — bu projenin NASIL üretildiğini adım adım gösterir ve --insa ile gerçekten kurar. Sihirbazdan (clients/wizard) farkı: sihirbaz uygulamanın NE YAPTIĞINI, atölye NASIL ÜRETİLDİĞİNİ öğretir.",
+  "bin": {
+    "xurrent-atolye": "./atolye.mjs"
+  },
+  "scripts": {
+    "atolye": "node atolye.mjs",
+    "atolye:auto": "node atolye.mjs --auto",
+    "dogrula": "node atolye.mjs --dogrula",
+    "liste": "node atolye.mjs --liste",
+    "check": "node --check atolye.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

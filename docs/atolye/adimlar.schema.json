@@ -1,0 +1,139 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/hakkisagdic/xurrent-mcp/docs/atolye/adimlar.schema.json",
+  "title": "Atölye — sıfırdan geliştirme akışı",
+  "description": "clients/atolye/atolye.mjs bu dosyayı yürütür. Sihirbaz (docs/wizard/steps.json) uygulamanın NE YAPTIĞINI öğretir; atölye NASIL ÜRETİLDİĞİNİ öğretir. İkisi kasıtlı olarak benzer yapıdadır — aynı projede iki farklı şema kafa karıştırır.",
+
+  "type": "object",
+  "required": ["version", "title", "fazlar", "adimlar"],
+  "additionalProperties": false,
+
+  "properties": {
+    "$schema": { "type": "string", "description": "Editör desteği için; veri değildir." },
+    "version": { "type": "string" },
+    "title": { "type": "string" },
+    "subtitle": { "type": "string" },
+    "tahminiDakika": { "type": "integer", "minimum": 1 },
+
+    "fazlar": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "baslik"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z0-9-]+$" },
+          "baslik": { "type": "string" },
+          "ozet": { "type": "string" }
+        }
+      }
+    },
+
+    "adimlar": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/Adim" }
+    }
+  },
+
+  "$defs": {
+    "Adim": {
+      "type": "object",
+      "required": ["id", "faz", "baslik", "anlat", "ogrenim"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[0-9]{2}-[a-z0-9-]+$",
+          "description": "Sıralı ve okunur: 01-kesif, 02-sozlesme ..."
+        },
+        "faz": { "type": "string", "description": "fazlar[].id değerlerinden biri" },
+        "baslik": { "type": "string" },
+
+        "anlat": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string" },
+          "description": "Adımın hikâyesi. Her eleman bir paragraf; ekranda sarılarak basılır."
+        },
+
+        "prompt": {
+          "type": ["string", "null"],
+          "description": "★ Bu adımda AI'a GERÇEKTEN verilen prompt. Kopyalanabilir olmalı — dersin asıl malzemesi bu. Prompt'suz adımlar (saf insan kararı) için null."
+        },
+
+        "karar": {
+          "type": ["object", "null"],
+          "required": ["soru", "secenekler", "secilen", "neden"],
+          "additionalProperties": false,
+          "description": "İnsanın verdiği karar. Seçilmeyen şıklar da gösterilir — mühendislik takas demektir.",
+          "properties": {
+            "soru": { "type": "string" },
+            "secenekler": {
+              "type": "array",
+              "minItems": 2,
+              "items": {
+                "type": "object",
+                "required": ["etiket"],
+                "additionalProperties": false,
+                "properties": {
+                  "etiket": { "type": "string" },
+                  "artisi": { "type": "string" },
+                  "eksisi": { "type": "string" }
+                }
+              }
+            },
+            "secilen": { "type": "string", "description": "secenekler[].etiket değerlerinden biri" },
+            "neden": { "type": "string" }
+          }
+        },
+
+        "uretilenDosyalar": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "★ Repo köküne GÖRELİ yollar. İçerik BURAYA KOPYALANMAZ — atolye.mjs dosyaları repodan okur. Böylece kod değişince kılavuz bayatlamaz. Glob desteklenir: 'servers/typescript/src/xurrent/*.ts'"
+        },
+
+        "dogrulama": {
+          "type": ["object", "null"],
+          "required": ["komut", "beklenen"],
+          "additionalProperties": false,
+          "description": "--insa modunda GERÇEKTEN çalıştırılır. Geçmezse adım FAIL'dir.",
+          "properties": {
+            "komut": { "type": "string" },
+            "calismaDizini": {
+              "enum": ["repo", "hedef"],
+              "default": "repo",
+              "description": "★ Komut NEREDE koşacak? 'repo' = bu deponun kökü (varsayılan; entegrasyon komutları için — sihirbaz, verify-contract, npm build hepsi tam depo ister). 'hedef' = --insa ile inşa edilen dizin (o adıma kadar KOPYALANMIŞ dosyalarla kendi kendine yeten kontroller için). Bu ayrım emirle değil beyanla çözülür: her adım kendi komutunun neye ihtiyaç duyduğunu bilir. 'hedef' seçen adımlar --insa modunun gerçekten inşa edileni doğruladığının kanıtıdır."
+            },
+            "beklenen": { "type": "string", "description": "Çıktıda aranan metin veya insan-okunur beklenti" },
+            "cikisKodu": { "type": "integer", "default": 0 },
+            "atlanabilir": {
+              "type": "boolean",
+              "default": false,
+              "description": "true ise ön koşul yoksa SKIP (FAIL değil) — örn. ANTHROPIC_API_KEY isteyen adımlar"
+            }
+          }
+        },
+
+        "ogrenim": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string" },
+          "description": "★ 'Burada ne öğrendik'. Adımın varlık sebebi. Genellenebilir olmalı — sadece bu projeye değil, okuyucunun kendi projesine de uygulanabilsin."
+        },
+
+        "tuzak": {
+          "type": ["string", "null"],
+          "description": "Bu adımda gerçekten düşülen veya kıl payı kaçınılan hata. Varsa yaz — dersin en değerli kısmı burası."
+        },
+
+        "docs": {
+          "type": ["string", "null"],
+          "description": "İlgili anlatım notu, repo köküne göreli"
+        }
+      }
+    }
+  }
+}

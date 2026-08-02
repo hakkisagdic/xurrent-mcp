@@ -215,7 +215,28 @@ OAuth akışını üç kez implemente etmek yerine token yenilemeyi düz bir HTT
 | [07 — Sihirbaz](docs/07-sihirbaz.md) | `steps.json`, ders akışı, `expect` blokları |
 | [08 — Riskler ve SSS](docs/08-riskler-ve-sss.md) | Bilinen tuzaklar, `DOĞRULANMALI` listesi |
 | [09 — Protokol geçişi](docs/09-protokol-gecisi.md) | ★ `2026-07-28`, MRTR, `requestState`, ölçüm |
+| [10 — Sıfırdan geliştirme](docs/10-sifirdan-gelistirme.md) | ★ Bu proje nasıl üretildi — prompt'lar, kararlar, tuzaklar |
 | [Demo senaryosu](docs/demo/senaryo.md) | Sunumda adım adım ne yapılacak |
+
+---
+
+## Atölye — projeyi sıfırdan yeniden üret
+
+Sihirbaz uygulamanın **ne yaptığını** öğretir. Atölye **nasıl üretildiğini**.
+
+```bash
+node clients/atolye/atolye.mjs                          # anlat: 16 adım, prompt'lar ve kararlar
+node clients/atolye/atolye.mjs --insa ~/atolye-denemem  # gerçekten inşa et ve doğrula
+node clients/atolye/atolye.mjs --adim 05                # tek adım
+```
+
+Her adımda o adımda AI'a verilen **gerçek prompt**, insanın verdiği **karar** (seçilmeyen
+şıklarla birlikte), üretilen dosyalar ve çalıştırılan **doğrulama komutu** var.
+`--insa` dosyaları repodan hedef dizine kopyalar ve doğrulamaları gerçekten koşturur —
+sonunda çalışan bir kopya ve sırayı bilen bir öğrenci kalır.
+
+Anlatılan hikâye uydurma değil: bu repo tam olarak öyle üretildi. Yanlış çıkan mimari
+kararlar, kaçırılan kusurlar ve iki yanlış alarm dahil.
 
 ---
 
