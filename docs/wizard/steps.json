@@ -1,0 +1,460 @@
+{
+  "$schema": "./steps.schema.json",
+  "version": "1.0.0",
+  "title": "xurrent-mcp — AI destekli geliştirme dersi",
+  "subtitle": "Bir MCP sunucusu ve chatbot'u sıfırdan anlamak",
+  "estimatedMinutes": 45,
+
+  "_howItWorks": "Sihirbaz bir MCP CLIENT'tır. --server ts|py|cs ile üç sunucudan herhangi birine bağlanır ve aşağıdaki adımları sırayla yürütür. Her adımda önce anlatır, sonra GERÇEK bir tool çağrısı yapar, sonra çıktıyı yorumlar. Ders boyunca hiçbir çıktı önceden yazılmamıştır — hepsi canlı üretilir.",
+
+  "chapters": [
+    { "id": "giris", "title": "Giriş: problem ve protokol" },
+    { "id": "okuma", "title": "Okuma tool'ları: veriyi görmek" },
+    { "id": "kisit", "title": "Kısıtı keşfetmek" },
+    { "id": "yazma", "title": "Yazma: dry-run, onay, strateji" },
+    { "id": "takvim", "title": "Takvim: gerçek dünyanın dağınıklığı" },
+    { "id": "protokol", "title": "Protokol değişti: breaking change'i yaşamak" },
+    { "id": "kapanis", "title": "Kapanış: protokol vaadi" }
+  ],
+
+  "steps": [
+    {
+      "id": "01-neden-mcp",
+      "chapter": "giris",
+      "title": "Neden MCP? Neden düz bir API istemcisi değil?",
+      "narrate": [
+        "Elimizde somut bir iş var: bir kişinin Xurrent'taki açık taleplerini listelemek, kullanıcıdan süre almak ve bunları zaman girişi olarak kaydetmek. Ayrıca günün takvimini okuyup her toplantıyı zaman girişine çevirmek.",
+        "Bunu düz kodla da yazabilirdik. Peki neden MCP?",
+        "Çünkü asıl zorluk API çağrısı yapmak değil — MÜZAKERE. Kullanıcı 'dün 2 saat VPN işine baktım' diyor. Hangi ticket? Süre yuvarlanacak mı? Dünkü tarih kabul edilir mi? Bu bir diyalog, tek atışlık bir istek değil.",
+        "MCP tam olarak bunu çözer: sen yetenekleri (tool) tanımlarsın, LLM diyaloğu yürütür. Ve kritik olan şu — aynı sunucu Claude Code'a da, kendi yazdığın chatbot'a da, bu sihirbaza da takılır. Bir kez yaz, her yerde kullan.",
+        "Bu dersin tezi: MCP bir PROTOKOLDÜR, dil seçimi bir detaydır. Şimdi bunu kanıtlayacağız."
+      ],
+      "callTool": null,
+      "prompt": "Bu sihirbaz şu anda hangi sunucuya bağlı? (--server parametresine bak)",
+      "reveal": [
+        "Bağlı olduğun sunucu TypeScript, Python veya C# olabilir. Ders bitene kadar HİÇBİR adım değişmeyecek.",
+        "Aynı steps.json, aynı tool adları, aynı çıktılar. Dil, protokolün altında kalır."
+      ],
+      "docs": "docs/00-genel-bakis.md"
+    },
+
+    {
+      "id": "02-tools-list",
+      "chapter": "giris",
+      "title": "Sunucu ne yapabildiğini söyler: tools/list",
+      "narrate": [
+        "MCP'de her şey 'tools/list' ile başlar. Client sorar, sunucu yeteneklerini JSON Schema ile bildirir.",
+        "LLM'in tool'ları nasıl kullanacağını öğrenmesinin TEK yolu bu açıklamalardır. Kötü yazılmış bir description = yanlış kullanılan bir tool.",
+        "Bu sihirbaz buraya gelmeden önce sunucuyla protokol sürümünü pazarlıktan geçirdi. Nasıl yaptığını 12. adımda göreceğiz — orada işin rengi değişiyor.",
+        "Aşağıda gerçek tools/list çıktısını göreceksin."
+      ],
+      "listTools": true,
+      "expect": [
+        { "check": "toolCount", "equals": 8, "explain": "Sözleşmede 8 tool var: 4 okuma, 2 yazma, 1 takvim, 1 önizleme." }
+      ],
+      "reveal": [
+        "Dikkat et: yazma tool'larında 'readOnlyHint: false' var. Claude Code bu ipucunu izin isterken kullanır.",
+        "plan_time_entries_from_calendar 'readOnlyHint: true' — YAPISAL olarak yazamayan bir tool. Bu, dry-run'ın en güçlü katmanı."
+      ],
+      "docs": "docs/03-mcp-tasarimi.md"
+    },
+
+    {
+      "id": "03-whoami",
+      "chapter": "okuma",
+      "title": "Bağlantı smoke test'i: whoami",
+      "narrate": [
+        "Her entegrasyonun ilk sorusu aynıdır: 'ben kimim ve nereye bağlıyım?'",
+        "Xurrent'ta bu tek bir GraphQL sorgusuyla cevaplanır ve maliyeti 1 puandır. Aynı sorgu rate limit durumunu da döner — bağlantıyı doğrulamanın en ucuz yolu."
+      ],
+      "callTool": { "name": "xurrent_whoami", "args": {} },
+      "expect": [
+        { "path": "mode", "equals": "mock", "explain": "Mock modda çalışıyoruz — token yok, internet yok, fixtures/ klasöründen okunuyor." },
+        { "path": "person.name", "exists": true, "explain": "Authenticated user çözüldü." }
+      ],
+      "reveal": [
+        "person.id değerine bak: opak bir base64 string. Bu Xurrent'ın GraphQL global node ID'sidir.",
+        "KURAL: Bu ID'ler ASLA elle üretilmez veya tahmin edilmez. Her ID bir tool çıktısından gelmek zorundadır. Chatbot'un sistem promptunda bu madde ayrıca yazılıdır."
+      ],
+      "docs": "docs/01-xurrent-api.md#kimlik"
+    },
+
+    {
+      "id": "04-acik-isler",
+      "chapter": "okuma",
+      "title": "İSTER #1: Açık talepleri listele",
+      "narrate": [
+        "İlk isterimiz: 'İlgili kişinin üzerindeki açık görevleri/talepleri listeleyecek, id ve açıklama ile.'",
+        "Xurrent'ta iki ayrı kayıt tipi var: Request (talep) ve Task (görev). İkisini de çekmemiz gerekiyor.",
+        "Burada üç tuzak var ve üçü de SESSİZ hata üretir — yani yanlış yaparsan hata almazsın, sadece eksik veri alırsın. En kötü hata türü."
+      ],
+      "callTool": { "name": "xurrent_list_open_work", "args": { "personId": "$me" } },
+      "expect": [
+        { "path": "requests.totalCount", "equals": 3, "explain": "3 açık Request. 4. kayıt (70120) 'completed' olduğu için elendi." },
+        { "path": "tasks.totalCount", "equals": 3, "explain": "3 açık Task. 4. kayıt (4390) 'approved' olduğu için elendi — 'completed' DEĞİL." }
+      ],
+      "reveal": [
+        "TUZAK 1 — Filtre asimetrisi: RequestFilter'da atanan kişi alanı 'member', TaskFilter'da 'assignee'. TaskFilter'da 'member' YOKTUR. Karıştırırsan boş liste alırsın, hata almazsın.",
+        "TUZAK 2 — view varsayılanı 'current_account'tur. 'all' geçmezsen kişinin diğer hesaplardaki işleri görünmez.",
+        "TUZAK 3 — Task'ta BEŞ terminal durum var: completed, approved, failed, rejected, canceled. Sadece 'completed'ı elemek yetmez. Yukarıdaki 4390 kaydı tam olarak bunu kanıtlıyor: durumu 'approved', yani kapalı — ama naif bir filtre onu açık sanardı."
+      ],
+      "quiz": {
+        "question": "Task listesini çekerken filtrede 'member' alanını kullansaydık ne olurdu?",
+        "options": [
+          "GraphQL hatası alırdık, hemen fark ederdik",
+          "Boş liste dönerdi, hata almazdık",
+          "Tüm task'lar dönerdi, filtre yok sayılırdı"
+        ],
+        "answer": 1,
+        "explain": "TaskFilter'da 'member' alanı tanımlı olmadığı için sunucu şema hatası verir — ama pratikte çoğu client bunu yakalamaz ve geliştirici 'bu kişinin task'ı yokmuş' sanır. Sessiz hatalar bu yüzden tehlikelidir."
+      },
+      "docs": "docs/01-xurrent-api.md#acik-isler"
+    },
+
+    {
+      "id": "05-zaman-baglami",
+      "chapter": "kisit",
+      "title": "Yazmadan önce: timeIncrement'i bilmiyorsan yazamazsın",
+      "narrate": [
+        "Şimdi zaman yazmaya hazırlanıyoruz. Ama önce bir şey öğrenmemiz gerek.",
+        "Xurrent'ta timesheet ayarları ORGANİZASYONA bağlıdır ve 'timeIncrement' diye bir alan vardır: zaman girişinin hem minimumu hem adımı.",
+        "Varsayılanı 60'tır. Yani varsayılan yapılandırmalı bir hesapta 45 dakikalık bir giriş REDDEDİLİR.",
+        "Bu, Xurrent entegrasyonlarındaki en yaygın sessiz hatadır. Bu yüzden bu tool'u her yazmadan önce çalıştırıyoruz."
+      ],
+      "callTool": { "name": "xurrent_get_time_tracking_context", "args": { "personId": "$me" } },
+      "expect": [
+        { "path": "timeIncrement", "equals": 30, "explain": "Bu demo hesabında 30 dakika. Yani 45 dakikalık toplantı olduğu gibi yazılamaz." },
+        { "path": "effortClasses.length", "equals": 3, "explain": "4 effort class var ama biri disabled — client tarafında elendi." }
+      ],
+      "reveal": [
+        "effortClasses'ta 3 kayıt var, fixture'da 4 tane. Eksik olan 'Eski tarife' — disabled=true.",
+        "Neden client tarafında eledik? Çünkü EffortClassFilter'da 'disabled' diye bir filtre YOK. Sunucu bunu filtreleyemiyor.",
+        "allowWorkdayOvertime=false olduğuna da dikkat et: günlük 480 dakikayı aşan yazma reddedilecek."
+      ],
+      "docs": "docs/02-zaman-girisi-modeli.md#timeincrement"
+    },
+
+    {
+      "id": "06-iki-yol",
+      "chapter": "kisit",
+      "title": "★ Dersin kalbi: aynı işi yapan iki mutation, farklı yetenekler",
+      "narrate": [
+        "Şimdi bu projenin en önemli bulgusuna geliyoruz.",
+        "İsterimiz şunu söylüyor: 'Bu girişleri, ilgili kişi ve görev için kaydedecek' ve 'başlangıç saati ile, tarih T veya T-1 olabilir'.",
+        "Yani: ticket'a bağlı + başlangıç saatli + dünkü tarihli bir zaman girişi.",
+        "Xurrent API'sinde bunu TEK BİR MUTATION İLE YAPMAK MÜMKÜN DEĞİL.",
+        "TimeEntryCreateInput'un 17 alanı var. requestId, taskId, assignmentId — hiçbiri yok. Yani timeEntryCreate bir ticket'a bağlanamaz.",
+        "Ticket'a bağlamanın tek yolu requestUpdate/taskUpdate mutation'ına timeSpent alanı göndermek. Ama o yolda date'i sunucu 'bugün' yapar, person'ı authenticated user yapar.",
+        "İki yol var, ikisi de tek başına isteri karşılamıyor."
+      ],
+      "callTool": null,
+      "table": {
+        "headers": ["", "Yol A: timeEntryCreate", "Yol B: requestUpdate/taskUpdate"],
+        "rows": [
+          ["Ticket'a bağlar mı?", "HAYIR — assignment=null", "EVET — tek yol"],
+          ["date (T-1) kontrolü", "VAR", "YOK — sunucu 'bugün' atar"],
+          ["startedAt (başlangıç saati)", "VAR", "YOK"],
+          ["personId (başkası adına)", "VAR", "YOK — authenticated user"],
+          ["İstek sayısı", "1", "1"]
+        ]
+      },
+      "reveal": [
+        "Peki çözüm? timeEntryUpdate mutation'ının input'una bak: date, startedAt, personId VAR — ama assignment YOK.",
+        "Assignment alanı olmadığı için, mevcut bir entry'yi güncellemek ticket bağını BOZMAZ.",
+        "İşte 'two_step' stratejisi buradan doğuyor: önce Yol B ile ticket'a bağlı entry oluştur, sonra timeEntryUpdate ile tarihi ve saati düzelt. Kısıtı avantaja çeviren nokta tam olarak bu."
+      ],
+      "quiz": {
+        "question": "timeEntryUpdate ile bir entry'nin tarihini değiştirdiğimizde ticket bağı neden bozulmaz?",
+        "options": [
+          "Xurrent bağı otomatik korur",
+          "TimeEntryUpdateInput'ta assignment alanı olmadığı için o alana dokunulmaz",
+          "İki mutation'ı transaction içinde çalıştırdığımız için"
+        ],
+        "answer": 1,
+        "explain": "Bir alan input şemasında yoksa, o alan güncellenemez — dolayısıyla mevcut değeri korunur. Kısıtın kendisi bize garantiyi veriyor. (Ve hayır, transaction yok: GraphQL istek başına 1 mutation kabul eder, iki adım atomik DEĞİLDİR.)"
+      },
+      "docs": "docs/02-zaman-girisi-modeli.md#iki-yol"
+    },
+
+    {
+      "id": "07-dry-run",
+      "chapter": "yazma",
+      "title": "Önce plan, sonra yazma: dry-run",
+      "narrate": [
+        "Xurrent bir system of record'dur. Yanlış yazılan bir zaman girişi faturalamaya kadar gider.",
+        "Bu yüzden her yazma tool'unun dryRun parametresi var: hiçbir mutation HTTP'ye çıkmaz, sadece 'ne gönderilecekti' döner.",
+        "Şimdi dünkü bir çalışmayı Request #70248'e yazmayı PLANLAYALIM — ama yazmayalım."
+      ],
+      "callTool": {
+        "name": "xurrent_create_time_entry",
+        "args": {
+          "targetType": "request",
+          "targetId": "TW9jay9SZXF1ZXN0LzcwMjQ4",
+          "minutes": 120,
+          "date": "{{yesterday}}",
+          "startedAt": "{{yesterday}}T14:00:00{{tzOffset}}",
+          "description": "Index calismasi",
+          "dryRun": true
+        }
+      },
+      "expect": [
+        { "path": "dryRun", "equals": true, "explain": "Hiçbir şey yazılmadı." },
+        { "path": "planned.length", "equals": 2, "explain": "two_step stratejisi 2 mutation planladı: requestUpdate + timeEntryUpdate." }
+      ],
+      "reveal": [
+        "planned dizisindeki iki adıma dikkat et. 1/2 requestUpdate, 2/2 timeEntryUpdate.",
+        "Her adımın 'mutation' alanında gönderilecek GraphQL metni birebir duruyor. Öğrenciye 'ne olacağını' anlatmak yerine GÖSTERİYORUZ.",
+        "warnings dizisinde 'atomik değildir' uyarısı var — 1. adım başarılı olup 2. adım başarısız olabilir. Bu gerçek bir risk ve saklanmıyor."
+      ],
+      "docs": "docs/03-mcp-tasarimi.md#dry-run"
+    },
+
+    {
+      "id": "08-strateji-karsilastirma",
+      "chapter": "yazma",
+      "title": "Üç strateji, yan yana",
+      "narrate": [
+        "Aynı isteği üç farklı stratejiyle planlayalım ve neyin feda edildiğini görelim.",
+        "Bu, mimari kararların 'doğru/yanlış' değil 'takas' olduğunu gösteren en net örnek."
+      ],
+      "callToolSequence": [
+        {
+          "label": "two_step",
+          "name": "xurrent_create_time_entry",
+          "args": { "targetType": "request", "targetId": "TW9jay9SZXF1ZXN0LzcwMjQ4", "minutes": 120, "date": "{{yesterday}}", "backdateStrategy": "two_step", "dryRun": true }
+        },
+        {
+          "label": "link_first",
+          "name": "xurrent_create_time_entry",
+          "args": { "targetType": "request", "targetId": "TW9jay9SZXF1ZXN0LzcwMjQ4", "minutes": 120, "date": "{{yesterday}}", "backdateStrategy": "link_first", "dryRun": true }
+        },
+        {
+          "label": "date_first",
+          "name": "xurrent_create_time_entry",
+          "args": { "targetType": "request", "targetId": "TW9jay9SZXF1ZXN0LzcwMjQ4", "minutes": 120, "date": "{{yesterday}}", "backdateStrategy": "date_first", "dryRun": true }
+        }
+      ],
+      "reveal": [
+        "two_step: 2 mutation. Her şeyi korur, atomik değildir.",
+        "link_first: 1 mutation. Ticket bağı var, ama warnings'te 'tarih bugün olacak, T-1 KARŞILANAMADI' uyarısı var.",
+        "date_first: 1 mutation. Tarih ve saat doğru, ama warnings'te 'kayıt ticket'a BAĞLANMAYACAK' uyarısı var — hedef otomatik olarak varsayılan TimeAllocation'a çevrildi.",
+        "Hiçbiri 'doğru cevap' değil. Hangisinin doğru olduğunu SENİN raporlama ihtiyacın belirler."
+      ],
+      "quiz": {
+        "question": "Yönetim 'her ticket'a ne kadar zaman harcandı' raporunu istiyor. Hangi strateji UYGUN DEĞİL?",
+        "options": ["two_step", "link_first", "date_first"],
+        "answer": 2,
+        "explain": "date_first entry'yi ticket'a bağlamaz (assignment=null). Ticket bazlı raporda bu kayıtlar hiç görünmez. Tarih doğruluğu uğruna raporlamayı kaybetmiş olursun."
+      },
+      "docs": "docs/02-zaman-girisi-modeli.md#stratejiler"
+    },
+
+    {
+      "id": "09-takvim-oku",
+      "chapter": "takvim",
+      "title": "İSTER #4: Takvimi oku — ve gerçek dünyanın dağınıklığıyla tanış",
+      "narrate": [
+        "Son isterimiz: 'Kişinin o günkü takvimini okuyacak, her bir toplantıyı zaman girişi olarak ekleyecek.'",
+        "'Her bir toplantı' cümlesi masumca duruyor. Değil.",
+        "Takviminde doğum günü var. Öğle arası var. Reddettiğin bir retro var. İki toplantı çakışıyor. Biri 45 dakika ve senin hesabın 30'un katlarını kabul ediyor.",
+        "Ham veriyi çekmek kolay; ANLAMLI veriye çevirmek asıl iş."
+      ],
+      "callTool": { "name": "calendar_list_today", "args": { "provider": "mock" } },
+      "expect": [
+        { "path": "totals.rawCount", "equals": 8, "explain": "Takvimde 8 ham etkinlik var." },
+        { "path": "totals.count", "equals": 5, "explain": "Bunların 5'i gerçek toplantı." },
+        { "path": "totals.filteredOut", "equals": 3, "explain": "3 tanesi elendi ve HER BİRİ farklı bir kural öğretiyor." },
+        { "path": "totals.busyMinutes", "equals": 225, "explain": "Çakışmalar bir kez sayıldı." },
+        { "path": "totals.naiveSumMinutes", "equals": 255, "explain": "Naif toplam 30 dakika fazla — çünkü iki toplantı çakışıyor." }
+      ],
+      "reveal": [
+        "Elenen 3 etkinliğin skipReason alanına bak — her biri Türkçe gerekçesini söylüyor.",
+        "'Doğum günü' → isAllDay. Tüm gün etkinliklerinin süresi instant'lardan HESAPLANMAZ; her iki API de exclusive end date kullanır.",
+        "'Öğle arası' → free. Graph'te showAs='free', Google'da transparency='transparent'. Takvimde yer kaplar, çalışma değildir.",
+        "'Ekip retrospektifi' → declined. Reddettiğin toplantı takvimde DURMAYA devam eder; sunucu tarafında filtre yoktur.",
+        "busyMinutes (225) ile naiveSumMinutes (255) farkına dikkat: 10:00-11:00 ve 10:30-11:30 çakışıyor. Naif toplama güvenirsen 30 dakika fazla zaman yazarsın."
+      ],
+      "quiz": {
+        "question": "Google Calendar'dan tekrarlayan toplantıları çekerken en kritik parametre hangisi?",
+        "options": [
+          "orderBy='startTime'",
+          "singleEvents=true",
+          "maxResults=2500"
+        ],
+        "answer": 1,
+        "explain": "singleEvents varsayılanı FALSE'tur. true yapmazsan tekrarlayan toplantılar açılmaz — seri master'ı ham RRULE ile döner ve o günkü occurrence'ı hiç göremezsin. Ayrıca orderBy='startTime' de yalnızca singleEvents=true iken çalışır."
+      },
+      "docs": "docs/04-takvim.md"
+    },
+
+    {
+      "id": "10-plan-uret",
+      "chapter": "takvim",
+      "title": "Toplantıları zaman girişine çevir — ama otomatik değil, ÖNERİ olarak",
+      "narrate": [
+        "Şimdi takvimi açık iş listesiyle eşleştireceğiz.",
+        "Kritik tasarım kararı: bu tool ASLA yazmaz. Sadece öneri üretir. Yapısal olarak yazma yeteneği yoktur.",
+        "Neden? Çünkü eşleşme heuristiği ASLA %100 doğru olamaz. 'Standup' hangi ticket'a yazılacak? Bilemez. Sorması gerekir."
+      ],
+      "callTool": { "name": "plan_time_entries_from_calendar", "args": { "personId": "$me" } },
+      "expect": [
+        { "path": "proposals.length", "equals": 5, "explain": "5 gerçek toplantı için 5 öneri." }
+      ],
+      "reveal": [
+        "Üç eşleşme yolunu da göreceksin:",
+        "  1. 'REQ-70248 performans incelemesi' → başlıkta ticket numarası → KESİN eşleşme, matchConfidence 1.0",
+        "  2. 'Onboarding otomasyonu tasarım' → metin benzerliği → BULANIK eşleşme, düşük confidence",
+        "  3. 'Günlük standup' → hiçbiri → needsUserDecision=true",
+        "'VPN kopma sorunu kök neden' önerisine özellikle bak: hem Request #70301 hem Task #4419 ile benzeşiyor. Belirsizlik var → needsUserDecision=true. Bot tahmin etmek yerine SORMALI.",
+        "Aynı öneride bir de yuvarlama uyarısı var: 45 dakika, timeIncrement 30 → 30 veya 60'a yuvarlanmalı. Uyarı her zaman warnings'e yazılır, sessizce yuvarlanmaz."
+      ],
+      "docs": "docs/04-takvim.md#eslestirme"
+    },
+
+    {
+      "id": "11-gercek-yazma",
+      "chapter": "yazma",
+      "title": "Gerçekten yazalım — onay diyaloğuyla",
+      "narrate": [
+        "Şimdiye kadar hep dryRun kullandık. Şimdi gerçekten yazacağız (mock modda, yani güvende).",
+        "MCP'nin 'elicitation' özelliği devreye giriyor: sunucu, client üzerinden KULLANICIYA doğrudan soru sorabilir.",
+        "Bu önemli bir mimari nokta — onay diyaloğunu LLM'e bırakmıyoruz. LLM ikna edilebilir; protokol seviyesindeki onay edilemez.",
+        "Client elicitation desteklemiyorsa varsayılan politika 'fail-closed'tur: yazma reddedilir."
+      ],
+      "callTool": {
+        "name": "xurrent_create_time_entry",
+        "args": {
+          "targetType": "request",
+          "targetId": "TW9jay9SZXF1ZXN0LzcwMjQ4",
+          "minutes": 60,
+          "description": "Sihirbaz demo kaydi",
+          "dryRun": false
+        }
+      },
+      "confirmable": true,
+      "expect": [
+        { "path": "errors.length", "equals": 0, "explain": "Hata yok — kayıt oluştu." }
+      ],
+      "reveal": [
+        "Kayıt oluştu. Şimdi xurrent_list_open_work'ü tekrar çalıştırırsan Request #70248'in toplam süresinin arttığını görürsün.",
+        "HATIRLA: Yol B'de timeSpent ARTIMLIDIR. 60 gönderdik, 'toplamı 60 yap' demedik — 'üzerine 60 ekle' dedik.",
+        "Bu, entegrasyonlarda çift sayma hatalarının bir numaralı kaynağıdır."
+      ],
+      "docs": "docs/03-mcp-tasarimi.md#onay"
+    },
+
+    {
+      "id": "12-spec-degisti",
+      "chapter": "protokol",
+      "title": "★ 28 Temmuz 2026: MCP'nin altı değişti",
+      "narrate": [
+        "Bu dersi hazırlarken MCP yeni bir spesifikasyon revizyonu yayınladı: 2026-07-28. Lansmandan bu yana en büyüğü.",
+        "Ve tam olarak az önce kullandığımız onay akışını kaldırdı.",
+        "Az önceki adımda sunucu sana bir soru sordu. Eski protokolde (2025-11-25) bunu şöyle yapıyordu: işlemin ortasında client'a 'elicitation/create' diye bir İSTEK gönderiyordu. Yani sunucu, client'a istek gönderebilen bir taraftı. Bu da kalıcı çift yönlü bağlantı demekti — sunucu stateful olmak zorundaydı.",
+        "Yeni protokol stateless. initialize el sıkışması yok, session yok, sunucu-başlatmalı istek yok.",
+        "Peki kullanıcıya nasıl soruluyor? MRTR ile: Multi Round-Trip Requests."
+      ],
+      "callTool": null,
+      "table": {
+        "headers": ["", "2025-11-25 (v1)", "2026-07-28 (v2)"],
+        "rows": [
+          ["Bağlantı", "initialize el sıkışması", "yok — stateless"],
+          ["Session", "Mcp-Session-Id header", "yok"],
+          ["Keşif", "initialize sonucu", "server/discover (zorunlu RPC)"],
+          ["Kullanıcıya soru", "sunucu elicitation/create İSTEĞİ gönderir", "sunucu InputRequiredResult SONUCU döner"],
+          ["Devamı", "sunucu cevabı bekler", "client isteği YENİ id ile TEKRARLAR"],
+          ["Sunucu state'i", "bellekte", "imzalı requestState içinde, client'ta taşınır"],
+          ["Sonuç zarfı", "düz Result", "resultType zorunlu"]
+        ]
+      },
+      "reveal": [
+        "MRTR akışı: tools/call (id:1) → InputRequiredResult → [kullanıcıya sorulur] → tools/call (id:2) + inputResponses + requestState → sonuç.",
+        "İlk istek SONLANIR. Sunucu hiçbir şey hatırlamaz — ihtiyacı olan her şeyi requestState'e kodlar, client geri getirir.",
+        "Bunun bir bedeli var: requestState client'tan geçtiği için spec onu AÇIKÇA 'saldırgan kontrolündeki girdi' sayıyor.",
+        "Bizim durumumuzda o blob şunu taşıyor: 'kullanıcı, Request #70248'e 120 dakika yazmayı onayladı.' İmzalamazsan client bunu değiştirip başka ticket'a başka süre yazdırabilir.",
+        "Bu repoda requestState HMAC-SHA256 ile imzalanıyor ve içine principal + 5 dk TTL + argüman parmak izi + tek kullanımlık nonce gömülüyor.",
+        "Ayrıca deprecate edilenler: Roots, Sampling ve Logging. Logging yerine stderr veya OpenTelemetry — ki biz zaten stderr'e logluyorduk."
+      ],
+      "quiz": {
+        "question": "MRTR'de client, orijinal isteği tekrarlarken JSON-RPC id'sini ne yapmalı?",
+        "options": [
+          "Aynı id'yi kullanmalı — aynı mantıksal işlem",
+          "Yeni bir id kullanmalı — bunlar bağımsız isteklerdir",
+          "id göndermemeli, requestState yeterli"
+        ],
+        "answer": 1,
+        "explain": "Spec bunu açıkça şart koşuyor: id FARKLI olmalı. Çünkü stateless protokolde iki istek arasında hiçbir bağ yoktur — bağı kuran tek şey requestState'tir. Aynı id'yi kullanmak, protokolün varsaymadığı bir süreklilik ima eder."
+      },
+      "docs": "contract/protocol.md"
+    },
+
+    {
+      "id": "13-iki-kabuk",
+      "chapter": "protokol",
+      "title": "Aynı iş mantığı, iki protokol kabuğu",
+      "narrate": [
+        "Şimdi asıl soru: bu breaking change bize kaça mal oldu?",
+        "Cevap: ince bir adaptör katmanına. Xurrent adapter'ı, takvim sağlayıcıları, üç backdate stratejisi, doğrulama kuralları — hiçbiri değişmedi.",
+        "Çünkü baştan şöyle böldük: core/toolimpl bir tool'u çalıştırırken onay gerekiyorsa 'ConfirmationRequired' döner. NASIL sorulacağını bilmez. Onu protokole çeviren adaptördür.",
+        "Şimdi aynı sunucuyu diğer protokolle çalıştırıp aynı tool'un aynı sonucu verdiğini görelim."
+      ],
+      "compareProtocols": {
+        "tool": "xurrent_create_time_entry",
+        "args": {
+          "targetType": "request",
+          "targetId": "TW9jay9SZXF1ZXN0LzcwMjQ4",
+          "minutes": 60,
+          "description": "Protokol karsilastirma",
+          "dryRun": true
+        },
+        "protocols": ["2025-11-25", "2026-07-28"]
+      },
+      "expect": [
+        { "check": "protocolsAgree", "equals": true, "explain": "İki protokolde de tool çıktısı BİREBİR aynı. Değişen sadece onayın sorulma biçimiydi." }
+      ],
+      "reveal": [
+        "Sözleşme (contract/tools.json) hiç değişmedi. 8 tool, aynı parametreler, aynı çıktı alanları, aynı sayılar.",
+        "Şimdi bu dersin en dürüst kısmı: bu projede biz de yanlış bir mimari karar verdik ve ölçüm düzeltti.",
+        "İlk plan şuydu: 'her dilde iki SDK sürümü yan yana kurulmalı; C#'ta aynı paket ID olduğu için Core + V1 + V2 diye üç proje gerekir.'",
+        "Sonra ham JSON-RPC ile ölçtük:",
+        "  TypeScript (sdk 1.30.0)         → server/discover: -32601   initialize: OK   = yalnızca v1",
+        "  Python (mcp 2.0.0)              → server/discover: OK       initialize: OK   = ikisi de",
+        "  C# (ModelContextProtocol 2.0.0) → server/discover: OK       initialize: OK   = ikisi de",
+        "Resmî SDK 2.0.0'lar geriye dönük uyumluluğu KENDİLERİ taşıyor. Üç projeye bölmek gereksizdi; elle çift adaptör sadece eski SDK'da kalan TypeScript için gerekti.",
+        "Üç projeye bölseydik, gereksiz karmaşıklığı 'breaking change'in maliyeti' diye öğretecektik — oysa o maliyeti SDK zaten ödemişti.",
+        "Bir uyarı da uyumluluk sondası için: server/discover'ı _meta olmadan gönderirsen Python -32601 (Method not found) döner. Bu 'v1 sunucu' ile AYNI hatadır — v2 konuşan bir sunucuyu v1 sanırsın. C# ise -32602 döner, yani 'sondan hatalı'. İkisini ayırmayan bir istemci yanlış teşhis koyar. Bu sihirbaz tam olarak bu hatayı yaptı ve ölçümle yakalandı.",
+        "Dersin özeti şu: protokol revizyonu tool sözleşmeni bozmamalı. İş mantığını protokolden ayırdıysan, breaking change seni ince bir adaptör katmanında yakalar — tüm uygulamada değil.",
+        "Ve ikinci özet: mimari kararı ÖLÇMEDEN verme."
+      ],
+      "docs": "contract/protocol.md#repo-yapısı-paylaşılan-çekirdek-iki-adaptör"
+    },
+
+    {
+      "id": "14-protokol-vaadi",
+      "chapter": "kapanis",
+      "title": "Kapanış: şimdi sunucuyu değiştir",
+      "narrate": [
+        "Ders bitti. Şimdi bu dersin tezini kanıtlayalım.",
+        "Bu sihirbazı kapat ve başka bir dille tekrar çalıştır:",
+        "    node clients/wizard/wizard.mjs --server py",
+        "    node clients/wizard/wizard.mjs --server cs",
+        "Tek bir adım değişmeyecek. Aynı tool'lar, aynı çıktılar, aynı sayılar.",
+        "Çünkü sözleşme contract/tools.json'da, veri fixtures/ klasöründe, ders bu steps.json dosyasında. Üç sunucu da sadece birer implementasyon.",
+        "AI destekli geliştirmede asıl beceri kod yazmak değil — DOĞRU SÖZLEŞMEYİ tarif etmek. Sözleşme netse implementasyon dili gerçekten bir detaydır."
+      ],
+      "callTool": { "name": "xurrent_whoami", "args": {} },
+      "reveal": [
+        "Son bir not: bu projede en çok zaman alan iş kod yazmak değildi, API'nin GERÇEKTE ne yapabildiğini keşfetmekti.",
+        "'timeEntryCreate bir ticket'a bağlanamaz' bulgusu tüm mimariyi belirledi. Bu bulguyu kaçırıp kod yazmaya başlasaydık, iki gün sonra baştan yazardık.",
+        "AI destekli geliştirmenin en yüksek getirili adımı: yazmadan önce keşfet."
+      ],
+      "docs": "docs/08-riskler-ve-sss.md"
+    }
+  ],
+
+  "placeholders": {
+    "{{today}}": "Bugünün tarihi, YYYY-MM-DD",
+    "{{yesterday}}": "Dünün tarihi, YYYY-MM-DD",
+    "{{tzOffset}}": "Yapılandırılmış saat diliminin o günkü UTC offset'i, örn. +03:00"
+  }
+}

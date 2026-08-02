@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="tr" data-theme="auto">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <meta name="description" content="Xurrent (ITSM) için MCP sunucusu ve chatbot — ders örneği">
+  <title>xurrent-mcp — sohbet</title>
+  <!-- Bağımlılık YOK, CDN YOK: iki yerel dosya. Sunucu bunları
+       clients/web/ klasöründen olduğu gibi servis eder (bkz. API.md §0). -->
+  <link rel="stylesheet" href="/style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%232563eb'/><text x='16' y='23' font-size='19' font-family='system-ui' font-weight='700' fill='white' text-anchor='middle'>X</text></svg>">
+</head>
+<body>
+
+<div class="layout">
+
+  <!-- ─────────────────────────── SOL PANEL ─────────────────────────── -->
+  <aside class="sidebar" id="sidebar" aria-label="Yapılandırma">
+    <div class="brand">
+      <div class="brand-mark">X</div>
+      <div class="brand-text">
+        <strong>xurrent-mcp</strong>
+        <span>Zaman girişi asistanı</span>
+      </div>
+    </div>
+
+    <!-- Rozetler /api/config'ten doldurulur. Sırlar ASLA buraya gelmez;
+         yalnızca hasApiKey gibi boolean'lar gösterilir (API.md §4). -->
+    <section class="panel-section">
+      <h2>Aktif yapılandırma</h2>
+      <div class="badges" id="badges">
+        <div class="badge"><span class="dot"></span><span class="label">Yükleniyor…</span></div>
+      </div>
+    </section>
+
+    <section class="panel-section" id="hint-slot" hidden>
+      <div class="hint" id="hint"></div>
+    </section>
+
+    <section class="panel-section">
+      <h2>Örnek istekler</h2>
+      <div class="examples" id="examples">
+        <button class="example" type="button">Üzerimdeki açık talepleri ve görevleri listele</button>
+        <button class="example" type="button">Dün 14:00'te REQ-70248 üzerinde 2 saat çalıştım, kaydet</button>
+        <button class="example" type="button">Bugünkü takvimimi oku, her toplantıyı zaman girişine çevir</button>
+        <button class="example" type="button">Zaman yazma ayarlarım neler? timeIncrement kaç?</button>
+      </div>
+    </section>
+
+    <div class="sidebar-foot">
+      <button class="ghost-btn" id="theme-btn" type="button" title="Tema">🌗 Tema</button>
+      <button class="ghost-btn" id="clear-btn" type="button" title="Sohbeti temizle">Temizle</button>
+    </div>
+  </aside>
+  <div class="sidebar-backdrop" id="backdrop"></div>
+
+  <!-- ─────────────────────────────── ANA ──────────────────────────────── -->
+  <main class="main">
+    <div class="topbar">
+      <button class="ghost-btn" id="nav-btn" type="button" aria-label="Menü">☰</button>
+      <strong>xurrent-mcp</strong>
+      <button class="ghost-btn" id="theme-btn-m" type="button" style="margin-left:auto">🌗</button>
+    </div>
+
+    <div class="chat" id="chat">
+      <div class="chat-inner" id="chat-inner">
+        <div class="empty" id="empty">
+          <h1>Merhaba 👋</h1>
+          <p>
+            Xurrent'taki açık işlerini listeleyebilir, zaman girişi yazabilir ve günün takvimini
+            zaman girişine çevirebilirim. Yazmadan önce <strong>her zaman planı gösterir ve onay isterim</strong>.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <div class="composer-wrap">
+      <form class="composer" id="composer">
+        <textarea id="input" rows="1" placeholder="Bir şey yaz…"
+                  autocomplete="off" spellcheck="false"></textarea>
+        <button class="send-btn" id="send" type="submit" aria-label="Gönder" title="Gönder">➤</button>
+      </form>
+      <p class="composer-note" id="note">
+        <kbd>Enter</kbd> gönderir, <kbd>Shift</kbd>+<kbd>Enter</kbd> satır atlar · Yazma işlemleri onay olmadan yapılmaz
+      </p>
+    </div>
+  </main>
+
+</div>
+
+<script src="/app.js" defer></script>
+</body>
+</html>

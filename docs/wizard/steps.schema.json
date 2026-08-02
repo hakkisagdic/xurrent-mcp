@@ -1,0 +1,271 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://xurrent-mcp.local/schemas/wizard-steps.schema.json",
+  "title": "xurrent-mcp ders sihirbazı — adım dosyası şeması",
+  "description": "docs/wizard/steps.json dosyasının SÖZLEŞMESİ. Sihirbaz (clients/wizard/wizard.mjs) bu dosyadaki adım tiplerini yürütür; burada tanımlı OLMAYAN bir anahtar sihirbaz tarafından sessizce yok sayılır — bu yüzden şema 'additionalProperties: false' ile katıdır. Sessizce yok sayılan bir adım, dersin ortasında hiç çalışmayan bir bölüm demektir.",
+
+  "type": "object",
+  "required": ["version", "title", "steps"],
+  "additionalProperties": false,
+
+  "properties": {
+    "$schema": { "type": "string" },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "description": "Ders dosyasının semver'i. Adım tipleri değişirse MINOR, uyumsuz değişiklikte MAJOR artar."
+    },
+    "title": { "type": "string", "minLength": 1 },
+    "subtitle": { "type": "string" },
+    "estimatedMinutes": { "type": "integer", "minimum": 1, "maximum": 600 },
+    "chapters": {
+      "type": "array",
+      "description": "Bölüm başlıkları. Her adımın 'chapter' alanı buradaki bir id'ye işaret etmelidir (çapraz kontrol scripts/validate-steps.mjs'te yapılır — saf JSON Schema referans bütünlüğü doğrulayamaz).",
+      "items": { "$ref": "#/$defs/Chapter" }
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/Step" }
+    },
+    "placeholders": {
+      "type": "object",
+      "description": "Yalnızca BELGELEME amaçlıdır: hangi {{...}} yer tutucularının desteklendiğini insana anlatır. Sihirbaz bu haritayı okumaz; çözümleme kodda sabittir.",
+      "additionalProperties": { "type": "string" }
+    }
+  },
+
+  "patternProperties": {
+    "^_": {
+      "description": "Alt çizgiyle başlayan anahtarlar yorum sayılır (JSON'da yorum yoktur). Sihirbaz bunları yok sayar."
+    }
+  },
+
+  "$defs": {
+    "Chapter": {
+      "type": "object",
+      "required": ["id", "title"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "$ref": "#/$defs/Slug" },
+        "title": { "type": "string", "minLength": 1 }
+      }
+    },
+
+    "Slug": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+      "description": "Küçük harf + tire. Adım id'leri CLI'da --step ile kısmi eşleştirilir (örn. '06' → '06-iki-yol'), bu yüzden boşluk ve büyük harf yasaktır."
+    },
+
+    "StepId": {
+      "type": "string",
+      "pattern": "^\\d{2}-[a-z0-9]+(-[a-z0-9]+)*$",
+      "description": "İki haneli sıra numarası + tire + slug. Numara öneki --step 06 gibi kısa seçimleri mümkün kılar."
+    },
+
+    "ProtocolVersion": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+      "description": "MCP revizyon tarihi. Bu repoda anlamlı olanlar: 2025-11-25 (v1) ve 2026-07-28 (v2)."
+    },
+
+    "ToolArgs": {
+      "type": "object",
+      "description": "tools/call argümanları. String değerlerde {{today}}, {{yesterday}} ve {{tzOffset}} yer tutucuları çalışma anında çözülür.",
+      "additionalProperties": true
+    },
+
+    "Step": {
+      "type": "object",
+      "required": ["id", "title"],
+      "additionalProperties": false,
+      "description": "Bir ders adımı. Sihirbazın yürütme sırası: narrate → listTools → callTool → callToolSequence → compareProtocols → table → expect → reveal → prompt → quiz → docs.",
+      "properties": {
+        "id": { "$ref": "#/$defs/StepId" },
+        "chapter": { "$ref": "#/$defs/Slug" },
+        "title": { "type": "string", "minLength": 1 },
+
+        "narrate": {
+          "type": "array",
+          "description": "Anlatım paragrafları. Her eleman ayrı paragraf olarak sarılarak basılır.",
+          "items": { "type": "string", "minLength": 1 }
+        },
+
+        "listTools": {
+          "type": "boolean",
+          "description": "true ise tools/list çağrılır ve tablo hâlinde gösterilir."
+        },
+
+        "callTool": {
+          "description": "Tek bir tools/call. Açıkça 'çağrı yok' demek için null yazılabilir (anlatım/tablo adımları).",
+          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/ToolCall" }]
+        },
+
+        "callToolSequence": {
+          "type": "array",
+          "minItems": 2,
+          "description": "Aynı tool'u farklı argümanlarla arka arkaya çağırıp YAN YANA karşılaştırır (örn. üç backdate stratejisi).",
+          "items": { "$ref": "#/$defs/LabeledToolCall" }
+        },
+
+        "compareProtocols": { "$ref": "#/$defs/CompareProtocols" },
+
+        "table": { "$ref": "#/$defs/Table" },
+
+        "expect": {
+          "type": "array",
+          "description": "Doğrulamalar. Her kontrol PASS / FAIL / SKIP üretir; ön koşulu sağlanmayan kontrol SKIP'tir, FAIL değil.",
+          "items": { "$ref": "#/$defs/Expect" }
+        },
+
+        "reveal": {
+          "type": "array",
+          "description": "Çıktı görüldükten SONRA gösterilen açıklamalar. Öğretici asıl yük buradadır.",
+          "items": { "type": "string", "minLength": 1 }
+        },
+
+        "prompt": {
+          "type": "string",
+          "description": "Serbest düşündürme sorusu. Cevap DEĞERLENDİRİLMEZ; --auto modunda hiç sorulmaz."
+        },
+
+        "quiz": { "$ref": "#/$defs/Quiz" },
+
+        "confirmable": {
+          "type": "boolean",
+          "description": "true ise adım GERÇEKTEN yazma yapar; sihirbaz önce kullanıcıyı uyarır. Kullanıcı reddederse adımın expect'leri SKIP olur (FAIL değil)."
+        },
+
+        "docs": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Ayrıntılı anlatımın bulunduğu repo-içi yol (opsiyonel #anchor ile)."
+        }
+      },
+
+      "anyOf": [
+        { "required": ["narrate"] },
+        { "required": ["listTools"] },
+        { "required": ["callTool"] },
+        { "required": ["callToolSequence"] },
+        { "required": ["compareProtocols"] },
+        { "required": ["table"] },
+        { "required": ["reveal"] },
+        { "required": ["quiz"] }
+      ]
+    },
+
+    "ToolCall": {
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "description": "contract/tools.json içindeki tool adı."
+        },
+        "args": { "$ref": "#/$defs/ToolArgs" }
+      }
+    },
+
+    "LabeledToolCall": {
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "label": { "type": "string", "minLength": 1, "description": "Karşılaştırma tablosunda kolon başlığı." },
+        "name": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+        "args": { "$ref": "#/$defs/ToolArgs" }
+      }
+    },
+
+    "CompareProtocols": {
+      "type": "object",
+      "required": ["tool", "protocols"],
+      "additionalProperties": false,
+      "description": "AYNI tool'u iki MCP revizyonuyla çağırır (sunucu MCP_PROTOCOL ile seçilir) ve structuredContent'leri kanonik JSON olarak karşılaştırır. Sunucu bir revizyonu konuşmuyorsa sonuç SKIP'tir — FAIL değil.",
+      "properties": {
+        "tool": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+        "args": { "$ref": "#/$defs/ToolArgs" },
+        "protocols": {
+          "type": "array",
+          "minItems": 2,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/ProtocolVersion" }
+        }
+      }
+    },
+
+    "Table": {
+      "type": "object",
+      "required": ["headers", "rows"],
+      "additionalProperties": false,
+      "description": "steps.json içinde SABİT tanımlı tablo (canlı çıktı değildir). Satır uzunluğu = başlık sayısı kontrolü validate-steps.mjs'te yapılır.",
+      "properties": {
+        "headers": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+        "rows": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+
+    "Expect": {
+      "description": "İki biçimi vardır: (a) sonuç JSON'ında bir yol kontrolü, (b) sihirbazın hesapladığı bir türetilmiş kontrol.",
+      "oneOf": [{ "$ref": "#/$defs/ExpectPath" }, { "$ref": "#/$defs/ExpectCheck" }]
+    },
+
+    "ExpectPath": {
+      "type": "object",
+      "required": ["path"],
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*$",
+          "description": "Nokta ile ayrılmış yol. Son segment 'length' ise dizi/metin uzunluğu alınır (örn. 'planned.length')."
+        },
+        "equals": { "$ref": "#/$defs/Scalar" },
+        "exists": { "type": "boolean", "description": "true ise değerin null/boş olmaması yeterlidir." },
+        "explain": { "type": "string", "minLength": 1, "description": "Kontrol geçse de kalsa da basılan Türkçe gerekçe." }
+      },
+      "anyOf": [{ "required": ["equals"] }, { "required": ["exists"] }]
+    },
+
+    "ExpectCheck": {
+      "type": "object",
+      "required": ["check", "equals"],
+      "additionalProperties": false,
+      "properties": {
+        "check": {
+          "enum": ["toolCount", "protocolsAgree"],
+          "description": "toolCount → tools/list uzunluğu. protocolsAgree → compareProtocols adımında iki revizyonun çıktısının birebir aynı olması."
+        },
+        "equals": { "$ref": "#/$defs/Scalar" },
+        "explain": { "type": "string", "minLength": 1 }
+      }
+    },
+
+    "Scalar": {
+      "type": ["string", "number", "boolean", "null"],
+      "description": "Beklenen değer. Karşılaştırma önce katı, sonra metin bazlı yapılır ('3' ile 3 aynı sayılır) — üç dilin JSON sayı/metin farkları dersi bozmasın diye."
+    },
+
+    "Quiz": {
+      "type": "object",
+      "required": ["question", "options", "answer", "explain"],
+      "additionalProperties": false,
+      "description": "answer, options dizisinde SIFIR TABANLI indekstir. Sınır kontrolü validate-steps.mjs'te yapılır.",
+      "properties": {
+        "question": { "type": "string", "minLength": 1 },
+        "options": { "type": "array", "minItems": 2, "maxItems": 6, "items": { "type": "string", "minLength": 1 } },
+        "answer": { "type": "integer", "minimum": 0 },
+        "explain": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

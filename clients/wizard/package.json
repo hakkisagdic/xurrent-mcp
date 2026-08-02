@@ -1,0 +1,23 @@
+{
+  "name": "xurrent-mcp-wizard",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "xurrent-mcp ders sihirbazı — bir MCP CLIENT'tır; --server ts|py|cs ile üç sunucudan herhangi birine bağlanır.",
+  "bin": {
+    "xurrent-wizard": "./wizard.mjs"
+  },
+  "scripts": {
+    "wizard": "node wizard.mjs",
+    "wizard:ts": "node wizard.mjs --server ts",
+    "wizard:py": "node wizard.mjs --server py",
+    "wizard:cs": "node wizard.mjs --server cs",
+    "check": "node --check wizard.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0"
+  }
+}
