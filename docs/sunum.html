@@ -1,0 +1,547 @@
+<title>xurrent-mcp — AI destekli geliştirme dersi</title>
+
+<style>
+  /* ─────────────────────────────────────────────────────────────
+     Puantaj cetveli. Soğuk defter grisi + kaşe oxblood.
+     Tema token seviyesinde: media query → data-theme her iki yönde de ezer.
+     ───────────────────────────────────────────────────────────── */
+  :root {
+    --paper:      #F7F8FA;
+    --paper-2:    #FFFFFF;
+    --ink:        #16202B;
+    --ink-soft:   #4A5765;
+    --ink-faint:  #7C8896;
+    --rule:       #DCE1E7;
+    --rule-hard:  #BFC7D1;
+    --stamp:      #9E2B36;
+    --stamp-soft: #F2E3E4;
+    --warn:       #9A6100;
+    --warn-soft:  #F7EEDC;
+    --gone:       #8C2F2F;
+    --ok:         #2C6046;
+    --ok-soft:    #E2EDE7;
+
+    --display: "Avenir Next Condensed", "HelveticaNeue-CondensedBold", "Helvetica Neue", Helvetica, sans-serif;
+    --body: Charter, "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+    --mono: "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+
+    --measure: 66ch;
+    --pad: clamp(1.25rem, 4vw, 3.5rem);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper:      #111821;
+      --paper-2:    #18212C;
+      --ink:        #E4EAF1;
+      --ink-soft:   #A8B4C2;
+      --ink-faint:  #74808E;
+      --rule:       #26313E;
+      --rule-hard:  #3A4756;
+      --stamp:      #E38A93;
+      --stamp-soft: #2E1B1E;
+      --warn:       #E0AC5C;
+      --warn-soft:  #2B2317;
+      --gone:       #E08A8A;
+      --ok:         #7FC3A2;
+      --ok-soft:    #17251F;
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper:      #111821;
+    --paper-2:    #18212C;
+    --ink:        #E4EAF1;
+    --ink-soft:   #A8B4C2;
+    --ink-faint:  #74808E;
+    --rule:       #26313E;
+    --rule-hard:  #3A4756;
+    --stamp:      #E38A93;
+    --stamp-soft: #2E1B1E;
+    --warn:       #E0AC5C;
+    --warn-soft:  #2B2317;
+    --gone:       #E08A8A;
+    --ok:         #7FC3A2;
+    --ok-soft:    #17251F;
+  }
+  :root[data-theme="light"] {
+    --paper:      #F7F8FA;
+    --paper-2:    #FFFFFF;
+    --ink:        #16202B;
+    --ink-soft:   #4A5765;
+    --ink-faint:  #7C8896;
+    --rule:       #DCE1E7;
+    --rule-hard:  #BFC7D1;
+    --stamp:      #9E2B36;
+    --stamp-soft: #F2E3E4;
+    --warn:       #9A6100;
+    --warn-soft:  #F7EEDC;
+    --gone:       #8C2F2F;
+    --ok:         #2C6046;
+    --ok-soft:    #E2EDE7;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--body);
+    font-size: clamp(1rem, 0.55vw + 0.9rem, 1.125rem);
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { max-width: 78rem; margin: 0 auto; padding: 0 var(--pad); }
+
+  /* ── ucu açık süre çubuğu: başlar, biter gibi yapmaz ───────── */
+  .openbar {
+    height: 3px; border: 0; margin: 0;
+    background: linear-gradient(90deg, var(--stamp) 0%, var(--stamp) 22%, var(--rule-hard) 55%, transparent 100%);
+  }
+
+  header.masthead { padding: clamp(3rem, 8vw, 6rem) 0 clamp(2rem, 5vw, 3.5rem); }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--stamp);
+    margin: 0 0 1.1rem;
+  }
+  .eyebrow.plain { color: var(--ink-faint); }
+
+  h1 {
+    font-family: var(--display);
+    font-weight: 700;
+    font-size: clamp(2.6rem, 7vw, 5.4rem);
+    line-height: 0.94;
+    letter-spacing: -0.025em;
+    text-wrap: balance;
+    margin: 0 0 1.4rem;
+  }
+  .lede {
+    max-width: var(--measure);
+    font-size: clamp(1.06rem, 0.6vw + 0.95rem, 1.3rem);
+    color: var(--ink-soft);
+    margin: 0 0 2rem;
+  }
+
+  .stamp {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--stamp);
+    border: 1.5px solid var(--stamp);
+    padding: 0.4rem 0.7rem;
+    transform: rotate(-1.4deg);
+  }
+
+  section { padding: clamp(2.75rem, 6vw, 4.75rem) 0; border-top: 1px solid var(--rule); }
+  section:first-of-type { border-top: 0; }
+
+  h2 {
+    font-family: var(--display);
+    font-weight: 700;
+    font-size: clamp(1.7rem, 3.2vw, 2.7rem);
+    line-height: 1.05;
+    letter-spacing: -0.015em;
+    text-wrap: balance;
+    margin: 0 0 1rem;
+  }
+  h3 {
+    font-family: var(--display);
+    font-weight: 600;
+    font-size: clamp(1.15rem, 1.5vw, 1.4rem);
+    letter-spacing: -0.005em;
+    margin: 2.25rem 0 0.7rem;
+  }
+  p { max-width: var(--measure); margin: 0 0 1.05rem; }
+  strong { font-weight: 700; }
+  code {
+    font-family: var(--mono);
+    font-size: 0.87em;
+    background: var(--paper-2);
+    border: 1px solid var(--rule);
+    padding: 0.08em 0.34em;
+    white-space: nowrap;
+  }
+
+  /* ── tablolar: bu dersin iş atı ─────────────────────────────── */
+  .scroller { overflow-x: auto; margin: 1.5rem 0; border: 1px solid var(--rule); background: var(--paper-2); }
+  table { border-collapse: collapse; width: 100%; font-family: var(--mono); font-size: 0.83rem; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 0.68rem 0.9rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  thead th {
+    font-size: 0.68rem; letter-spacing: 0.11em; text-transform: uppercase;
+    color: var(--ink-faint); border-bottom: 1.5px solid var(--rule-hard); white-space: nowrap;
+  }
+  tbody tr:last-child td { border-bottom: 0; }
+  td.key { color: var(--ink); font-weight: 600; white-space: nowrap; }
+  .yes { color: var(--ok); font-weight: 700; }
+  .no  { color: var(--gone); font-weight: 700; }
+
+  /* ── iki yol / iki protokol: ortada oluk ────────────────────── */
+  .split { display: grid; gap: 0; margin: 1.75rem 0; border: 1px solid var(--rule); }
+  @media (min-width: 46rem) { .split { grid-template-columns: 1fr 1fr; } }
+  .split > div { padding: 1.4rem 1.5rem; background: var(--paper-2); }
+  .split > div + div { border-top: 1px solid var(--rule); }
+  @media (min-width: 46rem) {
+    .split > div + div { border-top: 0; border-left: 1px solid var(--rule-hard); }
+  }
+  .split h4 {
+    font-family: var(--mono); font-size: 0.72rem; letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--ink-faint); margin: 0 0 0.8rem;
+  }
+  .split .headline { font-family: var(--display); font-size: 1.32rem; font-weight: 700; margin: 0 0 0.6rem; }
+  .split ul { margin: 0; padding-left: 1.1rem; font-size: 0.95rem; color: var(--ink-soft); }
+  .split li { margin-bottom: 0.4rem; }
+  .split li::marker { color: var(--stamp); }
+
+  /* ── uyarı / tuzak kutusu ───────────────────────────────────── */
+  .note {
+    background: var(--warn-soft);
+    border-left: 3px solid var(--warn);
+    padding: 1.1rem 1.35rem;
+    margin: 1.6rem 0;
+    max-width: var(--measure);
+  }
+  .note.stampish { background: var(--stamp-soft); border-left-color: var(--stamp); }
+  .note.good { background: var(--ok-soft); border-left-color: var(--ok); }
+  .note p { margin: 0; }
+  .note p + p { margin-top: 0.7rem; }
+  .note .label {
+    display: block; font-family: var(--mono); font-size: 0.68rem;
+    letter-spacing: 0.12em; text-transform: uppercase; color: var(--warn); margin-bottom: 0.45rem;
+  }
+  .note.stampish .label { color: var(--stamp); }
+  .note.good .label { color: var(--ok); }
+
+  /* ── wire diyagramı ─────────────────────────────────────────── */
+  .wire {
+    font-family: var(--mono); font-size: 0.79rem; line-height: 1.75;
+    background: var(--paper-2); border: 1px solid var(--rule);
+    padding: 1.15rem 1.35rem; margin: 1.2rem 0; overflow-x: auto; white-space: pre;
+    color: var(--ink-soft);
+  }
+  .wire b { color: var(--stamp); font-weight: 700; }
+  .wire i { color: var(--ink-faint); font-style: normal; }
+
+  /* ── sayı kartları ──────────────────────────────────────────── */
+  .metrics { display: grid; gap: 1px; background: var(--rule); border: 1px solid var(--rule); margin: 1.75rem 0; grid-template-columns: repeat(auto-fit, minmax(9.5rem, 1fr)); }
+  .metric { background: var(--paper-2); padding: 1.15rem 1.2rem; }
+  .metric .n {
+    font-family: var(--display); font-weight: 700; font-size: 2.1rem; line-height: 1;
+    font-variant-numeric: tabular-nums; letter-spacing: -0.02em; display: block; margin-bottom: 0.35rem;
+  }
+  .metric .l { font-family: var(--mono); font-size: 0.68rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-faint); }
+
+  ul.plain { max-width: var(--measure); padding-left: 1.15rem; }
+  ul.plain li { margin-bottom: 0.5rem; }
+  ul.plain li::marker { color: var(--stamp); }
+
+  footer { border-top: 1px solid var(--rule); padding: 2.5rem 0 4rem; color: var(--ink-faint); font-size: 0.9rem; }
+  footer p { max-width: var(--measure); }
+
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+
+<header class="masthead">
+  <div class="wrap">
+    <p class="eyebrow">AI destekli geliştirme dersi · örnek uygulama</p>
+    <h1>Kısıtı keşfetmeden<br>kod yazmak</h1>
+    <p class="lede">
+      Bir MCP sunucusu ve chatbot'u, üç dilde, aynı sözleşmeyle. Konu Xurrent'a zaman
+      girişi yazmak gibi görünüyor — asıl konu, bir API'nin <em>gerçekte</em> ne
+      yapabildiğini yazmadan önce ölçmek.
+    </p>
+    <span class="stamp">xurrent-mcp · TypeScript · Python · C#</span>
+  </div>
+</header>
+
+<hr class="openbar">
+
+<div class="wrap">
+
+<section>
+  <p class="eyebrow plain">İster</p>
+  <h2>Dört cümlelik bir talep</h2>
+  <p>
+    Sahadan gelen istek şuydu: bir MCP/Agent geliştir, ilgili kişinin açık
+    taleplerini listelesin, kullanıcı her biri için süre belirtsin, bunlar Xurrent'a
+    kaydedilsin. Ayrıca günün takvimini okusun, her toplantıyı zaman girişine çevirsin.
+  </p>
+  <div class="scroller">
+    <table>
+      <thead><tr><th>#</th><th>İster</th><th>Karşılayan tool</th></tr></thead>
+      <tbody>
+        <tr><td class="key">1</td><td>Açık görev/talepleri id ve açıklama ile listele</td><td>xurrent_list_open_work</td></tr>
+        <tr><td class="key">2</td><td>Kullanıcı süre belirtsin — başlangıç saati, tarih T veya T-1</td><td>xurrent_create_time_entry</td></tr>
+        <tr><td class="key">3</td><td>İlgili kişi ve görev için Xurrent'a kaydet</td><td>xurrent_create_time_entry · _bulk</td></tr>
+        <tr><td class="key">4</td><td>Takvimi oku, her toplantıyı zaman girişi yap</td><td>calendar_list_today → plan_time_entries_from_calendar</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Dört satır. Kodlaması bir gün sürer gibi duruyor. İki gün sonra baştan yazmamızı
+    engelleyen şey, kod yazmadan önce yaptığımız keşifti.
+  </p>
+</section>
+
+<section>
+  <p class="eyebrow">Kısıt</p>
+  <h2>İster #2 ve #3, tek adımda mümkün değil</h2>
+  <p>
+    Xurrent'ta bir ticket'a zaman yazmanın iki yolu var. İkisi de tek başına
+    isteri karşılamıyor — ve bu, dokümantasyonun hiçbir yerinde böyle yazmıyor.
+  </p>
+
+  <div class="split">
+    <div>
+      <h4>Yol A</h4>
+      <p class="headline">timeEntryCreate</p>
+      <ul>
+        <li><span class="yes">✓</span> <code>date</code> — T-1 yazılabilir</li>
+        <li><span class="yes">✓</span> <code>startedAt</code> — başlangıç saati</li>
+        <li><span class="yes">✓</span> <code>personId</code> — başkası adına</li>
+        <li><span class="no">✗</span> <strong>Ticket'a bağlanamaz.</strong> Oluşan kaydın <code>assignment</code> değeri null</li>
+      </ul>
+    </div>
+    <div>
+      <h4>Yol B</h4>
+      <p class="headline">requestUpdate / taskUpdate</p>
+      <ul>
+        <li><span class="yes">✓</span> <strong>Ticket'a bağlar</strong> — tek yol</li>
+        <li><span class="no">✗</span> <code>date</code> — sunucu "bugün" atar</li>
+        <li><span class="no">✗</span> <code>startedAt</code> — alan yok</li>
+        <li><span class="no">✗</span> <code>personId</code> — hep authenticated user</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="note stampish">
+    <span class="label">Bulgu</span>
+    <p>
+      <code>TimeEntryCreateInput</code>'un 17 alanı var. <code>requestId</code>,
+      <code>taskId</code>, <code>assignmentId</code> — <strong>hiçbiri yok.</strong>
+      Bu tek gerçek, projenin tüm mimarisini belirledi.
+    </p>
+  </div>
+
+  <h3>Kısıtın içindeki çıkış</h3>
+  <p>
+    <code>TimeEntryUpdateInput</code>'a bakınca iş değişiyor: <code>date</code>,
+    <code>startedAt</code>, <code>personId</code> <em>var</em> — ama
+    <code>assignment</code> <em>yok</em>. Bir alan input şemasında yoksa güncellenemez;
+    dolayısıyla mevcut değeri korunur.
+  </p>
+  <div class="note good">
+    <span class="label">two_step</span>
+    <p>
+      Önce Yol B ile ticket'a bağlı kayıt oluştur, sonra <code>timeEntryUpdate</code> ile
+      tarihi ve saati düzelt. Bağ bozulmaz — çünkü o alana <em>dokunulamıyor</em>.
+      Kısıtın kendisi garantiyi veriyor.
+    </p>
+  </div>
+
+  <div class="scroller">
+    <table>
+      <thead><tr><th>Strateji</th><th>İstek</th><th>Korur</th><th>Feda eder</th></tr></thead>
+      <tbody>
+        <tr><td class="key">two_step</td><td>2</td><td>ticket bağı · T-1 · saat · kişi</td><td>atomiklik</td></tr>
+        <tr><td class="key">link_first</td><td>1</td><td>ticket bağı · atomiklik</td><td>tarih hep bugün</td></tr>
+        <tr><td class="key">date_first</td><td>1</td><td>tarih · saat · kişi · atomiklik</td><td>ticket bağı</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Üçü de kodlandı; <code>XURRENT_BACKDATE_STRATEGY</code> ile seçiliyor. Hiçbiri
+    "doğru cevap" değil — hangisinin doğru olduğunu raporlama ihtiyacın belirler.
+  </p>
+</section>
+
+<section>
+  <p class="eyebrow">Sessiz hatalar</p>
+  <h2>Yanlış yaparsan hata almazsın</h2>
+  <p>
+    Bu entegrasyonun tuzakları istisna fırlatmıyor. Eksik veri döndürüyor —
+    ki bu, hata almaktan çok daha kötü.
+  </p>
+  <div class="scroller">
+    <table>
+      <thead><tr><th>Tuzak</th><th>Yanlış yaparsan</th></tr></thead>
+      <tbody>
+        <tr><td class="key">RequestFilter → member<br>TaskFilter → assignee</td><td>Karıştırırsan boş liste. "Bu kişinin görevi yokmuş" dersin</td></tr>
+        <tr><td class="key">view varsayılanı current_account</td><td><code>all</code> geçmezsen diğer hesaplardaki işler görünmez</td></tr>
+        <tr><td class="key">TaskStatus'ta 5 terminal durum</td><td>Sadece <code>completed</code>'ı elersen <code>approved</code> kayıtlar "açık" sanılır</td></tr>
+        <tr><td class="key">timeIncrement varsayılanı 60</td><td>45 dakikalık giriş sessizce reddedilir</td></tr>
+        <tr><td class="key">Yol B'de timeSpent ARTIMLI</td><td>"Toplamı 60 yap" değil "üzerine 60 ekle". Çift sayma</td></tr>
+        <tr><td class="key">Google singleEvents varsayılanı false</td><td>Tekrarlayan toplantılar hiç görünmez</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section>
+  <p class="eyebrow plain">Takvim</p>
+  <h2>"Her bir toplantıyı ekle" masumca duruyor</h2>
+  <p>
+    Takvimde doğum günü var. Öğle arası var. Reddettiğin bir retro var. İki toplantı
+    çakışıyor. Biri 45 dakika ve hesabın 30'un katlarını kabul ediyor.
+  </p>
+  <div class="metrics">
+    <div class="metric"><span class="n">8</span><span class="l">ham etkinlik</span></div>
+    <div class="metric"><span class="n">5</span><span class="l">gerçek toplantı</span></div>
+    <div class="metric"><span class="n">255</span><span class="l">naif toplam · dk</span></div>
+    <div class="metric"><span class="n">225</span><span class="l">gerçek meşgul · dk</span></div>
+  </div>
+  <p>
+    Aradaki 30 dakika, çakışan iki toplantı. Naif toplama güvenirsen her gün fazladan
+    zaman yazarsın. Sistem ikisini de raporluyor — farkı <em>görmek</em> dersin parçası.
+  </p>
+  <div class="note">
+    <span class="label">Tasarım kararı</span>
+    <p>
+      Toplantı → ticket eşleştirmesi asla otomatik yazmaz. Heuristik %100 doğru olamaz:
+      "VPN kök neden" toplantısı hem bir Request hem bir Task ile benzeşiyor. Belirsizlikte
+      bot tahmin etmez, <strong>sorar</strong>.
+    </p>
+  </div>
+</section>
+
+<section>
+  <p class="eyebrow">Protokol</p>
+  <h2>Ders hazırlanırken MCP'nin altı değişti</h2>
+  <p>
+    28 Temmuz 2026 revizyonu, lansmandan bu yana en büyüğü. Protokol stateless oldu:
+    <code>initialize</code> el sıkışması, oturum kimliği, SSE resumability kaldırıldı.
+    Ve tam olarak bizim onay akışımız silindi.
+  </p>
+
+  <div class="split">
+    <div>
+      <h4>2025-11-25</h4>
+      <p class="headline">Sunucu soru sorar</p>
+      <div class="wire">client ──<b> tools/call </b>──▶ server
+client ◀── <b>elicitation/create</b> ── server
+client ──<b> ElicitResult </b>───▶ server
+client ◀── <i>CallToolResult</i> ── server</div>
+      <ul><li>Sunucu client'a <em>istek</em> gönderir</li><li>Çift yönlü bağlantı şart</li><li>Sunucu stateful</li></ul>
+    </div>
+    <div>
+      <h4>2026-07-28</h4>
+      <p class="headline">Sunucu sonuç döner</p>
+      <div class="wire">client ──<b> tools/call </b><i>(id:1)</i> ──▶ server
+client ◀── <b>InputRequiredResult</b> ── server
+       <i>— ilk istek sonlandı —</i>
+client ──<b> tools/call </b><i>(id:2)</i> ──▶ server
+       <i>+ inputResponses + requestState</i></div>
+      <ul><li>Sunucu hiçbir state tutmaz</li><li>Bağlam <code>requestState</code>'te taşınır</li><li>JSON-RPC id <strong>farklı</strong> olmalı</li></ul>
+    </div>
+  </div>
+
+  <div class="note stampish">
+    <span class="label">Güvenlik sınırı</span>
+    <p>
+      <code>requestState</code> client'tan geçiyor. Spec onu açıkça
+      <strong>saldırgan kontrolündeki girdi</strong> sayıyor. Bizim blob'umuz şunu taşıyor:
+      <em>"kullanıcı, Request #70248'e 120 dakika yazmayı onayladı."</em> İmzalamazsan
+      client bunu değiştirip başka ticket'a başka süre yazdırır.
+    </p>
+    <p>
+      Şema: HMAC-SHA256 + principal + 5 dk TTL + argüman parmak izi + tek kullanımlık nonce.
+      Altı kurcalama senaryosunun altısı da yazmayı reddediyor.
+    </p>
+  </div>
+</section>
+
+<section>
+  <p class="eyebrow">Ölçüm</p>
+  <h2>Mimari kararı ölçmeden verme</h2>
+  <p>
+    Planımız şuydu: "her dilde iki SDK sürümü yan yana kurulmalı; C#'ta aynı paket ID
+    olduğu için Core + V1 + V2 diye üç proje gerekir." Yazmadan önce ham JSON-RPC ile ölçtük.
+  </p>
+  <div class="scroller">
+    <table>
+      <thead><tr><th>Sunucu</th><th>server/discover</th><th>initialize</th><th>Sonuç</th></tr></thead>
+      <tbody>
+        <tr><td class="key">TypeScript · sdk 1.30.0</td><td class="no">-32601</td><td class="yes">2025-11-25</td><td>yalnızca v1</td></tr>
+        <tr><td class="key">Python · mcp 2.0.0</td><td class="yes">["2026-07-28"]</td><td class="yes">2025-11-25</td><td><strong>ikisi de</strong></td></tr>
+        <tr><td class="key">C# · MCP 2.0.0</td><td class="yes">["2026-07-28"]</td><td class="yes">2025-11-25</td><td><strong>ikisi de</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Resmî SDK 2.0.0'lar geriye dönük uyumluluğu kendileri taşıyor. Üç projeye bölmek
+    gereksizdi; elle çift adaptör yalnızca eski SDK'da kalan TypeScript için gerekti.
+  </p>
+  <div class="note">
+    <span class="label">Sonda tuzağı</span>
+    <p>
+      <code>server/discover</code>'ı <code>_meta</code> olmadan gönderirsen Python
+      <code>-32601 Method not found</code> döner — yani <em>"v1 sunucu"</em> ile aynı hata.
+      C# ise <code>-32602</code> döner: <em>"sondan hatalı"</em>. İkisini ayırmayan bir
+      istemci, v2 konuşan sunucuyu v1 sanır. Bizim sihirbazımız tam bu hatayı yaptı ve
+      ölçümle yakalandı.
+    </p>
+  </div>
+  <p>
+    Üç projeye bölseydik, gereksiz karmaşıklığı "breaking change'in maliyeti" diye
+    öğretecektik. Oysa o maliyeti SDK zaten ödemişti.
+  </p>
+</section>
+
+<section>
+  <p class="eyebrow plain">Sonuç</p>
+  <h2>Breaking change bize neye mal oldu</h2>
+  <p>
+    Tool sözleşmesi hiç değişmedi: aynı 8 tool, aynı parametreler, aynı çıktı alanları,
+    aynı sayılar. Değişen tek şey onayın <em>sorulma biçimi</em>ydi.
+  </p>
+  <div class="wire">core/toolimpl ──▶ <b>ConfirmationRequired</b>   <i>(nasıl sorulacağını BİLMEZ)</i>
+                     │
+                     ├──▶ mcp/v1 ──▶ <b>elicitation/create</b>
+                     └──▶ mcp/v2 ──▶ <b>InputRequiredResult</b></div>
+  <p>
+    İş mantığını protokolden ayırdıysan, breaking change seni ince bir adaptör
+    katmanında yakalar — tüm uygulamada değil.
+  </p>
+
+  <h3>Üç dilde ölçülen durum</h3>
+  <div class="metrics">
+    <div class="metric"><span class="n">17/17</span><span class="l">sihirbaz kontrolü</span></div>
+    <div class="metric"><span class="n">8/8</span><span class="l">outputSchema · her dil</span></div>
+    <div class="metric"><span class="n">3/3</span><span class="l">sözleşmeye uyumlu</span></div>
+    <div class="metric"><span class="n">2</span><span class="l">konuşulan revizyon</span></div>
+  </div>
+
+  <h3>Dersin çıkarımı</h3>
+  <ul class="plain">
+    <li><strong>Yazmadan önce keşfet.</strong> Bu projede en çok zaman alan iş kod yazmak değil, API'nin gerçekte ne yapabildiğini bulmaktı.</li>
+    <li><strong>Kısıtı sakla, bahane etme.</strong> Karşılanamayan bir ister varsa bot bunu kullanıcıya söyler — sessizce başka bir şey yazmaz.</li>
+    <li><strong>Onayı LLM'e bırakma.</strong> LLM ikna edilebilir; protokol seviyesindeki onay edilemez.</li>
+    <li><strong>Sözleşmeyi bir kez yaz.</strong> Sözleşme netse implementasyon dili gerçekten bir detaydır.</li>
+    <li><strong>Mimari kararı ölç.</strong> Ölçmeden verilen karar, gereksiz karmaşıklığı ders diye öğretir.</li>
+  </ul>
+</section>
+
+</div>
+
+<hr class="openbar">
+
+<footer>
+  <div class="wrap">
+    <p>
+      <strong>xurrent-mcp</strong> — mock modda token, hesap veya internet gerekmeden çalışır.
+      <code>cd servers/typescript &amp;&amp; npm run wizard</code> · aynısı Python ve C# için de geçerli.
+    </p>
+    <p style="margin-top:0.8rem">
+      Live mod gerçek bir Xurrent hesabına karşı çalıştırılmadı; GraphQL şeması resmî
+      dokümantasyondan çıkarıldı. İlk canlı bağlantıda doğrulanacak maddeler
+      <code>docs/08-riskler-ve-sss.md</code> içinde <code>DOĞRULANMALI</code> etiketiyle listeli.
+    </p>
+  </div>
+</footer>

@@ -1,0 +1,236 @@
+# xurrent-mcp
+
+> **Xurrent (ITSM) için MCP sunucusu ve chatbot — üç dilde, aynı sözleşmeyle.**
+> AI destekli geliştirme dersi için hazırlanmış örnek uygulama ve öğretim materyali.
+
+Bir kişinin Xurrent'taki açık taleplerini listeler, kullanıcıyla süre üzerine
+müzakere eder, zaman girişlerini kaydeder ve günün takvimini okuyup her toplantıyı
+zaman girişine çevirir.
+
+**Aynı MCP sözleşmesi TypeScript, Python ve C# ile ayrı ayrı implemente edilmiştir.**
+Dersin tezi budur: *MCP bir protokoldür, dil seçimi bir detaydır.*
+
+---
+
+## 60 saniyede başla
+
+Hiçbir token, hesap veya internet bağlantısı gerekmez. Varsayılan **mock** moddur.
+
+```bash
+cp .env.example .env
+```
+
+Sonra herhangi bir dili seç:
+
+```bash
+cd servers/typescript && npm install && npm run build && npm run wizard
+```
+
+```bash
+cd servers/python && uv sync && uv run xurrent-mcp --wizard
+```
+
+```bash
+cd servers/csharp && dotnet run -- wizard
+```
+
+Üç komut da **aynı dersi** verir, **aynı sayıları** üretir.
+
+---
+
+## Neyi çözüyor
+
+| # | İster | Karşılayan tool |
+|---|---|---|
+| 1 | İlgili kişinin açık görev/taleplerini id ve açıklama ile listele | `xurrent_list_open_work` |
+| 2 | Her biri için kullanıcı süre belirtsin (başlangıç saati, tarih T veya T-1) | `xurrent_create_time_entry` (müzakere chatbot'ta) |
+| 3 | Girişleri ilgili kişi ve görev için Xurrent'a kaydet | `xurrent_create_time_entry`, `..._bulk` |
+| 4 | Günün takvimini oku, her toplantıyı zaman girişi olarak ekle | `calendar_list_today` → `plan_time_entries_from_calendar` |
+
+### ⚠️ İster #2 ve #3 birlikte, Xurrent API'sinde tek adımda mümkün değil
+
+Bu projenin en önemli bulgusu — ve dersin ana konusu:
+
+| | **Yol A** `timeEntryCreate` | **Yol B** `requestUpdate` / `taskUpdate` |
+|---|---|---|
+| Ticket'a bağlar mı? | ❌ `assignment` = null | ✅ tek yol |
+| `date` (T-1) kontrolü | ✅ | ❌ sunucu "bugün" atar |
+| `startedAt` (başlangıç saati) | ✅ | ❌ |
+| `personId` (başkası adına) | ✅ | ❌ authenticated user |
+
+`TimeEntryCreateInput` içinde `requestId`/`taskId`/`assignmentId` **yoktur**.
+
+Çözüm üç stratejiye ayrıldı ve **üçü de kodlandı** (`XURRENT_BACKDATE_STRATEGY`):
+
+- **`two_step`** — Yol B ile yaz, ardından `timeEntryUpdate` ile `date`/`startedAt`/`personId` düzelt.
+  Her şeyi korur; 2 istek, atomik değil.
+  *Neden çalışır:* `TimeEntryUpdateInput`'ta `assignment` alanı **yoktur**, dolayısıyla 2. adım ticket bağını bozamaz.
+- **`link_first`** — Sadece Yol B. Tek istek, atomik; tarih her zaman bugün.
+- **`date_first`** — Sadece Yol A. Tarih/saat tam doğru; kayıt ticket'a bağlanmaz.
+
+Ayrıntı: [docs/02-zaman-girisi-modeli.md](docs/02-zaman-girisi-modeli.md)
+
+---
+
+## Repo yapısı
+
+```
+contract/tools.json     ← dil-bağımsız tool sözleşmesi. Tek gerçek kaynak.
+contract/protocol.md    ← çift protokol sözleşmesi (2025-11-25 + 2026-07-28)
+fixtures/               ← ortak mock veri. Üç dil de aynı dosyaları okur.
+docs/                   ← anlatım notları (Türkçe, 10 bölüm + demo senaryosu)
+docs/wizard/steps.json  ← sihirbaz ders akışı. Üç dil de aynı dosyayı yürütür.
+servers/typescript/     ├─ MCP sunucusu + chatbot + web (aynı sözleşme)
+servers/python/         ├─
+servers/csharp/         └─
+clients/wizard/         ← MCP client sihirbaz — üç sunucuya da bağlanır
+clients/web/            ← ortak statik web arayüzü, üç backend de servis eder
+```
+
+---
+
+## Üç çalıştırma modu
+
+Her dil üçünü de destekler.
+
+**1 — MCP sunucusu olarak (LLM'i host sağlar, API key gerekmez)**
+
+```bash
+claude
+```
+
+`.mcp.json` zaten hazır. Claude Code açılınca `xurrent-ts` sunucusunu onaylayın,
+ardından *"bugünkü toplantılarımı Xurrent'a yaz"* deyin.
+
+**2 — Terminal chatbot** (`ANTHROPIC_API_KEY` gerekir)
+
+```bash
+cd servers/typescript && npm run chat
+```
+
+**3 — Web arayüzü** (`ANTHROPIC_API_KEY` gerekir)
+
+```bash
+cd servers/typescript && npm run web    # → http://localhost:8787
+```
+
+**Bonus — Sihirbaz:** yukarıdaki `npm run wizard`. API key gerekmez; tool'ları
+doğrudan çağırır, LLM kullanmaz.
+
+---
+
+## Protokol vaadini kanıtla
+
+Sihirbaz bir **MCP client**'tır — hangi sunucuya bağlanacağı parametreyle seçilir:
+
+```bash
+node clients/wizard/wizard.mjs --server ts
+node clients/wizard/wizard.mjs --server py
+node clients/wizard/wizard.mjs --server cs
+```
+
+Üçü de aynı 14 adımı, aynı çıktılarla yürütür. Adım sonucu üç durumludur —
+`PASS` · `FAIL` · `SKIP` — ve özet *"N geçti, M başarısız, K atlandı"* biçimindedir.
+Sözleşme uyumu otomatik doğrulanır:
+
+```bash
+node scripts/verify-contract.mjs --all
+```
+
+---
+
+## MCP protokol revizyonu
+
+Bu repo MCP'nin **iki protokol revizyonunu birden** ele alır ve farkı ders konusu yapar.
+
+| | `2025-11-25` (v1) | `2026-07-28` (v2) |
+|---|---|---|
+| Bağlantı | `initialize` el sıkışması | El sıkışma **yok** — stateless |
+| Keşif | `initialize` sonucu | **`server/discover`** (zorunlu) |
+| Kullanıcıya soru sorma | `elicitation/create` (sunucu istek gönderir) | **MRTR** — `InputRequiredResult` (sunucu sonuç döner) |
+| HTTP oturumu | `Mcp-Session-Id` | **Yok** |
+
+`2026-07-28` revizyonu **tam olarak bizim onay akışımızı** kaldırdı. Tool sözleşmesi
+([`contract/tools.json`](contract/tools.json)) ise **değişmedi** — aynı 8 tool, aynı
+çıktı alanları, aynı beklenen sayılar. Dersin ana mesajı bu:
+
+> İş mantığını protokolden ayırdıysan, breaking change seni **ince bir adaptör
+> katmanında** yakalar — tüm uygulamada değil.
+
+Sunucu tarafında revizyon seçimi `MCP_PROTOCOL` ile yapılır:
+`2026-07-28` (varsayılan) · `2025-11-25` · `both`.
+
+- Sözleşme: [`contract/protocol.md`](contract/protocol.md)
+- Anlatım: [09 — Protokol geçişi](docs/09-protokol-gecisi.md) — MRTR sequence
+  diyagramları, `requestState` imzalama şeması, ve **ölçülmüş** SDK protokol destek
+  tablosu
+
+---
+
+## Gerçek Xurrent'a bağlanmak
+
+`.env` içinde:
+
+```bash
+XURRENT_MODE=live
+XURRENT_TOKEN=<personal access token>
+XURRENT_ACCOUNT=<hesap slug'ı, örn. "widget" — numerik DEĞİL>
+XURRENT_DRY_RUN=1          # ← ilk bağlantıda 1 bırakın
+```
+
+`XURRENT_DRY_RUN=1` iken hiçbir mutation gönderilmez; planlanan GraphQL
+mutation'ları ve uyarılar döner. Çıktıyı inceledikten sonra `0` yapın.
+
+> **Bölge notu:** `eu` diye bir bölge **yoktur**. Geçerli değerler: Global (varsayılan),
+> `au`, `uk`, `ch`, `us`. Global zaten Avrupa'dır.
+
+---
+
+## Takvim sağlayıcıları
+
+| Sağlayıcı | Kurulum | Not |
+|---|---|---|
+| `mock` | yok | Varsayılan. `fixtures/calendar.json` |
+| `ics` | yok | `.ics` dosyası veya yayınlanmış URL |
+| `google` | `node scripts/google-auth.mjs` | Kişisel Gmail dahil çalışır |
+| `graph` | Azure AD app registration | Microsoft 365 / Outlook |
+
+Google için OAuth bir kez yapılır; token `~/.xurrent-mcp/google-token.json`
+dosyasına yazılır ve **üç dil de aynı dosyayı okur**. Bilinçli bir tasarım:
+OAuth akışını üç kez implemente etmek yerine token yenilemeyi düz bir HTTP POST'a indirir.
+
+---
+
+## Anlatım notları
+
+| Bölüm | Konu |
+|---|---|
+| [00 — Genel bakış](docs/00-genel-bakis.md) | Problem, mimari, MCP neden |
+| [01 — Xurrent API](docs/01-xurrent-api.md) | GraphQL, auth, veri modeli, filtre tuzakları |
+| [02 — Zaman girişi modeli](docs/02-zaman-girisi-modeli.md) | ★ İki yol, üç strateji, `timeIncrement` |
+| [03 — MCP tasarımı](docs/03-mcp-tasarimi.md) | Tool envanteri, dry-run, onay mekanizması |
+| [04 — Takvim](docs/04-takvim.md) | Graph vs Google, normalizasyon, eşleştirme |
+| [05 — Chatbot](docs/05-chatbot.md) | Sistem promptu, diyalog sözleşmesi, MRTR |
+| [06 — Üç dil karşılaştırma](docs/06-uc-dil-karsilastirma.md) | Aynı sözleşme, üç SDK |
+| [07 — Sihirbaz](docs/07-sihirbaz.md) | `steps.json`, ders akışı, `expect` blokları |
+| [08 — Riskler ve SSS](docs/08-riskler-ve-sss.md) | Bilinen tuzaklar, `DOĞRULANMALI` listesi |
+| [09 — Protokol geçişi](docs/09-protokol-gecisi.md) | ★ `2026-07-28`, MRTR, `requestState`, ölçüm |
+| [Demo senaryosu](docs/demo/senaryo.md) | Sunumda adım adım ne yapılacak |
+
+---
+
+## Durum ve sınırlar
+
+- **Mock mod uçtan uca çalışır ve test edilmiştir.**
+- **Live mod gerçek bir Xurrent hesabına karşı çalıştırılmamıştır** — GraphQL şeması
+  resmi dokümantasyondan çıkarılmıştır. [`docs/08-riskler-ve-sss.md`](docs/08-riskler-ve-sss.md)
+  içinde `DOĞRULANMALI` etiketli maddeler ilk canlı bağlantıda kontrol edilmelidir.
+- **Protokol tarafında bir madde henüz ölçülmedi:** Claude Code'un hangi MCP
+  revizyonunu kabul ettiği (**D11**). Sunumdan önce ölçülmelidir — varsayımla
+  ilerlenmiyor.
+- Bu bir **öğretim materyalidir**; üretim kullanımı için token yönetimi, hata
+  telemetrisi ve çok kullanıcılı yetkilendirme eklenmelidir.
+
+## Lisans
+
+MIT
