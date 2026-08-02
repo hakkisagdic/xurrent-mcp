@@ -1,0 +1,35 @@
+# sırlar
+.env
+*.pem
+*-token.json
+
+# kişisel Claude Code ayarları (proje ayarları .mcp.json'da, o commit edilir)
+.claude/settings.local.json
+
+# node
+node_modules/
+dist/
+*.tsbuildinfo
+
+# python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# dotnet
+bin/
+obj/
+
+# mock modda diske yazılan time entry'ler (XURRENT_MOCK_PERSIST=1)
+fixtures/.time-entries.local.json
+
+# üretilmiş .ics (scripts/gen-ics.mjs ile yeniden üretilir)
+fixtures/calendar.ics
+
+# iCloud sync duplikatları
+* 2.*
+*\ 2/
+
+.DS_Store

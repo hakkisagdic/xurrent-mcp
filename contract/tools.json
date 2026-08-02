@@ -1,0 +1,550 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "contractVersion": "1.0.0",
+  "title": "xurrent-mcp tool sözleşmesi",
+  "description": "Dil-bağımsız MCP tool sözleşmesi. servers/typescript, servers/python ve servers/csharp bu dosyadaki tool adlarını, parametre adlarını ve çıktı alanlarını BİREBİR implemente eder. Sözleşme testi (scripts/verify-contract.mjs) üç sunucunun tools/list çıktısını bu dosyaya karşı doğrular.",
+
+  "conventions": {
+    "durationUnit": "minute",
+    "durationRationale": "Xurrent TimeEntry.timeSpent alanı DAKİKA cinsindendir. Saat veya saniye ASLA kullanılmaz. Kullanıcı '2 saat' derse chatbot 120'ye çevirir ve çevirdiğini söyler.",
+    "noEndTime": "Xurrent'ta time entry'nin bitiş saati alanı YOKTUR. Model: date (hangi gün) + startedAt (başlangıç anı, sadece metadata) + timeSpent (süre, dakika). '09:00-11:00' girdisi startedAt=09:00 + minutes=120 olarak ayrıştırılır.",
+    "dateFormat": "ISO8601 tarih: YYYY-MM-DD",
+    "timestampFormat": "ISO8601 timestamp, offset ZORUNLU: YYYY-MM-DDTHH:mm:ss+03:00",
+    "idOpacity": "Tüm id değerleri opak string'lerdir (Xurrent GraphQL global node ID). Asla üretilmez/tahmin edilmez; mutlaka bir tool çıktısından gelir.",
+    "personIdMagic": "personId alanı '$me' özel değerini kabul eder — authenticated user demektir.",
+    "errorSemantics": "İş kuralı hataları isError=true + okunabilir Türkçe metin ile döner. errors[] dizisi boş değilse işlem BAŞARISIZ olmuştur."
+  },
+
+  "tools": [
+    {
+      "name": "xurrent_whoami",
+      "kind": "read",
+      "summary": "Authenticated kullanıcıyı, hesabı ve rate limit durumunu döner. Aynı zamanda bağlantı smoke test'idir.",
+      "annotations": { "readOnlyHint": true, "idempotentHint": true, "openWorldHint": true },
+      "input": { "type": "object", "properties": {}, "additionalProperties": false },
+      "output": {
+        "type": "object",
+        "required": ["person", "account", "mode"],
+        "properties": {
+          "person": { "$ref": "#/$defs/Person" },
+          "account": {
+            "type": "object",
+            "required": ["id"],
+            "properties": {
+              "id": { "type": "string" },
+              "name": { "type": ["string", "null"] },
+              "directory": { "type": ["boolean", "null"] }
+            }
+          },
+          "mode": { "enum": ["mock", "live"], "description": "Hangi Xurrent adapter'ı aktif" },
+          "rateLimit": {
+            "type": ["object", "null"],
+            "properties": {
+              "limit": { "type": "number" },
+              "cost": { "type": "number" },
+              "remaining": { "type": "number" },
+              "resetAt": { "type": "number" }
+            }
+          }
+        }
+      }
+    },
+
+    {
+      "name": "xurrent_find_person",
+      "kind": "read",
+      "summary": "Kişiyi birincil e-posta ile bulur. TAM eşleşme yapar (substring değil) — Xurrent PersonFilter.primaryEmail bir TextFilter'dır.",
+      "annotations": { "readOnlyHint": true, "idempotentHint": true, "openWorldHint": true },
+      "input": {
+        "type": "object",
+        "required": ["email"],
+        "additionalProperties": false,
+        "properties": {
+          "email": { "type": "string", "description": "Birincil e-posta. TAM eşleşme; büyük-küçük harf ve format duyarlı." },
+          "view": { "enum": ["all", "current_account"], "default": "all", "description": "Varsayılan 'all' — 'current_account' kullanıcının diğer hesaplardaki kaydını gizler." }
+        }
+      },
+      "output": {
+        "type": "object",
+        "required": ["totalCount", "people"],
+        "properties": {
+          "totalCount": { "type": "integer" },
+          "people": { "type": "array", "items": { "$ref": "#/$defs/Person" } },
+          "suggestFuzzy": { "type": "boolean", "description": "true ise tam eşleşme bulunamadı; chatbot serbest metin aramayı önerebilir." }
+        }
+      }
+    },
+
+    {
+      "name": "xurrent_list_open_work",
+      "kind": "read",
+      "summary": "İSTER #1: Bir kişinin üzerindeki açık Request ve Task'ları id + açıklama ile listeler.",
+      "annotations": { "readOnlyHint": true, "idempotentHint": true, "openWorldHint": true },
+      "teachingNotes": [
+        "TUZAK 1 — Filtre asimetrisi: RequestFilter'da atanan kişi alanı 'member', TaskFilter'da 'assignee'. TaskFilter'da 'member' YOKTUR, RequestFilter'da 'assignee' YOKTUR. Karıştırmak sessizce boş sonuç döndürür.",
+        "TUZAK 2 — view varsayılanı 'current_account'tur. 'all' geçilmezse kişinin diğer hesaplardaki işleri görünmez.",
+        "TUZAK 3 — Açık/kapalı ayrımı sadece status ile yapılır; 'open' diye bir view YOKTUR.",
+        "TUZAK 4 — Request'te tamamlanma alanı 'completedAt', Task'ta 'finishedAt'. Task'ta completedAt YOKTUR.",
+        "TUZAK 5 — GraphQL'de personId variable'ı String! olarak deklare edilmeli (ID! değil), çünkü PersonReferenceFilter.values tipi [String]!."
+      ],
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "personId": { "type": "string", "default": "$me", "description": "Person node ID veya '$me'" },
+          "include": {
+            "type": "array",
+            "items": { "enum": ["requests", "tasks"] },
+            "default": ["requests", "tasks"]
+          },
+          "first": { "type": "integer", "minimum": 1, "maximum": 100, "default": 25 },
+          "afterRequests": { "type": "string", "description": "Request sayfalama cursor'ı" },
+          "afterTasks": { "type": "string", "description": "Task sayfalama cursor'ı" },
+          "view": { "enum": ["all", "current_account"], "default": "all" }
+        }
+      },
+      "output": {
+        "type": "object",
+        "required": ["requests", "tasks", "accountId"],
+        "properties": {
+          "accountId": { "type": "string", "description": "Cache anahtarı (accountId, nodeId) olmalı — status/member/team alanları account-specific'tir." },
+          "requests": { "$ref": "#/$defs/WorkPage" },
+          "tasks": { "$ref": "#/$defs/WorkPage" }
+        }
+      }
+    },
+
+    {
+      "name": "xurrent_get_time_tracking_context",
+      "kind": "read",
+      "summary": "Zaman yazmadan ÖNCE çalıştırılması ZORUNLU olan bağlam sorgusu: timeIncrement, effort class'lar, timesheet kısıtları.",
+      "annotations": { "readOnlyHint": true, "idempotentHint": true, "openWorldHint": true },
+      "teachingNotes": [
+        "timeIncrement bilinmeden timeSpent SEÇİLEMEZ. Varsayılan 60'tır; yani varsayılan yapılandırmada 45 dakikalık bir giriş reddedilir. Entegrasyonlardaki en yaygın sessiz hata budur.",
+        "İzinli timeIncrement değerleri: 5, 10, 15, 30, 60, 120, 240.",
+        "allocationTimeTracking=false ise Yol A (timeEntryCreate) tamamen kapalıdır.",
+        "assignmentTimeTracking=false ise Yol B (requestUpdate/taskUpdate) tamamen kapalıdır.",
+        "EffortClassFilter'da 'disabled' filtresi YOKTUR — disabled olanları client tarafında elemek gerekir.",
+        "Sonuç session içinde cache'lenmelidir."
+      ],
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "personId": { "type": "string", "default": "$me" }
+        }
+      },
+      "output": {
+        "type": "object",
+        "required": ["timeIncrement", "effortClasses", "defaults"],
+        "properties": {
+          "unit": { "type": ["string", "null"], "enum": ["hours_and_minutes", "percentage_of_workday", null] },
+          "timeIncrement": { "type": ["integer", "null"], "description": "timeSpent'in minimumu VE adımı (dakika)" },
+          "workday": { "type": ["integer", "null"], "description": "Günlük dakika, varsayılan 480" },
+          "workweek": { "type": ["integer", "null"], "description": "Haftalık dakika, varsayılan 2400" },
+          "allowWorkdayOvertime": { "type": ["boolean", "null"] },
+          "allowWorkweekOvertime": { "type": ["boolean", "null"] },
+          "allocationTimeTracking": { "type": ["boolean", "null"] },
+          "assignmentTimeTracking": { "type": ["boolean", "null"] },
+          "requireNote": { "type": ["boolean", "null"] },
+          "requireTimeEntryDescription": { "type": ["boolean", "null"] },
+          "effortClasses": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["id", "name"],
+              "properties": {
+                "id": { "type": "string" },
+                "name": { "type": ["string", "null"] },
+                "position": { "type": ["integer", "null"] },
+                "costMultiplier": { "type": ["number", "null"] },
+                "disabled": { "type": ["boolean", "null"] }
+              }
+            }
+          },
+          "timeAllocations": {
+            "type": "array",
+            "description": "Yol A için seçilebilir allocation'lar",
+            "items": {
+              "type": "object",
+              "required": ["id", "name"],
+              "properties": {
+                "id": { "type": "string" },
+                "name": { "type": ["string", "null"] },
+                "group": { "type": ["string", "null"] },
+                "descriptionRequired": { "type": ["boolean", "null"] }
+              }
+            }
+          },
+          "defaults": {
+            "type": "object",
+            "properties": {
+              "requestEffortClassId": { "type": ["string", "null"] },
+              "taskEffortClassId": { "type": ["string", "null"] },
+              "projectTaskEffortClassId": { "type": ["string", "null"] },
+              "problemEffortClassId": { "type": ["string", "null"] },
+              "timeAllocationEffortClassId": { "type": ["string", "null"] }
+            }
+          }
+        }
+      }
+    },
+
+    {
+      "name": "xurrent_create_time_entry",
+      "kind": "write",
+      "summary": "İSTER #3: Tek bir zaman girişi oluşturur. targetType'a göre Yol A veya Yol B'ye yönlendirir.",
+      "annotations": { "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": true },
+      "teachingNotes": [
+        "İKİ YAZMA YOLU VARDIR VE BİRBİRİNİN YERİNE GEÇMEZ:",
+        "  Yol A — timeEntryCreate: date/startedAt/personId tam kontrol, AMA Request/Task'a BAĞLANAMAZ (assignment=null).",
+        "  Yol B — requestUpdate/taskUpdate/projectTaskUpdate/problemUpdate: ticket'a bağlar, AMA date='bugün' ve person=authenticated user olarak sunucu atar.",
+        "TimeEntryCreateInput içinde requestId/taskId/assignmentId alanı YOKTUR — doğrulandı.",
+        "Yol B'de timeSpent ARTIMLIDIR: 'en son girişten bu yana eklenen süre', toplam değil.",
+        "Negatif timeSpent yalnızca correction=true ile mümkündür.",
+        "backdateStrategy, Yol B ile T-1/başlangıç saati çakışmasını nasıl çözeceğimizi belirler."
+      ],
+      "input": {
+        "type": "object",
+        "required": ["targetType", "targetId", "minutes"],
+        "additionalProperties": false,
+        "properties": {
+          "targetType": {
+            "enum": ["time_allocation", "request", "task", "project_task", "problem"],
+            "description": "'time_allocation' → Yol A. Diğerleri → Yol B."
+          },
+          "targetId": { "type": "string", "description": "time_allocation için TimeAllocation node ID; diğerleri için parent kaydın node ID'si" },
+          "minutes": { "type": "integer", "description": "DAKİKA. timeIncrement'in katı olmalı. Negatif yalnızca correction=true ile." },
+          "date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "description": "ISO8601 tarih. Boşsa bugün. T-1'den eski değerler reddedilir (ister kısıtı)." },
+          "startedAt": { "type": "string", "description": "ISO8601 timestamp, offset ZORUNLU. Sadece metadata; timesheet gününü DEĞİŞTİRMEZ." },
+          "personId": { "type": "string", "description": "Boşsa authenticated user. Farklı ise manager/substitute/Account Administrator yetkisi gerekir." },
+          "effortClassId": { "type": "string" },
+          "description": { "type": "string", "maxLength": 80, "description": "REST'te max 80 karakter." },
+          "note": { "type": "string", "description": "Yalnızca Yol B'de anlamlı; TimeEntry.note oluşturur." },
+          "customerId": { "type": "string", "description": "Yalnızca Yol A" },
+          "serviceId": { "type": "string", "description": "Yalnızca Yol A" },
+          "organizationId": { "type": "string", "description": "Yalnızca Yol A. Kişinin KENDİ organizasyonu (müşteri değil)." },
+          "teamId": { "type": "string", "description": "Yalnızca Yol A" },
+          "correction": { "type": "boolean", "default": false },
+          "sourceId": { "type": "string", "description": "Idempotency anahtarı. Boşsa deterministik üretilir." },
+          "backdateStrategy": {
+            "enum": ["two_step", "link_first", "date_first"],
+            "description": "Yol B + geçmiş tarih çakışmasını çözme stratejisi. Boşsa XURRENT_BACKDATE_STRATEGY env değeri kullanılır."
+          },
+          "dryRun": { "type": "boolean", "default": false, "description": "true ise HİÇBİR mutation gönderilmez; sadece plan + uyarılar döner." }
+        }
+      },
+      "output": { "$ref": "#/$defs/WriteResult" }
+    },
+
+    {
+      "name": "xurrent_create_time_entries_bulk",
+      "kind": "write",
+      "summary": "Birden çok zaman girişini sırayla oluşturur. ATOMİK DEĞİLDİR — kısmi başarı normaldir.",
+      "annotations": { "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": true },
+      "teachingNotes": [
+        "GraphQL istek başına 1 mutation kabul eder → bulk = N ayrı HTTP isteği.",
+        "Rate limit 20 istek / 2 saniye → istekler arası en az 110 ms bekleme.",
+        "Atomik olmadığı için her satır ayrı raporlanır ve chatbot bunu kullanıcıya AÇIKÇA söylemek zorundadır.",
+        "Onay (elicitation) N kez değil, ÖZET üzerinden BİR kez sorulur."
+      ],
+      "input": {
+        "type": "object",
+        "required": ["entries"],
+        "additionalProperties": false,
+        "properties": {
+          "entries": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 50,
+            "items": { "type": "object", "description": "xurrent_create_time_entry input'u (dryRun ve backdateStrategy hariç)" }
+          },
+          "dryRun": { "type": "boolean", "default": false },
+          "stopOnError": { "type": "boolean", "default": true, "description": "true ise ilk hatada durur — yarım kalan durumu netleştirir." },
+          "backdateStrategy": { "enum": ["two_step", "link_first", "date_first"] }
+        }
+      },
+      "output": {
+        "type": "object",
+        "required": ["dryRun", "planned", "results", "summary"],
+        "properties": {
+          "dryRun": { "type": "boolean" },
+          "planned": { "type": "array", "items": { "$ref": "#/$defs/PlannedMutation" } },
+          "results": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["index", "status"],
+              "properties": {
+                "index": { "type": "integer" },
+                "status": { "enum": ["created", "failed", "skipped"] },
+                "timeEntryId": { "type": ["string", "null"] },
+                "errors": { "type": "array", "items": { "$ref": "#/$defs/ValidationError" } }
+              }
+            }
+          },
+          "summary": {
+            "type": "object",
+            "required": ["requested", "created", "failed", "skipped", "totalMinutes"],
+            "properties": {
+              "requested": { "type": "integer" },
+              "created": { "type": "integer" },
+              "failed": { "type": "integer" },
+              "skipped": { "type": "integer" },
+              "totalMinutes": { "type": "integer" }
+            }
+          }
+        }
+      }
+    },
+
+    {
+      "name": "calendar_list_today",
+      "kind": "read",
+      "summary": "İSTER #4 (1. yarı): Kişinin belirtilen gündeki takvimini okur, normalize eder ve gerçek toplantıları filtreler.",
+      "annotations": { "readOnlyHint": true, "idempotentHint": true, "openWorldHint": true },
+      "teachingNotes": [
+        "Pencere HER ZAMAN yerel gece yarısından yerel gece yarısına, OFFSET GÖMÜLÜ kurulur ('2026-08-02T00:00:00+03:00'). Çıplak timestamp göndermek sessizce yanlış günü getirir.",
+        "Microsoft Graph: 'events' değil 'calendarView' kullanılır — tekrarlayan etkinlikleri açılmış (expanded) döner.",
+        "Graph'in dateTime alanı OFFSET TAŞIMAZ ve 7 kesirli hane içerir. new Date(...) doğrudan parse edilirse sunucunun local time'ı sanılır → bug.",
+        "Google: singleEvents varsayılanı FALSE'tur; true yapılmazsa tekrarlayan toplantılar hiç görünmez. orderBy='startTime' buna bağımlıdır.",
+        "Google'ın transparency alanı varsayılan 'opaque' iken cevapta ÇIKMAZ → (ev.transparency ?? 'opaque') yazılmalı.",
+        "Filtre bir OVERLAP filtresidir: dün 23:00'te başlayıp bugün 01:00'de biten toplantı da döner → pencereye clip edilmeli.",
+        "Dedup anahtarı iCalUID TEK BAŞINA yetmez: Graph'te her occurrence farklı, Google'da seri boyunca aynı. Anahtara start instant'ı dahil edilir."
+      ],
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "provider": { "enum": ["mock", "ics", "google", "graph", "auto"], "default": "auto" },
+          "userEmail": { "type": "string", "description": "app-only/domain-wide-delegation modunda impersonate edilecek kullanıcı" },
+          "date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "description": "Boşsa bugün" },
+          "timeZone": { "type": "string", "default": "Europe/Istanbul", "description": "IANA zone" },
+          "includeAllDay": { "type": "boolean", "default": false },
+          "includeDeclined": { "type": "boolean", "default": false },
+          "includeFree": { "type": "boolean", "default": false }
+        }
+      },
+      "output": {
+        "type": "object",
+        "required": ["windowStart", "windowEnd", "timeZone", "provider", "meetings", "totals"],
+        "properties": {
+          "windowStart": { "type": "string" },
+          "windowEnd": { "type": "string" },
+          "timeZone": { "type": "string" },
+          "provider": { "type": "string" },
+          "meetings": { "type": "array", "items": { "$ref": "#/$defs/Meeting" } },
+          "totals": {
+            "type": "object",
+            "required": ["count", "busyMinutes", "rawCount", "filteredOut"],
+            "properties": {
+              "count": { "type": "integer" },
+              "busyMinutes": { "type": "integer", "description": "Çakışmalar BİR KEZ sayılır (interval merge)" },
+              "naiveSumMinutes": { "type": "integer", "description": "Çakışmaları ayrı sayan naif toplam — farkı göstermek öğreticidir" },
+              "rawCount": { "type": "integer" },
+              "filteredOut": { "type": "integer" }
+            }
+          }
+        }
+      }
+    },
+
+    {
+      "name": "plan_time_entries_from_calendar",
+      "kind": "preview",
+      "summary": "İSTER #4 (2. yarı): Takvim + açık iş listesini birleştirip ÖNERİLEN zaman girişi planı üretir. ASLA YAZMAZ.",
+      "annotations": { "readOnlyHint": true, "idempotentHint": true, "openWorldHint": true },
+      "teachingNotes": [
+        "Bu tool yapısal olarak yazma yeteneği olmayan bir tool'dur — dry-run'ın üçüncü ve en güçlü katmanı.",
+        "Eşleşme heuristiği basit ve AÇIKLANABİLİR tutulur: (1) başlıkta ticket numarası deseni, (2) normalize edilmiş metin benzerliği, (3) hiçbiri tutmazsa needsUserDecision=true.",
+        "roundedMinutes her zaman timeIncrement katına yuvarlanır ve yuvarlama HER ZAMAN warnings'e yazılır."
+      ],
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "personId": { "type": "string", "default": "$me" },
+          "date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+          "timeZone": { "type": "string", "default": "Europe/Istanbul" },
+          "provider": { "enum": ["mock", "ics", "google", "graph", "auto"], "default": "auto" },
+          "defaultTargetType": { "enum": ["time_allocation", "request", "task"] },
+          "defaultTargetId": { "type": "string" },
+          "roundingMode": { "enum": ["nearest", "up", "down"], "default": "nearest" }
+        }
+      },
+      "output": {
+        "type": "object",
+        "required": ["date", "proposals", "totals"],
+        "properties": {
+          "date": { "type": "string" },
+          "timeIncrement": { "type": ["integer", "null"] },
+          "proposals": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["meetingTitle", "startedAt", "rawMinutes", "roundedMinutes", "needsUserDecision"],
+              "properties": {
+                "meetingTitle": { "type": "string" },
+                "startedAt": { "type": "string" },
+                "rawMinutes": { "type": "integer" },
+                "roundedMinutes": { "type": "integer" },
+                "suggestedTargetType": { "type": ["string", "null"] },
+                "suggestedTargetId": { "type": ["string", "null"] },
+                "suggestedTargetLabel": { "type": ["string", "null"] },
+                "matchReason": { "type": ["string", "null"], "description": "Türkçe, insan-okunur gerekçe" },
+                "matchConfidence": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+                "needsUserDecision": { "type": "boolean" },
+                "warnings": { "type": "array", "items": { "type": "string" } }
+              }
+            }
+          },
+          "unmatchedMeetings": { "type": "array", "items": { "type": "string" } },
+          "totals": {
+            "type": "object",
+            "properties": {
+              "meetingMinutes": { "type": "integer" },
+              "proposedMinutes": { "type": "integer" }
+            }
+          }
+        }
+      }
+    }
+  ],
+
+  "$defs": {
+    "Person": {
+      "type": "object",
+      "required": ["id", "name"],
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": ["string", "null"] },
+        "primaryEmail": { "type": ["string", "null"] },
+        "jobTitle": { "type": ["string", "null"] },
+        "timeZone": { "type": ["string", "null"] },
+        "disabled": { "type": ["boolean", "null"] },
+        "organization": {
+          "type": ["object", "null"],
+          "properties": { "id": { "type": "string" }, "name": { "type": ["string", "null"] } }
+        }
+      }
+    },
+
+    "WorkItem": {
+      "type": "object",
+      "required": ["id", "displayId", "subject", "status", "kind"],
+      "properties": {
+        "kind": { "enum": ["request", "task"] },
+        "id": { "type": "string", "description": "Opak GraphQL node ID — mutation'larda BU kullanılır" },
+        "displayId": { "type": "string", "description": "UI'da görünen numara. Request'te requestId, Task'ta taskId alanından gelir." },
+        "subject": { "type": ["string", "null"] },
+        "status": { "type": ["string", "null"] },
+        "statusLabel": { "type": ["string", "null"], "description": "Türkçe okunur durum" },
+        "isOpen": { "type": "boolean" },
+        "targetAt": { "type": ["string", "null"], "description": "Request'te nextTargetAt, Task'ta completionTargetAt" },
+        "team": { "type": ["string", "null"] },
+        "member": { "type": ["string", "null"] },
+        "parentLabel": { "type": ["string", "null"], "description": "Task için workflow veya bağlı request" },
+        "updatedAt": { "type": ["string", "null"] }
+      }
+    },
+
+    "WorkPage": {
+      "type": "object",
+      "required": ["totalCount", "nodes"],
+      "properties": {
+        "totalCount": { "type": "integer" },
+        "hasNextPage": { "type": "boolean" },
+        "endCursor": { "type": ["string", "null"] },
+        "nodes": { "type": "array", "items": { "$ref": "#/$defs/WorkItem" } }
+      }
+    },
+
+    "Meeting": {
+      "type": "object",
+      "required": ["id", "uid", "title", "start", "end", "minutes"],
+      "properties": {
+        "source": { "enum": ["mock", "ics", "google", "graph"] },
+        "id": { "type": "string" },
+        "uid": { "type": "string", "description": "Dedup anahtarı: iCalUID + start instant" },
+        "title": { "type": "string" },
+        "start": { "type": "string", "description": "ISO8601, offset'li mutlak instant" },
+        "end": { "type": "string" },
+        "minutes": { "type": "integer" },
+        "isAllDay": { "type": "boolean" },
+        "isCancelled": { "type": "boolean" },
+        "declined": { "type": "boolean" },
+        "free": { "type": "boolean", "description": "showAs=free veya transparency=transparent" },
+        "skipped": { "type": "boolean", "description": "Filtreden elendi mi" },
+        "skipReason": { "type": ["string", "null"], "description": "Türkçe gerekçe — öğretici" },
+        "organizer": { "type": ["string", "null"] },
+        "attendeeCount": { "type": "integer" },
+        "categories": { "type": "array", "items": { "type": "string" } },
+        "seriesId": { "type": ["string", "null"] },
+        "joinUrl": { "type": ["string", "null"] }
+      }
+    },
+
+    "PlannedMutation": {
+      "type": "object",
+      "required": ["path", "mutation", "input", "warnings"],
+      "properties": {
+        "index": { "type": "integer" },
+        "path": {
+          "enum": ["timeEntryCreate", "requestUpdate", "taskUpdate", "projectTaskUpdate", "problemUpdate", "timeEntryUpdate"],
+          "description": "Hangi Xurrent mutation'ı çalıştırılacak/çalıştırıldı"
+        },
+        "mutation": { "type": "string", "description": "Gönderilecek GraphQL mutation metni — derste birebir gösterilir" },
+        "input": { "type": "object", "description": "Mutation değişkenleri" },
+        "warnings": { "type": "array", "items": { "type": "string" } },
+        "stepLabel": { "type": ["string", "null"], "description": "two_step stratejisinde '1/2' veya '2/2'" }
+      }
+    },
+
+    "WriteResult": {
+      "type": "object",
+      "required": ["dryRun", "strategy", "planned", "warnings", "errors"],
+      "properties": {
+        "dryRun": { "type": "boolean" },
+        "strategy": { "enum": ["two_step", "link_first", "date_first"] },
+        "strategyExplanation": { "type": "string", "description": "Seçilen stratejinin Türkçe gerekçesi ve neyi feda ettiği" },
+        "planned": { "type": "array", "items": { "$ref": "#/$defs/PlannedMutation" }, "description": "two_step'te 2 eleman, diğerlerinde 1" },
+        "warnings": { "type": "array", "items": { "type": "string" } },
+        "timeEntry": { "type": ["object", "null"] },
+        "errors": { "type": "array", "items": { "$ref": "#/$defs/ValidationError" } }
+      }
+    },
+
+    "ValidationError": {
+      "type": "object",
+      "required": ["message"],
+      "properties": {
+        "message": { "type": "string" },
+        "path": { "type": ["array", "null"], "items": { "type": "string" } }
+      }
+    }
+  },
+
+  "backdateStrategies": {
+    "two_step": {
+      "label": "İki adımlı telafi",
+      "steps": ["requestUpdate/taskUpdate (ticket'a bağlı entry oluşur, tarih=bugün)", "timeEntryUpdate (date + startedAt + personId düzeltilir)"],
+      "keeps": ["ticket bağı", "geçmiş tarih (T-1)", "başlangıç saati", "başkası adına yazma"],
+      "costs": ["2 HTTP isteği", "atomik değil — 1. adım başarılı 2. adım başarısız olabilir"],
+      "why": "timeEntryUpdate input'unda assignment alanı YOKTUR; bu yüzden 2. adım ticket bağını BOZMAZ. Kısıtı avantaja çeviren nokta budur."
+    },
+    "link_first": {
+      "label": "Ticket bağı öncelikli",
+      "steps": ["requestUpdate/taskUpdate"],
+      "keeps": ["ticket bağı", "tek istek, atomik"],
+      "costs": ["tarih her zaman BUGÜN", "başlangıç saati kaydedilmez", "her zaman authenticated user"],
+      "why": "En basit ve en dayanıklı yol. İster #2'deki T-1 karşılanamaz; bot bunu kullanıcıya söyleyip onay ister."
+    },
+    "date_first": {
+      "label": "Tarih öncelikli",
+      "steps": ["timeEntryCreate (TimeAllocation hedefli)"],
+      "keeps": ["date", "startedAt", "personId — tam kontrol", "tek istek, atomik"],
+      "costs": ["entry ticket'a BAĞLANMAZ (assignment=null)"],
+      "why": "Zaman doğruluğu ticket bağından önemliyse. Raporlama ticket bazlı ise bu seçenek uygun DEĞİLDİR."
+    }
+  }
+}

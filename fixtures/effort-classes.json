@@ -1,0 +1,36 @@
+{
+  "_comment": "Mock EffortClass kayıtları. DİKKAT: EffortClassFilter'da 'disabled' filtresi YOKTUR — disabled olanlar CLIENT TARAFINDA elenmek zorundadır.",
+  "_billingNote": "costMultiplier faturalamayı doğrudan etkiler. Yanlış effort class seçmek mali sonuç doğurur; bu yüzden bot varsayılana sessizce güvenmek yerine ne seçtiğini SÖYLER.",
+
+  "effortClasses": [
+    {
+      "id": "TW9jay9FZmZvcnRDbGFzcy8x",
+      "name": "Normal mesai",
+      "position": 1,
+      "costMultiplier": 1.0,
+      "disabled": false
+    },
+    {
+      "id": "TW9jay9FZmZvcnRDbGFzcy8y",
+      "name": "Fazla mesai",
+      "position": 2,
+      "costMultiplier": 1.5,
+      "disabled": false
+    },
+    {
+      "id": "TW9jay9FZmZvcnRDbGFzcy8z",
+      "name": "Hafta sonu / tatil",
+      "position": 3,
+      "costMultiplier": 2.0,
+      "disabled": false
+    },
+    {
+      "id": "TW9jay9FZmZvcnRDbGFzcy85",
+      "name": "Eski tarife (kullanılmıyor)",
+      "position": 9,
+      "costMultiplier": 1.2,
+      "disabled": true,
+      "_teachingNote": "disabled=true. xurrent_get_time_tracking_context çıktısında GÖRÜNMEMELİDİR. Sunucu tarafında filtrelenemediği için client-side eleme şarttır."
+    }
+  ]
+}

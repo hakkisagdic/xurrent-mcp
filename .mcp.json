@@ -1,0 +1,84 @@
+{
+  "_comment": "Claude Code proje-scope MCP yapılandırması. Bu dosya repo'ya commit edilir; ilk kullanımda Claude Code onay ister. Sıfırlamak için: claude mcp reset-project-choices",
+  "_note": "Üç sunucu da AYNI tool sözleşmesini sunar. Aynı anda birden fazlasını açmayın — Claude hangi 'xurrent_whoami'yi çağıracağını bilemez. Ders sırasında sırayla açıp kapatın.",
+  "_protocol": "MCP_PROTOCOL ile revizyon seçilir: 2026-07-28 (güncel, stateless, MRTR onayı) veya 2025-11-25 (eski, sunucu-başlatmalı elicitation). Aşağıdaki xurrent-ts-v1 girdisi eski protokolü Claude Code'a karşı denemek içindir — hangisini kabul ettiğini görmenin en hızlı yolu. Ayrıntı: contract/protocol.md",
+  "mcpServers": {
+    "xurrent-ts": {
+      "command": "node",
+      "args": [
+        "${CLAUDE_PROJECT_DIR:-.}/servers/typescript/dist/mcp/stdio.js"
+      ],
+      "env": {
+        "MCP_PROTOCOL": "${MCP_PROTOCOL:-2026-07-28}",
+        "XURRENT_MODE": "${XURRENT_MODE:-mock}",
+        "XURRENT_TOKEN": "${XURRENT_TOKEN:-}",
+        "XURRENT_ACCOUNT": "${XURRENT_ACCOUNT:-}",
+        "XURRENT_BACKDATE_STRATEGY": "${XURRENT_BACKDATE_STRATEGY:-two_step}",
+        "XURRENT_DRY_RUN": "${XURRENT_DRY_RUN:-0}",
+        "CALENDAR_PROVIDER": "${CALENDAR_PROVIDER:-mock}",
+        "XURRENT_TIMEZONE": "${XURRENT_TIMEZONE:-Europe/Istanbul}",
+        "XURRENT_FIXTURES_DIR": "${CLAUDE_PROJECT_DIR:-.}/fixtures"
+      }
+    },
+    "xurrent-py": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "${CLAUDE_PROJECT_DIR:-.}/servers/python",
+        "run",
+        "xurrent-mcp"
+      ],
+      "env": {
+        "MCP_PROTOCOL": "${MCP_PROTOCOL:-2026-07-28}",
+        "XURRENT_MODE": "${XURRENT_MODE:-mock}",
+        "XURRENT_TOKEN": "${XURRENT_TOKEN:-}",
+        "XURRENT_ACCOUNT": "${XURRENT_ACCOUNT:-}",
+        "XURRENT_BACKDATE_STRATEGY": "${XURRENT_BACKDATE_STRATEGY:-two_step}",
+        "XURRENT_DRY_RUN": "${XURRENT_DRY_RUN:-0}",
+        "CALENDAR_PROVIDER": "${CALENDAR_PROVIDER:-mock}",
+        "XURRENT_TIMEZONE": "${XURRENT_TIMEZONE:-Europe/Istanbul}",
+        "XURRENT_FIXTURES_DIR": "${CLAUDE_PROJECT_DIR:-.}/fixtures"
+      }
+    },
+    "xurrent-cs": {
+      "command": "dotnet",
+      "args": [
+        "run",
+        "--project",
+        "${CLAUDE_PROJECT_DIR:-.}/servers/csharp/XurrentMcp.csproj",
+        "--no-build",
+        "--",
+        "stdio"
+      ],
+      "env": {
+        "MCP_PROTOCOL": "${MCP_PROTOCOL:-2026-07-28}",
+        "XURRENT_MODE": "${XURRENT_MODE:-mock}",
+        "XURRENT_TOKEN": "${XURRENT_TOKEN:-}",
+        "XURRENT_ACCOUNT": "${XURRENT_ACCOUNT:-}",
+        "XURRENT_BACKDATE_STRATEGY": "${XURRENT_BACKDATE_STRATEGY:-two_step}",
+        "XURRENT_DRY_RUN": "${XURRENT_DRY_RUN:-0}",
+        "CALENDAR_PROVIDER": "${CALENDAR_PROVIDER:-mock}",
+        "XURRENT_TIMEZONE": "${XURRENT_TIMEZONE:-Europe/Istanbul}",
+        "XURRENT_FIXTURES_DIR": "${CLAUDE_PROJECT_DIR:-.}/fixtures"
+      }
+    },
+    "xurrent-ts-v1": {
+      "command": "node",
+      "args": [
+        "${CLAUDE_PROJECT_DIR:-.}/servers/typescript/dist/mcp/stdio.js"
+      ],
+      "env": {
+        "MCP_PROTOCOL": "2025-11-25",
+        "XURRENT_MODE": "${XURRENT_MODE:-mock}",
+        "XURRENT_TOKEN": "${XURRENT_TOKEN:-}",
+        "XURRENT_ACCOUNT": "${XURRENT_ACCOUNT:-}",
+        "XURRENT_BACKDATE_STRATEGY": "${XURRENT_BACKDATE_STRATEGY:-two_step}",
+        "XURRENT_DRY_RUN": "${XURRENT_DRY_RUN:-0}",
+        "CALENDAR_PROVIDER": "${CALENDAR_PROVIDER:-mock}",
+        "XURRENT_TIMEZONE": "${XURRENT_TIMEZONE:-Europe/Istanbul}",
+        "XURRENT_FIXTURES_DIR": "${CLAUDE_PROJECT_DIR:-.}/fixtures"
+      },
+      "_comment": "Eski protokol (2025-11-25). Claude Code hangi revizyonu kabul ediyor sorusunu deneyle cevaplamak icin. Normal kullanimda kapali tutun."
+    }
+  }
+}

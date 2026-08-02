@@ -1,0 +1,77 @@
+{
+  "_comment": "Mock modda oluşturulan TimeEntry kayıtları burada birikir. Başlangıçta boştur — ama tamamen boş değil: mevcut kayıtlar 'timeSpent ARTIMLIDIR' dersini vermek için var.",
+  "_incrementalNote": "Yol B'de (requestUpdate/taskUpdate) timeSpent 'en son girişten bu yana eklenen süre'dir, toplam değil. Aşağıdaki kayıtlar requests.json/tasks.json'daki timeSpentTotalMinutes değerleriyle tutarlıdır: Request 70248 → 60+30=90, Task 4412 → 45, Task 4501 → 30, Request 70315 → 240.",
+
+  "timeEntries": [
+    {
+      "id": "TW9jay9UaW1lRW50cnkvMQ",
+      "personId": "TW9jay9QZXJzb24vMQ",
+      "assignmentType": "Request",
+      "assignmentId": "TW9jay9SZXF1ZXN0LzcwMjQ4",
+      "dayOffset": -3,
+      "startedAtLocal": "09:30",
+      "timeSpent": 60,
+      "description": "İlk inceleme, sorgu planı çıkarıldı",
+      "effortClassId": "TW9jay9FZmZvcnRDbGFzcy8x",
+      "correction": false,
+      "source": "web",
+      "sourceID": null
+    },
+    {
+      "id": "TW9jay9UaW1lRW50cnkvMg",
+      "personId": "TW9jay9QZXJzb24vMQ",
+      "assignmentType": "Request",
+      "assignmentId": "TW9jay9SZXF1ZXN0LzcwMjQ4",
+      "dayOffset": -1,
+      "startedAtLocal": "16:00",
+      "timeSpent": 30,
+      "description": "EXPLAIN analizi",
+      "effortClassId": "TW9jay9FZmZvcnRDbGFzcy8x",
+      "correction": false,
+      "source": "web",
+      "sourceID": null
+    },
+    {
+      "id": "TW9jay9UaW1lRW50cnkvMw",
+      "personId": "TW9jay9QZXJzb24vMQ",
+      "assignmentType": "Task",
+      "assignmentId": "TW9jay9UYXNrLzQ0MTI",
+      "dayOffset": -1,
+      "startedAtLocal": "10:00",
+      "timeSpent": 45,
+      "description": "Index tasarımı",
+      "effortClassId": "TW9jay9FZmZvcnRDbGFzcy8x",
+      "correction": false,
+      "source": "web",
+      "sourceID": null
+    },
+    {
+      "id": "TW9jay9UaW1lRW50cnkvNA",
+      "personId": "TW9jay9QZXJzb24vMQ",
+      "assignmentType": "Task",
+      "assignmentId": "TW9jay9UYXNrLzQ1MDE",
+      "dayOffset": -2,
+      "startedAtLocal": "14:00",
+      "timeSpent": 30,
+      "description": "AD şema kontrolü",
+      "effortClassId": "TW9jay9FZmZvcnRDbGFzcy8x",
+      "correction": false,
+      "source": "web",
+      "sourceID": null
+    },
+    {
+      "id": "TW9jay9UaW1lRW50cnkvNQ",
+      "personId": "TW9jay9QZXJzb24vMQ",
+      "assignmentType": "Request",
+      "assignmentId": "TW9jay9SZXF1ZXN0LzcwMzE1",
+      "dayOffset": -5,
+      "startedAtLocal": "09:00",
+      "timeSpent": 240,
+      "description": "Gereksinim toplama",
+      "effortClassId": "TW9jay9FZmZvcnRDbGFzcy8x",
+      "correction": false,
+      "source": "web",
+      "sourceID": null
+    }
+  ]
+}

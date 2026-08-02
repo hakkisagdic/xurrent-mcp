@@ -1,0 +1,48 @@
+{
+  "_comment": "Mock Person kayıtları. 'me' authenticated user'ı işaret eder — GraphQL'deki me query'sinin ve '$me' özel değerinin karşılığı.",
+  "me": "TW9jay9QZXJzb24vMQ",
+  "account": {
+    "id": "ornek-bt",
+    "name": "Örnek A.Ş. — BT Hizmetleri",
+    "directory": false
+  },
+  "people": [
+    {
+      "id": "TW9jay9QZXJzb24vMQ",
+      "name": "Ayşe Demir",
+      "primaryEmail": "ayse.demir@ornek.com",
+      "jobTitle": "Kıdemli Sistem Uzmanı",
+      "timeZone": "Europe/Istanbul",
+      "disabled": false,
+      "employeeID": "EMP-1042",
+      "costPerHour": 45.0,
+      "organization": { "id": "TW9jay9Pcmdhbml6YXRpb24vMQ", "name": "Örnek A.Ş." },
+      "manager": { "id": "TW9jay9QZXJzb24vMw", "name": "Mehmet Kaya" }
+    },
+    {
+      "id": "TW9jay9QZXJzb24vMg",
+      "name": "Burak Şahin",
+      "primaryEmail": "burak.sahin@ornek.com",
+      "jobTitle": "Ağ Uzmanı",
+      "timeZone": "Europe/Istanbul",
+      "disabled": false,
+      "employeeID": "EMP-1088",
+      "costPerHour": 40.0,
+      "organization": { "id": "TW9jay9Pcmdhbml6YXRpb24vMQ", "name": "Örnek A.Ş." },
+      "manager": { "id": "TW9jay9QZXJzb24vMw", "name": "Mehmet Kaya" }
+    },
+    {
+      "id": "TW9jay9QZXJzb24vMw",
+      "name": "Mehmet Kaya",
+      "primaryEmail": "mehmet.kaya@ornek.com",
+      "jobTitle": "BT Hizmetleri Müdürü",
+      "timeZone": "Europe/Istanbul",
+      "disabled": false,
+      "employeeID": "EMP-0301",
+      "costPerHour": 60.0,
+      "organization": { "id": "TW9jay9Pcmdhbml6YXRpb24vMQ", "name": "Örnek A.Ş." },
+      "manager": null,
+      "_comment": "Mehmet manager'dır — personId != self yazma yetkisi senaryosunu test etmek için. Ayşe'nin token'ı ile Burak adına yazma denemesi UYARI üretmelidir."
+    }
+  ]
+}

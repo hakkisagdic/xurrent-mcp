@@ -1,0 +1,33 @@
+{
+  "_comment": "Mock TimeAllocation kayıtları — Yol A (timeEntryCreate) hedefleri. Bir time allocation, ticket'a bağlanmayan 'genel' çalışma kovasıdır (toplantı, eğitim, idari iş).",
+  "_note": "Sadece kişinin KENDİ organizasyonuna bağlı allocation'lar seçilebilir.",
+
+  "timeAllocations": [
+    {
+      "id": "TW9jay9UaW1lQWxsb2NhdGlvbi8x",
+      "name": "İç toplantılar",
+      "group": "Genel",
+      "descriptionRequired": false,
+      "effortClassId": "TW9jay9FZmZvcnRDbGFzcy8x",
+      "organizationId": "TW9jay9Pcmdhbml6YXRpb24vMQ",
+      "_teachingNote": "plan_time_entries_from_calendar'da eşleşmeyen toplantılar için önerilen varsayılan hedef budur."
+    },
+    {
+      "id": "TW9jay9UaW1lQWxsb2NhdGlvbi8y",
+      "name": "Eğitim ve gelişim",
+      "group": "Genel",
+      "descriptionRequired": true,
+      "effortClassId": "TW9jay9FZmZvcnRDbGFzcy8x",
+      "organizationId": "TW9jay9Pcmdhbml6YXRpb24vMQ",
+      "_teachingNote": "descriptionRequired=true → description olmadan yazma REDDEDİLİR. Ön kontrol bunu dry-run'da yakalamalıdır."
+    },
+    {
+      "id": "TW9jay9UaW1lQWxsb2NhdGlvbi8z",
+      "name": "İdari işler",
+      "group": "Genel",
+      "descriptionRequired": false,
+      "effortClassId": "TW9jay9FZmZvcnRDbGFzcy8x",
+      "organizationId": "TW9jay9Pcmdhbml6YXRpb24vMQ"
+    }
+  ]
+}

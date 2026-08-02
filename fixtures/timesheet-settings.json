@@ -1,0 +1,44 @@
+{
+  "_comment": "Mock TimesheetSetting. Xurrent'ta bu ayar ORGANİZASYONA bağlıdır ve o organizasyondaki herkese uygulanır — kişiye özel değildir.",
+  "_criticalNote": "timeIncrement 30 seçildi (Xurrent varsayılanı 60'tır). Böylece 45 dakikalık toplantı olduğu gibi yazılamaz ve yuvarlama diyaloğu tetiklenir. Gerçek hayatta varsayılan 60 olduğu için 'yarım saat çalıştım' girişleri sessizce reddedilir — entegrasyonlardaki en yaygın hata.",
+  "_allowedIncrements": [5, 10, 15, 30, 60, 120, 240],
+
+  "timesheetSetting": {
+    "id": "TW9jay9UaW1lc2hlZXRTZXR0aW5nLzE",
+    "name": "Örnek A.Ş. standart",
+    "organizationId": "TW9jay9Pcmdhbml6YXRpb24vMQ",
+
+    "unit": "hours_and_minutes",
+    "workday": 480,
+    "workweek": 2400,
+
+    "timeIncrement": 30,
+    "percentageIncrement": "12.5",
+
+    "allowWorkdayOvertime": false,
+    "allowWorkweekOvertime": true,
+
+    "allocationTimeTracking": true,
+    "assignmentTimeTracking": true,
+
+    "requireNote": false,
+    "requireTimeEntryDescription": false,
+
+    "notifyOnIncomplete": true,
+    "disabled": false,
+
+    "defaults": {
+      "requestEffortClassId": "TW9jay9FZmZvcnRDbGFzcy8x",
+      "taskEffortClassId": "TW9jay9FZmZvcnRDbGFzcy8x",
+      "projectTaskEffortClassId": "TW9jay9FZmZvcnRDbGFzcy8x",
+      "problemEffortClassId": "TW9jay9FZmZvcnRDbGFzcy8x",
+      "timeAllocationEffortClassId": "TW9jay9FZmZvcnRDbGFzcy8x"
+    },
+
+    "_switchesNote": {
+      "allowWorkdayOvertime": "false → günlük toplam 480 dakikayı aşan yazma REDDEDİLİR. Demo takvimi 4.5 saat toplantı içerir; buna 4 saatlik ek giriş yapmayı denemek bu kuralı canlı gösterir.",
+      "allocationTimeTracking": "false yapılırsa Yol A (timeEntryCreate) TAMAMEN kapanır. date_first stratejisi çalışamaz hale gelir.",
+      "assignmentTimeTracking": "false yapılırsa Yol B (requestUpdate/taskUpdate) TAMAMEN kapanır. link_first ve two_step çalışamaz hale gelir."
+    }
+  }
+}
