@@ -1,0 +1,29 @@
+{
+  "compilerOptions": {
+    // ESM + Node 24: nodenext hem module hem moduleResolution için ZORUNLU.
+    // Bu ayarla SDK subpath import'larında ".js" uzantısı zorunlu hale gelir
+    // (ör. "@modelcontextprotocol/sdk/server/mcp.js") — kaynak dosya .ts olsa bile.
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+
+    "target": "ES2023",
+    "lib": ["ES2023"],
+
+    // TS2584 ("Cannot find name 'console'") hatasının sebebi tam olarak budur:
+    // "types" yazılmadığında ve @types/node yüklüyken bile ambient global'ler
+    // otomatik gelmeyebilir. Node global'lerini açıkça dahil ediyoruz.
+    "types": ["node"],
+
+    "strict": true,
+    "noUncheckedIndexedAccess": false,
+    "noImplicitOverride": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "declaration": false,
+    "sourceMap": true,
+    "outDir": "dist",
+    "rootDir": "src"
+  },
+  "include": ["src/**/*.ts"]
+}
