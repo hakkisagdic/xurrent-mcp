@@ -215,7 +215,8 @@ OAuth akışını üç kez implemente etmek yerine token yenilemeyi düz bir HTT
 | [07 — Sihirbaz](docs/07-sihirbaz.md) | `steps.json`, ders akışı, `expect` blokları |
 | [08 — Riskler ve SSS](docs/08-riskler-ve-sss.md) | Bilinen tuzaklar, `DOĞRULANMALI` listesi |
 | [09 — Protokol geçişi](docs/09-protokol-gecisi.md) | ★ `2026-07-28`, MRTR, `requestState`, ölçüm |
-| [10 — Sıfırdan geliştirme](docs/10-sifirdan-gelistirme.md) | ★ Bu proje nasıl üretildi — prompt'lar, kararlar, tuzaklar |
+| [10 — Sıfırdan geliştirme](docs/10-sifirdan-gelistirme.md) | ★ Bu proje nasıl üretildi — kararlar, tuzaklar |
+| [11 — Prompt defteri](docs/11-prompt-defteri.md) | ★ Sırayla çalıştırılacak 16 prompt, kopyala-yapıştır |
 | [Demo senaryosu](docs/demo/senaryo.md) | Sunumda adım adım ne yapılacak |
 
 ---
@@ -237,6 +238,10 @@ sonunda çalışan bir kopya ve sırayı bilen bir öğrenci kalır.
 
 Anlatılan hikâye uydurma değil: bu repo tam olarak öyle üretildi. Yanlış çıkan mimari
 kararlar, kaçırılan kusurlar ve iki yanlış alarm dahil.
+
+**Derste kullanmak için:** [11 — Prompt defteri](docs/11-prompt-defteri.md) aynı 16 adımın
+sırayla kopyalanıp çalıştırılacak prompt'larını verir. Defter `docs/atolye/adimlar.json`'dan
+**üretilir** (`node scripts/gen-prompt-defteri.mjs`), böylece prompt'lar ile atölye asla ayrışmaz.
 
 ---
 
