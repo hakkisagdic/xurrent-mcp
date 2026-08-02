@@ -108,6 +108,51 @@ const sc = (r) => r.msg?.result?.structuredContent;
 const isErr = (r) => r.msg?.result?.isError === true;
 const text = (r) => r.msg?.result?.content?.[0]?.text ?? "";
 
+/**
+ * Başarısızlığın GERÇEK sebebini yazar.
+ *
+ * Önceki hâli `isErr(r) ? text(r) : "errors=[]"` idi ve isError=false ama
+ * structuredContent.errors DOLU olduğunda ekrana "errors=[]" basıyordu —
+ * yani kontrol kırmızıyken kanıt yeşil görünüyordu. Bir sonraki kişiyi
+ * yanlış yola sokan tam olarak buydu; hatayı bulmak yarım saat aldı.
+ */
+function nedenBasarisiz(r) {
+  const hatalar = sc(r)?.errors ?? [];
+  if (hatalar.length) {
+    return hatalar.map((e) => e?.message ?? JSON.stringify(e)).join(" | ").slice(0, 160);
+  }
+  if (isErr(r)) return "isError=true · " + text(r).replace(/\s+/g, " ").slice(0, 140);
+  if (r.timeout) return "zaman aşımı";
+  if (r.err) return "süreç hatası: " + r.err;
+  return "errors=[] (beklenen sonuç)";
+}
+
+// ── tarih: SUNUCULARIN kullandığı saat diliminde ────────────────────────────
+/**
+ * ★ toISOString() KULLANMA. O UTC tarihi verir; üç sunucu ise "bugün"ü
+ * XURRENT_TIMEZONE'da (varsayılan Europe/Istanbul, UTC+3) hesaplar.
+ *
+ * Yerel 00:00–03:00 arasında UTC tarihi bir gün geridedir. Oradan bir gün daha
+ * çıkarınca istenen T-1, sunucunun gözünde T-2 olur ve XURRENT_MAX_BACKDATE_DAYS=1
+ * yüzünden yazma HAKLI OLARAK reddedilir. Sonuç: yalnızca gecenin belirli üç
+ * saatinde kırmızıya dönen bir test.
+ *
+ * Bu, projenin kendi dersinin bir örneği: kırmızı test önce kendini suçlamalı.
+ * Sunucular doğru davranıyordu; ölçen taraf yanlış tarihi soruyordu.
+ */
+const TZ = process.env.XURRENT_TIMEZONE || "Europe/Istanbul";
+
+/** TZ'de gün farkıyla tarih, YYYY-MM-DD. gunFarki=0 bugün, -1 dün. */
+function tarihTZ(gunFarki = 0) {
+  const bugun = new Intl.DateTimeFormat("en-CA", {
+    timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit",
+  }).format(new Date());
+  // Gün aritmetiğini UTC öğlen üzerinden yap: DST ve gün sınırı kaymalarından etkilenmez.
+  const d = new Date(`${bugun}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + gunFarki);
+  return d.toISOString().slice(0, 10);
+}
+
 // ── sonuç toplama ───────────────────────────────────────────────────────────
 let pass = 0, fail = 0;
 const rows = [];
@@ -155,7 +200,9 @@ async function kos(dil) {
     const oncesi = requestCount();
     const r = await callTool(dil, "xurrent_create_time_entry", {
       targetType: "request", targetId: "TW9jay9SZXF1ZXN0LzcwMjQ4",
-      minutes: 60, date: new Date(Date.now() - 864e5).toISOString().slice(0, 10),
+      // T-1, SUNUCUNUN saat diliminde. XURRENT_MAX_BACKDATE_DAYS=1 sınırındayız;
+      // UTC'den türetmek gece yarısı–03:00 arasında T-2 üretir ve reddedilir.
+      minutes: 60, date: tarihTZ(-1),
       description: "two_step live", dryRun: false, backdateStrategy: "two_step",
     });
     await new Promise((z) => setTimeout(z, 300));
@@ -163,9 +210,16 @@ async function kos(dil) {
     const s = sc(r);
     // Yazma yolu en az iki mutation göndermeli (parent update + timeEntryUpdate).
     check(dil, "b) two_step ≥2 istek gönderdi", istek >= 2, `${istek} istek görüldü`);
+
+    // Detay nedenBasarisiz() üzerinden gelir; kırmızı bir kontrolün yanında
+    // yeşil görünen bir kanıt basmamak için. Başarılı hâlde de kullanılan
+    // tarihi ve saat dilimini yaz — bu kontrol bir kez saat dilimi yüzünden
+    // kırıldı, bir dahakine kanıt ekranda dursun.
     check(dil, "b) yazma başarılı, errors boş",
       !isErr(r) && (s?.errors?.length ?? 0) === 0,
-      isErr(r) ? text(r).slice(0, 70) : "errors=[]");
+      (s?.errors?.length ?? 0) === 0 && !isErr(r)
+        ? `errors=[] · planned=${s?.planned?.length ?? 0} · date=${tarihTZ(-1)} (TZ ${TZ})`
+        : nedenBasarisiz(r));
   }
 
   // d) HTTP 200 + errors dolu → istemci bunu BAŞARI sanmamalı
