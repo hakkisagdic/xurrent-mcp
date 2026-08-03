@@ -240,6 +240,9 @@ OAuth akışını üç kez implemente etmek yerine token yenilemeyi düz bir HTT
 | [09 — Protokol geçişi](docs/09-protokol-gecisi.md) | ★ `2026-07-28`, MRTR, `requestState`, ölçüm |
 | [10 — Sıfırdan geliştirme](docs/10-sifirdan-gelistirme.md) | ★ Bu proje nasıl üretildi — kararlar, tuzaklar |
 | [11 — Prompt defteri](docs/11-prompt-defteri.md) | ★ Sırayla çalıştırılacak 16 prompt, kopyala-yapıştır |
+| [12 — MCP uyumu](docs/12-mcp-uyum.md) | Spec uyum checklist'i, ölçülmüş sonuçlar, bilinen ihlaller |
+| [13 — Inspector](docs/13-inspector.md) | Resmî inspector kullanımı + kendi açıklayıcı ekranımız |
+| [14 — Test ve kalite](docs/14-test-ve-kalite.md) | Test piramidi, her katmanın neyi yakaladığı |
 | [Demo senaryosu](docs/demo/senaryo.md) | Sunumda adım adım ne yapılacak |
 
 ---
