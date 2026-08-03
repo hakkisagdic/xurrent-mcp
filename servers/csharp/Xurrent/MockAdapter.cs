@@ -57,9 +57,9 @@ public sealed class MockAdapter : IXurrentAdapter
                 PersonId = Str(e, "personId") ?? MeId,
                 AssignmentType = Str(e, "assignmentType"),
                 AssignmentId = Str(e, "assignmentId"),
-                Date = TimeUtil.Today(_tz).AddDays(Int(e, "dayOffset") ?? 0),
+                Date = Today.AddDays(Int(e, "dayOffset") ?? 0),
                 StartedAt = TimeUtil.AtLocal(
-                    TimeUtil.Today(_tz).AddDays(Int(e, "dayOffset") ?? 0),
+                    Today.AddDays(Int(e, "dayOffset") ?? 0),
                     TimeUtil.ParseHhMm(Str(e, "startedAtLocal")), _tz),
                 TimeSpent = Int(e, "timeSpent") ?? 0,
                 Description = Str(e, "description"),
@@ -73,6 +73,9 @@ public sealed class MockAdapter : IXurrentAdapter
                 _parentTotals[entry.AssignmentId] = _parentTotals.GetValueOrDefault(entry.AssignmentId) + entry.TimeSpent;
         }
     }
+
+    /// <summary>Fixture'ların göreli tarihleri bu "bugün"e göre materyalize edilir (cfg.Clock enjekte edilebilir).</summary>
+    private DateOnly Today => TimeUtil.Today(_tz, _cfg.Clock);
 
     private JsonNode LoadFixture(string file)
     {
@@ -314,7 +317,7 @@ public sealed class MockAdapter : IXurrentAdapter
             AssignmentType = null,
             AssignmentId = null,
             TimeAllocationId = Str(input, "timeAllocationId"),
-            Date = Str(input, "date") is { } ds ? TimeUtil.ParseDate(ds, _tz) : TimeUtil.Today(_tz),
+            Date = Str(input, "date") is { } ds ? TimeUtil.ParseDate(ds, _tz, _cfg.Clock) : Today,
             StartedAt = Str(input, "startedAt") is { } sa && DateTimeOffset.TryParse(sa, out var p) ? p : null,
             TimeSpent = minutes,
             Description = Str(input, "description"),
@@ -335,7 +338,7 @@ public sealed class MockAdapter : IXurrentAdapter
             return MutationOutcome.Fail($"TimeEntry bulunamadı: {id}", "id");
 
         // KRİTİK: assignment alanı input'ta YOK -> ticket bağına DOKUNULMUYOR.
-        if (Str(input, "date") is { } d) entry.Date = TimeUtil.ParseDate(d, _tz);
+        if (Str(input, "date") is { } d) entry.Date = TimeUtil.ParseDate(d, _tz, _cfg.Clock);
         if (Str(input, "startedAt") is { } s && DateTimeOffset.TryParse(s, out var parsed)) entry.StartedAt = parsed;
         if (Str(input, "personId") is { } pid) entry.PersonId = pid;
         if (Int(input, "timeSpent") is { } ts) entry.TimeSpent = ts;
@@ -360,7 +363,7 @@ public sealed class MockAdapter : IXurrentAdapter
             Id = NextEntryId(),
             // YOL B: person = authenticated user, date = BUGÜN. Sunucu atar, kontrol edilemez.
             PersonId = MeId,
-            Date = TimeUtil.Today(_tz),
+            Date = Today,
             StartedAt = null,
             AssignmentType = assignmentType,
             AssignmentId = parentId,
@@ -431,7 +434,7 @@ public sealed class MockAdapter : IXurrentAdapter
     /// <summary>Göreli gün farkını, yerel saat h:00'da mutlak ISO8601'e çevirir.</summary>
     private string? OffsetDaysToIso(int? offsetDays, int hour)
         => offsetDays is null ? null
-            : TimeUtil.ToIso(TimeUtil.AtLocal(TimeUtil.Today(_tz).AddDays(offsetDays.Value), new TimeOnly(hour, 0), _tz));
+            : TimeUtil.ToIso(TimeUtil.AtLocal(Today.AddDays(offsetDays.Value), new TimeOnly(hour, 0), _tz));
 
     internal static string? Str(JsonObject o, string key)
         => o.TryGetPropertyValue(key, out var v) && v is not null && v.GetValueKind() == JsonValueKind.String

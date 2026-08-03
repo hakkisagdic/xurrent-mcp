@@ -34,7 +34,7 @@ public sealed class CalendarFactory(AppConfig cfg, HttpClient http)
     public CalendarWindow BuildWindow(string? date, string? timeZoneId)
     {
         var tz = ResolveTimeZone(timeZoneId ?? cfg.TimeZoneId);
-        var day = string.IsNullOrWhiteSpace(date) ? TimeUtil.Today(tz) : TimeUtil.ParseDate(date, tz);
+        var day = string.IsNullOrWhiteSpace(date) ? TimeUtil.Today(tz, cfg.Clock) : TimeUtil.ParseDate(date, tz);
         return new CalendarWindow(day, TimeUtil.LocalMidnight(day, tz), TimeUtil.LocalMidnight(day.AddDays(1), tz), tz);
     }
 
@@ -44,10 +44,18 @@ public sealed class CalendarFactory(AppConfig cfg, HttpClient http)
         catch (Exception e) when (e is TimeZoneNotFoundException or InvalidTimeZoneException) { return cfg.TimeZone; }
     }
 
-    public async Task<CalendarResult> ReadAsync(
+    public Task<CalendarResult> ReadAsync(
         string providerName, CalendarWindow window, CalendarOptions options, CancellationToken ct)
+        => ReadAsync(Create(providerName), window, options, ct);
+
+    /// <summary>
+    /// Normalizasyonun gerçek gövdesi. Sağlayıcı DIŞARIDAN verilebilir; böylece
+    /// filtre/kırpma/dedup kuralları ağ ya da dosya olmadan, sentetik RawEvent'lerle
+    /// birim testine tabi tutulabilir (bkz. XurrentMcp.Tests/TakvimTests.cs).
+    /// </summary>
+    public async Task<CalendarResult> ReadAsync(
+        ICalendarProvider provider, CalendarWindow window, CalendarOptions options, CancellationToken ct)
     {
-        var provider = Create(providerName);
         var raw = await provider.FetchAsync(window, options, ct);
 
         // ── DEDUP ────────────────────────────────────────────────────────────

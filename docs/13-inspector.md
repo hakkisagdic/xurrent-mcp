@@ -62,26 +62,29 @@ Sık kullanılan bayraklar (kaynak: `--cli --help`):
 
 ### Üç dilin komutları
 
-Ortam değişkenlerini **kabuktan** verin (aşağıdaki tuzağa bakın):
-
-```bash
-export XURRENT_MODE=mock CALENDAR_PROVIDER=mock XURRENT_FIXTURES_DIR=$PWD/fixtures
-```
+Ortam değişkenlerini **`-e KEY=VALUE` ile ve sunucu komutundan SONRA** verin.
+Kabuktan `export` etmek **çalışmaz** — sebebi aşağıdaki tuzakta ölçüldü.
 
 ```bash
 # TypeScript
 npx -y @modelcontextprotocol/inspector@latest --cli \
-  node servers/typescript/dist/mcp/stdio.js --method tools/list
+  node servers/typescript/dist/mcp/stdio.js \
+  -e XURRENT_MODE=mock --method tools/list
 
 # Python  ← uv ile DEĞİL; sebebi aşağıda
 npx -y @modelcontextprotocol/inspector@latest --cli \
-  servers/python/.venv/bin/xurrent-mcp --method tools/list
+  servers/python/.venv/bin/xurrent-mcp \
+  -e XURRENT_MODE=mock --method tools/list
 
 # C#
 npx -y @modelcontextprotocol/inspector@latest --cli \
   dotnet run --project servers/csharp/XurrentMcp.csproj --no-build -- stdio \
-  --method tools/list
+  -e XURRENT_MODE=mock --method tools/list
 ```
+
+`XURRENT_MODE`'un varsayılanı zaten `mock`'tur; yukarıdaki `-e` bu yüzden şart
+değildir. Ama `MCP_PROTOCOL` gibi **varsayılandan farklı** bir değer vermek
+istediğinizde `-e` tek yoldur.
 
 Üçü de aynı sonucu verir — sözleşmenin dil-bağımsızlığı burada da görünür:
 
@@ -277,12 +280,34 @@ argv'sini log'a yazan bir kabuk script'iyle ölçtük.
 `verify-contract.mjs` bunu kullanır) resmî inspector ile **çalışmaz**; venv giriş
 noktasını doğrudan çağırın.
 
-`-e KEY=VALUE` bayrağı da ad-hoc çağrıda `No servers found in config file` hatası
-verdi; ortam değişkenlerini kabuktan `export` edin.
-
 > Python sunucusunun kendisi sağlamdır — aynı komut `node scripts/verify-contract.mjs
 > --server py` ile sorunsuz çalışır ve **8/8 sözleşmeye tam uyumlu** döner. Sorun
 > araçtadır, sunucuda değil. Bu ayrımı yapamamak, saatlerce yanlış yerde hata aramaktır.
+
+#### 6. ★ Ortam değişkeni: kabuktan `export` **sessizce** çalışmaz
+
+En sinsi tuzak budur, çünkü hata vermez — yanlış ölçüm verir.
+
+Resmî CLI, alt süreci MCP SDK'sının `getDefaultEnvironment()` fonksiyonuyla başlatır;
+bu fonksiyon yalnızca güvenli bir alt küme (`PATH`, `HOME`, …) geçirir ve **geri kalan
+her şeyi düşürür**. Yani `export MCP_PROTOCOL=…` yazmak sunucuya ulaşmaz, ama komut
+başarıyla çalışır ve siz istediğiniz revizyonu ölçtüğünüzü sanırsınız.
+
+`MCP_PROTOCOL`'ü ayırt edici olarak kullanıp üç varyantı ölçtük:
+
+| Çağrı | Sunucunun gerçekten açıldığı mod | Sonuç |
+|---|---|---|
+| `MCP_PROTOCOL=2025-11-25 npx … --cli node …/stdio.js --method tools/list` | `v2 / 2026-07-28` | ❌ **sessiz** — değişken düştü, varsayılan kullanıldı |
+| `… --cli node …/stdio.js -e MCP_PROTOCOL=2025-11-25 --method tools/list` | `v1 / 2025-11-25` | ✅ doğru |
+| `… --cli -e MCP_PROTOCOL=2025-11-25 node …/stdio.js --method tools/list` | — | ❌ `No servers found in config file` |
+
+**Kural:** `-e KEY=VALUE`, sunucu komutundan **sonra** yazılır. Komuttan önce
+yazılırsa `-e` bir sunucu adı sanılır ve çağrı hata verir.
+
+> **Ders notu.** İki hata türünü ayırt edin: üçüncü satır **gürültülü** hatadır, hemen
+> fark edilir. Birinci satır **sessiz** hatadır ve ölçümünüzü bozar. Bir aracın
+> "çalıştı" demesi, istediğinizi yaptığı anlamına gelmez — ayırt edici bir değişkenle
+> (burada `MCP_PROTOCOL`) doğrulamadan ölçüme güvenmeyin.
 
 ---
 

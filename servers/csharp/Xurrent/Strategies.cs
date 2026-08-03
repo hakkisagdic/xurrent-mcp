@@ -64,8 +64,8 @@ public static class Strategies
         var me = await adapter.ResolvePersonIdAsync("$me", ct);
         var personId = await adapter.ResolvePersonIdAsync(req.PersonId ?? "$me", ct);
 
-        var today = TimeUtil.Today(cfg.TimeZone);
-        var effectiveDate = string.IsNullOrWhiteSpace(req.Date) ? today : TimeUtil.ParseDate(req.Date, cfg.TimeZone);
+        var today = TimeUtil.Today(cfg.TimeZone, cfg.Clock);
+        var effectiveDate = string.IsNullOrWhiteSpace(req.Date) ? today : TimeUtil.ParseDate(req.Date, cfg.TimeZone, cfg.Clock);
 
         var strategy = Validate.NormalizeStrategy(req.BackdateStrategy, cfg, warnings);
 

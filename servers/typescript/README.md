@@ -27,7 +27,8 @@ Hiçbir token gerekmez — varsayılan **mock** moddur.
 | `npm run wizard` | `docs/wizard/steps.json` dersini in-process yürütür ve beklenen sayıları doğrular |
 | `npm run gen:ics` | `fixtures/calendar.json` → `fixtures/calendar.ics` (o günkü tarihlere göre) |
 | `npm run verify` | gerçek bir MCP client ile `tools/list` çekip `contract/tools.json`'a karşı doğrular |
-| `npm run test:schema` | MCP → Gemini şema çevirisinin birim testi (bağımlılıksız, `node --test`) |
+| `npm test` | **çekirdek iş mantığının birim testleri** — 172 test, bağımlılıksız `node --test` |
+| `npm run test:schema` | yalnızca MCP → Gemini şema çevirisi (yukarıdakinin bir alt kümesi) |
 | `npm run probe:protocols` | 8 tool'u İKİ protokolde çalıştırıp `structuredContent`'lerin özdeşliğini kanıtlar |
 | `npm run probe:state` | `requestState` kurcalama/replay testleri (ham JSON-RPC ile) |
 
@@ -150,8 +151,53 @@ Kaybı sınırlayan iki kural:
 Birim testi bunu ölçer:
 
 ```bash
-npm run build && npm run test:schema     # 14 test: 8/8 tool çevrilir, düşen anahtarlar listelenir
+npm run build && npm run test:schema     # 8/8 tool çevrilir, düşen anahtarlar listelenir
 ```
+
+## Birim testleri
+
+```bash
+npm run build && npm test
+```
+
+Bağımlılık **yoktur**: kosucu Node'un kendi `node --test`'idir, dosya deseni
+`src/**/*.test.mjs`.
+
+Repodaki diğer doğrulama katmanları (sihirbaz, `verify-contract`, `mcp-uyum`,
+`senaryolar`) **uçtan uca** çalışır: bir kenar durum bozulduğunda genelde yine
+geçerler, çünkü hepsi geçerli girdilerle ilerler. Bu testler o boşluğu kapatır —
+hedef, protokol ve ağ değil, **saf iş mantığıdır**.
+
+| Dosya | Ne doğrular |
+|---|---|
+| `src/xurrent/strategies.test.mjs` | üç backdate stratejisi: mutation sayısı/sırası, adım etiketleri, **`two_step`'in 2. adımında `assignment` alanının bulunmaması**, `date_first`'te hedefin TimeAllocation'a çevrilmesi, dört ticket hedefi, deterministik `sourceID` |
+| `src/xurrent/validate.test.mjs` | `timeIncrement` katı olma, negatif süre + `correction`, 80 karakter sınırı, `maxBackdateDays` (T / T-1 geçer, T-2 hata), mesai sınırları, Yol A/Yol B şalterleri, `personId` farkının **hata değil uyarı** olması, `roundToIncrement` |
+| `src/calendar/normalize.test.mjs` | atlama kuralları (`isAllDay`/`isCancelled`/`declined`/`free`), interval merge (**fixture: 225 vs naif 255**), gece yarısını aşan toplantının kırpılması, dedup anahtarı (`iCalUID` + start instant), Graph'in offsetsiz + 7 kesirli haneli `dateTime`'ı, Google'da `transparency` alanının **yokluğu** |
+| `src/core/matching.test.mjs` | toplantı → ticket eşleştirmesi: numaradan kesin eşleşme (güven 1.0), metin benzerliği, **iki aday yakınsa `needsUserDecision`**, hiçbiri tutmazsa varsayılan TimeAllocation |
+| `src/core/confirm.test.mjs` | `requestState`: imza, parmak izi, principal, TTL ve **tek kullanım (nonce)** savunmalarının her biri ayrı ayrı |
+| `src/util/time.test.mjs` | saat dilimi aritmetiği, DST, göreli fixture tarihlerinin materyalizasyonu |
+| `src/llm/schema.test.mjs` | MCP → Gemini şema çevirisi (önceden vardı) |
+
+### İki kural
+
+**1 — Testler gerçek zamana BAĞLI DEĞİLDİR.** "Şimdi" enjekte edilir
+(`src/_testkit.mjs` → `SABIT_SIMDI`). Seçilen an bilerek `2026-08-03T22:30:00Z`,
+yani Europe/Istanbul'da **04 Ağustos 01:30**: yerel tarih ile UTC tarihi farklıdır.
+Bu repoda gece 00:00–03:00 arasında kırılan bir test tam olarak bu yüzden yaşandı;
+`src/util/time.test.mjs` bunu artık hem doğruluyor hem de kural olarak sabitliyor.
+
+**2 — I/O ve ağ YOKTUR.** Yalnızca `fixtures/` okunur. Graph/Google sağlayıcılarının
+HTTP kısmı değil, `mapGraphEvent` / `mapGoogleEvent` **map** kısmı çağrılır —
+tuzaklar zaten orada yaşar.
+
+### Neden `dist/` üzerinden test ediliyor?
+
+Testler kaynak `.ts`'i değil, derlenmiş `dist/`'i içe alır. Sebebi tek bir cümle:
+`.ts` dosyalarını doğrudan çalıştırmak bir yükleyici (loader) gerektirir ve o da
+bir bağımlılıktır — bu repo kasıtlı olarak bağımlılık-fakiridir (SDK + zod dışında
+runtime paketi yok). Bedeli, `npm test`'ten önce `npm run build` gerekmesidir;
+karşılığında testler **gerçekten yayınlanan artefaktı** ölçer. Mevcut
+`src/llm/schema.test.mjs` de baştan beri bu deseni kullanıyordu; yeni testler ona uydu.
 
 ### Anahtarsız uçtan uca deneme
 
@@ -167,6 +213,9 @@ tool döngüsünün, şema çevirisinin ve onay akışının uçtan uca koşturu
 ## Dosya haritası
 
 ```
+src/_testkit.mjs            ★ birim testlerin ortak malzemesi: SABIT_SIMDI + fixture yükleyiciler (TEST DEĞİL)
+src/**/*.test.mjs           ★ çekirdek iş mantığının birim testleri — `npm test`
+
 src/config.ts               env okuma + zod doğrulama (.env parser dahil, dotenv yok)
 src/types.ts                sözleşme tipleri
 src/util/time.ts            IANA saat dilimi aritmetiği (Intl ile; luxon yok)
@@ -186,8 +235,8 @@ src/mcp/protocols.ts        sihirbaz kancası: AVAILABLE_PROTOCOLS + runUnderPro
 src/mcp/{stdio,http}.ts     MCP_PROTOCOL'e göre v1/v2/both
 
 src/xurrent/queries.ts      GraphQL metinleri (dry-run çıktısında birebir gösterilir)
-src/xurrent/strategies.ts   ★ üç backdate stratejisi
-src/xurrent/validate.ts     ön kontroller → errors[] (bloklayan) + warnings[] (bilgilendiren)
+src/xurrent/strategies.ts   ★ üç backdate stratejisi          → strategies.test.mjs
+src/xurrent/validate.ts     ön kontroller → errors[] (bloklayan) + warnings[] (bilgilendiren) → validate.test.mjs
 src/xurrent/mock.ts         fixtures adapter — Yol A/Yol B kısıtlarını da taklit eder
 src/xurrent/live.ts         gerçek GraphQL adapter
 src/calendar/*              mock / ics / google / graph + ortak normalizasyon

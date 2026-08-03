@@ -402,7 +402,7 @@ public sealed class LiveAdapter : IXurrentAdapter, IDisposable
             var data = await PostAsync(q, new JsonObject
             {
                 ["personId"] = await ResolvePersonIdAsync("$me", ct),
-                ["date"] = TimeUtil.Today(_cfg.TimeZone).ToString("yyyy-MM-dd"),
+                ["date"] = TimeUtil.Today(_cfg.TimeZone, _cfg.Clock).ToString("yyyy-MM-dd"),
             }, ct);
 
             foreach (var n in data["timeEntries"]?["nodes"] as JsonArray ?? [])

@@ -1,0 +1,47 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    ÇEKİRDEK İŞ MANTIĞININ BİRİM TESTLERİ.
+
+    Neden ayrı bir proje: "sema-testi" modu elle yazılmış bir iddia koşucusuydu
+    ve YALNIZCA şema çeviricisini kapsıyordu. strategies / validate / calendar / matching /
+    confirm yalnızca sihirbaz uçtan uca koştuğu için DOLAYLI olarak test ediliyordu.
+    Bir kenar durum bozulduğunda sihirbaz genelde yine geçer; hata üretimde görünür.
+
+    Ana proje BOZULMAZ: XurrentMcp.csproj içindeki DefaultItemExcludes bu klasörü
+    ana derlemenin dışında tutar. dotnet run modları
+    (stdio | http | chat | web | wizard | sema-testi) aynen çalışmaya devam eder.
+
+    Çalıştırma:  dotnet test servers/csharp/XurrentMcp.Tests
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>XurrentMcp.Tests</RootNamespace>
+    <AssemblyName>XurrentMcp.Tests</AssemblyName>
+    <IsPackable>false</IsPackable>
+
+    <!-- Ana projeyle AYNI sebep: TimeZoneInfo.FindSystemTimeZoneById("Europe/Istanbul")
+         ve Türkçe kültür karşılaştırmaları invariant globalization modunda ÇALIŞMAZ. -->
+    <InvariantGlobalization>false</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../XurrentMcp.csproj" />
+  </ItemGroup>
+
+  <!-- Ana proje ASP.NET Core'a bağlı (http/web modları); test host'u da aynı
+       framework referansını görmeli, yoksa tip çözümlemesi çalışma anında patlar. -->
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+</Project>

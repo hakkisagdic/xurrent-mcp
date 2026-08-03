@@ -18,7 +18,7 @@ public sealed class MockCalendarProvider(AppConfig cfg) : ICalendarProvider
         var path = Path.Combine(cfg.FixturesDir, "calendar.json");
         var doc = JsonNode.Parse(File.ReadAllText(path))!.AsObject();
         var tz = window.TimeZone;
-        var today = TimeUtil.Today(tz);
+        var today = TimeUtil.Today(tz, cfg.Clock);
 
         var result = new List<RawEvent>();
         foreach (var node in doc["events"]!.AsArray())

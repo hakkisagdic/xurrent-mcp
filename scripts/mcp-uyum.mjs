@@ -85,15 +85,32 @@ const CATALOG = [
     nasil: "Üç zorunlu _meta anahtarıyla çağrılır; hatasız dönmeli.", otomatik: true },
   { id: "Y2", alan: "2026-07-28", madde: "_meta'sız server/discover REDDEDİLİR", revizyon: V2R, seviye: "MUST",
     nasil: "Aynı istek _meta olmadan gönderilir; hata dönmesi ZORUNLUDUR.", otomatik: true },
-  { id: "Y3", alan: "2026-07-28", madde: "Zorunlu _meta anahtarları: protocolVersion + clientCapabilities + clientInfo", revizyon: V2R, seviye: "MUST",
-    nasil: "Y2 + Y15 birlikte; anahtarlar tek tek çıkarılıp red ölçülür.", otomatik: true },
+  // ★ Bu maddenin tamamı contract/protocol.md'de anlatılan tuzağın testidir.
+  //   Spec, server/discover'ın stdio'da "geriye dönük uyumluluk sondası" olarak
+  //   kullanılmasını ÖNERİR: -32601 = "bu sunucu 2026 öncesi". Dolayısıyla v2 konuşan
+  //   bir sunucunun eksik _meta'ya -32601 demesi, kendisini v1 sanmasına yol açar.
+  //   Doğru cevap -32602'dir: "istek hatalı", "metot yok" değil.
+  { id: "Y2b", alan: "2026-07-28", madde: "_meta hatasının kodu -32601 DEĞİL (uyumluluk sondasını yanıltır)", revizyon: V2R, seviye: "SHOULD",
+    nasil: "Y2'nin hata kodu okunur; -32601 ise sonda bu v2 sunucuyu v1 sanır.", otomatik: true },
+  { id: "Y3a", alan: "2026-07-28", madde: "_meta.protocolVersion eksikse REDDEDİLİR", revizyon: V2R, seviye: "MUST",
+    nasil: "_meta'dan yalnızca protocolVersion çıkarılıp server/discover gönderilir.", otomatik: true },
+  // ★ clientInfo spec'te SHOULD'dur: "Clients SHOULD identify themselves on each request".
+  //   Bu yüzden ONU ZORUNLU TUTAN sunucu spec'ten KATI davranır ve clientInfo göndermeyen
+  //   uyumlu bir client'ı kırar. Madde bu yüzden "reddedilmeli" değil, "yine de İŞLENMELİ".
+  { id: "Y3b", alan: "2026-07-28", madde: "_meta.clientInfo YOKSA istek yine de işlenir (spec'te SHOULD)", revizyon: V2R, seviye: "SHOULD",
+    nasil: "clientInfo çıkarılıp server/discover gönderilir; başarılı dönmesi beklenir.", otomatik: true },
+  { id: "Y18", alan: "2026-07-28", madde: "Sunucu her sonucun _meta'sında serverInfo bildirir", revizyon: V2R, seviye: "SHOULD",
+    nasil: 'Spec: "servers SHOULD identify themselves in each result\'s _meta (io.modelcontextprotocol/serverInfo)".', otomatik: true },
   { id: "Y4", alan: "2026-07-28", madde: 'TÜM sonuçlarda resultType ("complete" | "input_required")', revizyon: V2R, seviye: "MUST",
     nasil: "server/discover, tools/list ve tools/call sonuçlarında alan aranır.", otomatik: true },
   { id: "Y5", alan: "2026-07-28", madde: "tools/list sonucunda ttlMs (CacheableResult)", revizyon: V2R, seviye: "MUST",
     nasil: "Beklenen değer 300000 (contract/protocol.md'de sabitlendi).", otomatik: true },
   { id: "Y6", alan: "2026-07-28", madde: 'tools/list sonucunda cacheScope = "public"', revizyon: V2R, seviye: "MUST",
     nasil: "Tool listemiz statiktir, kullanıcıya özel değildir.", otomatik: true },
-  { id: "Y7", alan: "2026-07-28", madde: "tools/list DETERMİNİSTİK sırada (sözleşme sırası)", revizyon: V2R, seviye: "MUST",
+  // Spec'te SHOULD ("Servers SHOULD return tools ... in a deterministic order"). Bu repoda
+  // ev kuralı olarak MUST gibi davranılır (sözleşme sırası), ama seviye SPEC'in dediğidir —
+  // checklist'in görevi spec'i raporlamak, ev kuralımızı spec diye sunmak değil.
+  { id: "Y7", alan: "2026-07-28", madde: "tools/list DETERMİNİSTİK sırada (sözleşme sırası)", revizyon: V2R, seviye: "SHOULD",
     nasil: "contract/tools.json sırasıyla birebir karşılaştırılır.", otomatik: true },
   { id: "Y8", alan: "2026-07-28", madde: "Handshake YOK — initialize olmadan çalışır", revizyon: V2R, seviye: "MUST",
     nasil: "Oturum boyunca initialize HİÇ gönderilmez; discover+list+call çalışmalı.", otomatik: true },
@@ -114,8 +131,13 @@ const CATALOG = [
     nasil: "Y14a'nın hata kodu okunur. Eski numara -32004 ise geçiş tamamlanmamıştır.", otomatik: true },
   { id: "Y15a", alan: "2026-07-28", madde: "Eksik clientCapabilities REDDEDİLİR", revizyon: V2R, seviye: "MUST",
     nasil: "_meta'dan yalnızca clientCapabilities çıkarılıp server/discover gönderilir.", otomatik: true },
-  { id: "Y15b", alan: "2026-07-28", madde: "Red kodu -32021 (MissingRequiredClientCapability)", revizyon: V2R, seviye: "SHOULD",
-    nasil: "Y15a'nın hata kodu okunur. Eski numara -32003 ise geçiş tamamlanmamıştır.", otomatik: true },
+  // ★ Burada iki kod da savunulabilir, bu yüzden madde "kod -32021 olmalı" DEĞİLDİR:
+  //   -32021 MissingRequiredClientCapability, adı gereği "sunucunun ihtiyaç duyduğu bir
+  //   yeteneği client bildirmemiş" hâlidir. clientCapabilities anahtarı TAMAMEN yoksa
+  //   istek biçimsel olarak bozuktur ve -32602 Invalid params da doğrudur. Ölçülebilir
+  //   ve tartışmasız olan tek şey ESKİ TASLAK NUMARASININ kalmamış olmasıdır (-32003).
+  { id: "Y15b", alan: "2026-07-28", madde: "Red kodu eski taslak numarası (-32003) DEĞİL", revizyon: V2R, seviye: "SHOULD",
+    nasil: "Y15a'nın kodu okunur; -32021 (spec) veya -32602 (invalid params) kabul, -32003 geçiş yapılmadı demektir.", otomatik: true },
   { id: "Y16", alan: "2026-07-28", madde: "HeaderMismatch → -32020", revizyon: V2R, seviye: "MUST",
     nasil: "Mcp-Method header'ı gövdedeki metottan farklı gönderilmelidir.", otomatik: false,
     neden: "Yalnızca Streamable HTTP'de anlamlıdır — stdio'da header kavramı yoktur (bkz. Y9)." },
@@ -181,7 +203,7 @@ const CATALOG = [
   { id: "T6", alan: "Tool katmanı", madde: "structuredContent sözleşmedeki required alanları taşır", revizyon: HER_IKISI, seviye: "MUST",
     nasil: "whoami çıktısında person/account/mode aranır.", otomatik: true },
   { id: "T7", alan: "Tool katmanı", madde: "isError semantiği: iş kuralı hatası JSON-RPC hatası DEĞİLDİR", revizyon: HER_IKISI, seviye: "MUST",
-    nasil: "Var olmayan targetId ile yazma denenir; isError=true + okunabilir metin beklenir.", otomatik: true },
+    nasil: "minutes=7 (timeIncrement=30'un katı DEĞİL) ile yazma denenir; isError=true + okunabilir metin beklenir.", otomatik: true },
   { id: "T8", alan: "Tool katmanı", madde: "annotations (readOnly/destructive/idempotent/openWorld) sözleşmeyle aynı", revizyon: HER_IKISI, seviye: "MUST",
     nasil: "Sözleşmedeki her annotation değeri tek tek karşılaştırılır.", otomatik: true },
   { id: "T9", alan: "Tool katmanı", madde: "$ref/$defs çözülüyor (dangling referans yok)", revizyon: HER_IKISI, seviye: "MUST",
@@ -195,7 +217,7 @@ const CATALOG = [
   { id: "D2", alan: "Güvenlik/deprecation", madde: "Sampling KULLANILMIYOR (deprecated)", revizyon: HER_IKISI, seviye: "MUST",
     nasil: "sampling/createMessage isteği gelmemeli + kaynakta kullanım olmamalı.", otomatik: true },
   { id: "D3", alan: "Güvenlik/deprecation", madde: "Logging KULLANILMIYOR (deprecated) — loglar stderr'e", revizyon: HER_IKISI, seviye: "MUST",
-    nasil: "notifications/message gelmemeli + kaynakta logging/setLevel olmamalı.", otomatik: true },
+    nasil: "Spec: istekte logLevel YOKSA sunucu notifications/message emit ETMEMELİ. Sonda logLevel hiç göndermez → hiç bildirim gelmemeli. Ayrıca kaynak taranır.", otomatik: true },
   { id: "D4", alan: "Güvenlik/deprecation", madde: "HTTP+SSE transport KULLANILMIYOR (Streamable HTTP kullanılır)", revizyon: HER_IKISI, seviye: "SHOULD",
     nasil: "Kaynak taraması: SSEServerTransport / sse_app / 2024-11-05 izleri aranır.", otomatik: true },
   { id: "D5", alan: "Güvenlik/deprecation", madde: "OAuth DCR KULLANILMIYOR (yerine CIMD)", revizyon: HER_IKISI, seviye: "SHOULD",
@@ -233,6 +255,7 @@ if (has("--yardim") || has("--help") || has("-h")) {
       "  --hepsi               Üç sunucuyu da doğrular",
       "  --protokol <rev>      2026-07-28 | 2025-11-25 | ikisi   (varsayılan: ikisi)",
       "  --maddeler            Madde kataloğunu basar ve çıkar (sunucu başlatmaz)",
+      "  --markdown            Checklist'i markdown tablosu olarak basar (docs/12 buradan üretilir)",
       "  --json                Makine-okunur rapor stdout'a; anlatım stderr'e",
       "  --zaman-asimi <ms>    İstek zaman aşımı (varsayılan 20000; cs için 45000)",
       "  --genislik <n>        Tablo genişliği (varsayılan 118)",
@@ -286,6 +309,27 @@ if (has("--maddeler")) {
     if (!m.otomatik) write(dim(`        neden otomatik değil: ${m.neden}`));
   }
   write("");
+  process.exit(0);
+}
+
+// docs/12-mcp-uyum.md'deki checklist tablosu BUNUNLA üretilir. Elle kopyalansaydı
+// katalog değiştikçe belge sessizce eskirdi — ve yanlış olduğu bilinmeyen bir
+// checklist, hiç checklist olmamasından kötüdür.
+if (has("--markdown")) {
+  const esc = (s) => String(s).replaceAll("|", "\\|");
+  write("| # | Madde | Revizyon | Seviye | Nasıl test edilir | Otomatik |");
+  write("|---|---|---|---|---|---|");
+  let alan = null;
+  for (const m of CATALOG) {
+    if (m.alan !== alan) {
+      alan = m.alan;
+      write(`| | **${esc(alan)}** | | | | |`);
+    }
+    write(
+      `| ${m.id} | ${esc(m.madde)} | ${m.revizyon} | ${m.seviye} | ${esc(m.nasil)} | ` +
+        `${m.otomatik ? "evet" : "**hayır** — " + esc(m.neden)} |`,
+    );
+  }
   process.exit(0);
 }
 
@@ -370,10 +414,21 @@ const PROBE = {
     description: "MCP uyum sondasi",
   },
   // İş kuralı hatası üreten argüman (isError semantiği testi).
+  //
+  // ★ Neden 7 dakika: mock'ta timeIncrement=30'dur (fixtures/timesheet-settings.json)
+  //   ve 7 onun KATI DEĞİLDİR. preflight bunu şemadan SONRA, ağa çıkmadan yakalar →
+  //   errors[] deterministik olarak dolar. Şema açısından geçerlidir (minutes yalnızca
+  //   `integer`), yani -32602 ile karışmaz: tam olarak "geçerli istek, geçersiz İŞ" hâli.
+  //
+  //   Bu sondanın ilk sürümü var olmayan bir targetId + dryRun kullanıyordu ve madde
+  //   üç dilde birden KALDI çıkıyordu. Sebep sunucular değildi: dryRun hiçbir mutation
+  //   göndermediği için "bu allocation yok" hatası HİÇ oluşmuyordu. Yanlış negatif
+  //   değil, YANLIŞ POZİTİF üreten bir testti — ve bir uyum aracında en tehlikeli hata
+  //   budur, çünkü olmayan bir ihlali rapor eder.
   badWriteArgs: {
     targetType: "time_allocation",
-    targetId: "BOYLE-BIR-ALLOCATION-YOK",
-    minutes: 30,
+    targetId: "TW9jay9UaW1lQWxsb2NhdGlvbi8x",
+    minutes: 7,
     dryRun: true,
   },
 };
@@ -919,6 +974,25 @@ async function runV2(srv, rec) {
       : `server/discover=${q(disc.result?.resultType)} tools/list=${q(list.result?.resultType)} tools/call=${q(whoami.result?.resultType)}`,
   );
 
+  // ── Y18 — sonucun _meta'sında serverInfo ──────────────────────────────────
+  // Handshake kalktığı için sunucunun kendini tanıtabileceği tek yer sonuçlardır.
+  // Bu SHOULD'un pratik değeri telemetri/hata ayıklamadır: hangi sunucu sürümünün
+  // bu yanıtı ürettiğini başka hiçbir yerden öğrenemezsiniz.
+  const META_SERVER_INFO = "io.modelcontextprotocol/serverInfo";
+  const siKaynak = [
+    ["server/discover", disc.result],
+    ["tools/list", list.result],
+    ["tools/call", whoami.result],
+  ].filter(([, r]) => r);
+  const siEksik = siKaynak.filter(([, r]) => !r?._meta?.[META_SERVER_INFO]).map(([n]) => n);
+  rec.assert(
+    "Y18",
+    siKaynak.length > 0 && siEksik.length === 0,
+    siEksik.length
+      ? `_meta.serverInfo YOK: ${q(siEksik)} (bkz. discover.result.serverInfo alanı ayrı bir şeydir)`
+      : `serverInfo=${q(disc.result?._meta?.[META_SERVER_INFO])} — ${siKaynak.length} sonuç tipinde de var`,
+  );
+
   // ═══ MRTR ════════════════════════════════════════════════════════════════
   const idBefore = s.nextId;
   const first = await s.request("tools/call", { name: PROBE.writeTool, arguments: PROBE.writeArgs });
@@ -1048,6 +1122,13 @@ async function runV2MetaProbes(srv, rec) {
     const r = await s.request("server/discover", {}, { noMeta: true });
     const red = Boolean(r.error);
     rec.assert("Y2", red, red ? `${q(r.error)}` : `KABUL EDİLDİ (!) → ${q(r.result)}`);
+    rec.assert(
+      "Y2b",
+      red && r.error.code !== -32601,
+      r.error?.code === -32601
+        ? `-32601 döndü — spec bu kodu "2026 öncesi sunucu" sinyali olarak tanımlar; uyumluluk sondası bu v2 sunucuyu v1 sanar. Beklenen: -32602`
+        : `kod=${q(r.error?.code)} — "metot yok" ile karışmıyor, sonda yanılmaz`,
+    );
     await s.close();
   }
 
@@ -1061,25 +1142,33 @@ async function runV2MetaProbes(srv, rec) {
     const r = await s.request("server/discover", {}, { rawParams: { _meta: meta } });
     y15Kod = r.error?.code ?? null;
     rec.assert("Y15a", Boolean(r.error), r.error ? q(r.error) : `KABUL EDİLDİ (!) → ${q(r.result)}`);
-    rec.assert("Y15b", r.error?.code === -32021, `dönen kod=${q(y15Kod)} (spec: -32021 MissingRequiredClientCapability, eski numara -32003)`);
+    const kodAdi = y15Kod === -32021 ? "-32021 MissingRequiredClientCapability (spec)" : y15Kod === -32602 ? "-32602 Invalid params (biçimsel red — savunulabilir)" : y15Kod === -32003 ? "-32003 ESKİ TASLAK NUMARASI" : String(y15Kod);
+    rec.assert("Y15b", y15Kod !== null && y15Kod !== -32003, `dönen kod=${kodAdi}`);
     await s.close();
   }
 
-  // Y3 — üç anahtarın hepsi zorunlu mu? (protocolVersion ve clientInfo ayrı ayrı)
+  // Y3a / Y3b — protocolVersion ZORUNLU, clientInfo ise yalnızca SHOULD.
+  //
+  // İkisi tek maddede toplanamaz çünkü spec onları farklı seviyede tutar:
+  // protocolVersion'sız istek işlenemez (sunucu hangi revizyonu konuştuğunu bilemez),
+  // clientInfo'suz istek ise gayet işlenebilir — sadece client kendini tanıtmamıştır.
   {
     const s = new Session(srv, { protocol: V2R });
     await s.start();
     const m1 = s.meta();
     delete m1[META_VERSION];
     const r1 = await s.request("server/discover", {}, { rawParams: { _meta: m1 } });
+    rec.assert("Y3a", Boolean(r1.error), r1.error ? q(r1.error) : `KABUL EDİLDİ (!) → ${q(r1.result)}`);
+
     const m2 = s.meta();
     delete m2[META_INFO];
     const r2 = await s.request("server/discover", {}, { rawParams: { _meta: m2 } });
-    const hepsiRed = Boolean(r1.error) && Boolean(r2.error) && y15Kod !== null;
     rec.assert(
-      "Y3",
-      hepsiRed,
-      `protocolVersion'sız → ${q(r1.error ?? "KABUL")} · clientInfo'suz → ${q(r2.error ?? "KABUL")} · clientCapabilities'siz → ${q(y15Kod ?? "KABUL")}`,
+      "Y3b",
+      !r2.error,
+      r2.error
+        ? `clientInfo'suz istek REDDEDİLDİ (${q(r2.error)}) — spec clientInfo'yu SHOULD tutar, MUST değil; bu sunucu spec'ten katı davranıyor ve clientInfo göndermeyen uyumlu bir client'ı kırar`
+        : `clientInfo olmadan da işlendi (supportedVersions=${q(r2.result?.supportedVersions ?? "(alan yok)")})`,
     );
     await s.close();
   }

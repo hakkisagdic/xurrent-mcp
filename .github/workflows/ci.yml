@@ -1,0 +1,132 @@
+# CI — üç dilin doğrulama katmanlarının HEPSİ, TEK koşuda.
+#
+# Neden matrix YOK: bu repoda "üç dil" bir matris ekseni değil, TEK bir
+# sözleşmenin üç implementasyonudur. Sözleşme doğrulaması (verify-contract) ve
+# uyum denetleyicisi (mcp-uyum) üç sunucuyu AYNI ANDA ayağa kaldırıp
+# KARŞILAŞTIRIR — üçünü ayrı job'lara bölmek bu karşılaştırmayı imkânsız kılar.
+# Yani matrix burada paralellik değil, KÖRLÜK üretirdi.
+#
+# Ağ: kurulum adımları (npm ci / uv sync / dotnet restore) ağ ister. Testlerin
+# KENDİSİ istemez — varsayılan XURRENT_MODE=mock, CALENDAR_PROVIDER=mock ve LLM
+# çağrısı yapan tek adım (wire-denetimi) yerel sahte Gemini'ye konuşur.
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      bilinen_ihlaller:
+        description: "Bilinen MUST ihlallerini (scripts/bilinen-ihlaller.json) KALDI yerine ATLANDI say"
+        type: boolean
+        default: false
+
+# Aynı dal için üst üste gelen koşuları iptal et; CI kuyruğu ders günü tıkanmasın.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test-all:
+    name: test-all (ts + py + cs)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      # Testler ağ ya da hesap İSTEMEZ. Bu üçü .env.example varsayılanlarıyla
+      # aynıdır; burada AÇIKÇA yazılmalarının sebebi, bir gün varsayılan
+      # değişirse CI'nın sessizce canlı sisteme bağlanmaması.
+      XURRENT_MODE: mock
+      XURRENT_DRY_RUN: "1"
+      CALENDAR_PROVIDER: mock
+      # Ders çıktıları saat dilimine duyarlıdır (bkz. docs/14 § kırılgan test).
+      # CI'yı UTC'de değil, dersin anlatıldığı dilimde koşturuyoruz ki
+      # "yerelde geçiyor, CI'da kalıyor" sınıfı bir fark ortaya çıkmasın.
+      TZ: Europe/Istanbul
+
+    steps:
+      - name: Kaynak kodu al
+        uses: actions/checkout@v4
+
+      # ── Node 24 ────────────────────────────────────────────────────────────
+      - name: Node 24 kur
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: servers/typescript/package-lock.json
+
+      - name: TypeScript bağımlılıkları
+        working-directory: servers/typescript
+        run: npm ci
+
+      # ── Python 3.13 (uv) ───────────────────────────────────────────────────
+      - name: uv + Python 3.13 kur
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.13"
+          enable-cache: true
+          cache-dependency-glob: servers/python/uv.lock
+
+      - name: Python bağımlılıkları
+        working-directory: servers/python
+        run: uv sync
+
+      # ── .NET 10 ────────────────────────────────────────────────────────────
+      - name: .NET 10 kur
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: C# bağımlılıkları
+        run: dotnet restore servers/csharp/XurrentMcp.csproj
+
+      # ── Tek komut, her şey ─────────────────────────────────────────────────
+      # --json: makine-okunur rapor stdout'a (artifact), anlatım stderr'e (log).
+      # Böylece iş akışı logunda İNSAN OKUNAKLI tablo görünür, artifact'ta ise
+      # adım adım süre/kanıt kalır.
+      #
+      # --bilinen-ihlaller BİLİNÇLİ OLARAK varsayılan DEĞİLDİR. Bilinen bir MUST
+      # ihlalini sessizleştirmek bir KARAR olmalıdır, bir alışkanlık değil.
+      # Elle koşuda (workflow_dispatch) açılabilir.
+      - name: Bütün doğrulama katmanları
+        run: |
+          node scripts/test-all.mjs --json --no-color \
+            ${{ inputs.bilinen_ihlaller && '--bilinen-ihlaller' || '' }} \
+            > test-all-raporu.json
+
+      - name: Raporu yükle
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-all-raporu
+          path: test-all-raporu.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      # Koşu kırmızıysa özetin İŞ AKIŞI ÖZETİ sayfasında da durması,
+      # log'a inmeden ne kaldığını görmeyi sağlar.
+      - name: Özeti iş akışı sayfasına yaz
+        if: always()
+        run: |
+          if [ -f test-all-raporu.json ]; then
+            {
+              echo "## test-all"
+              echo ""
+              echo "| adım | durum | süre | kanıt |"
+              echo "|---|---|---|---|"
+              node -e '
+                const r = JSON.parse(require("node:fs").readFileSync("test-all-raporu.json", "utf8"));
+                for (const a of r.adimlar)
+                  console.log(`| \`${a.id}\` | ${a.durum} | ${(a.sureMs / 1000).toFixed(1)}s | ${String(a.kanit).replace(/\|/g, "\\|")} |`);
+                console.log("");
+                console.log(`**${r.ozet.gecti} geçti · ${r.ozet.kaldi} kaldı · ${r.ozet.atlandi} atlandı**`);
+              '
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "test-all raporu üretilmedi — koşu daha erken kırıldı." >> "$GITHUB_STEP_SUMMARY"
+          fi

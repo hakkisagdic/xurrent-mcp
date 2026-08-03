@@ -159,7 +159,18 @@ class PlannedMutation:
     mutation: str  # gonderilecek GraphQL metni — derste birebir gosterilir
     input: dict[str, Any]
     warnings: list[str] = field(default_factory=list)
-    index: int | None = None
+
+    # ★ VARSAYILAN 0, None DEGIL.
+    #
+    # contract/tools.json -> PlannedMutation.index: {"type": "integer"}.
+    # Tek adimli planlarda (link_first, date_first) bu alan hic set edilmiyordu
+    # ve JSON'a "index": null dusuyordu — sozlesme ihlali. TypeScript 0 yaziyor,
+    # C#'ta alan zaten non-nullable; Python TEK AYKIRIYDI.
+    #
+    # verify-contract.mjs bu alani kontrol etmedigi icin ihlal aylarca gorunmedi;
+    # birim testler yazilinca ortaya cikti. Sozlesmeyi dogrulamak, sozlesmenin
+    # HER alanini dogrulamak demek degilmis.
+    index: int = 0
     stepLabel: str | None = None  # two_step'te "1/2" veya "2/2"
 
 

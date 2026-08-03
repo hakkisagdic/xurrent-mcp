@@ -13,9 +13,20 @@ public static class TimeUtil
 
     public static string ToIso(DateTimeOffset value) => value.ToString(Iso, CultureInfo.InvariantCulture);
 
-    /// <summary>Verilen saat diliminde "bugün".</summary>
-    public static DateOnly Today(TimeZoneInfo tz)
-        => DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, tz).DateTime);
+    /// <summary>
+    /// Verilen saat diliminde "bugün".
+    ///
+    /// ★ SAAT DİLİMİ TUZAĞI: yerel saat 00:00–03:00 arasındayken UTC tarihi BİR GÜN
+    /// GERİDEDİR (Europe/Istanbul = UTC+3). Bu yüzden UTC anı ÖNCE hedef saat dilimine
+    /// çevrilir, tarih SONRA alınır. Bu repoda tam olarak bu yüzden gece kırılan bir test
+    /// yaşandı — testler bu davranışı SABİT bir <paramref name="clock"/> ile doğrular.
+    ///
+    /// <paramref name="clock"/> ENJEKTE EDİLEBİLİRDİR: null ise sistem saati kullanılır
+    /// (üretim yolu), testlerde ise sabitlenmiş bir TimeProvider geçilir.
+    /// </summary>
+    public static DateOnly Today(TimeZoneInfo tz, TimeProvider? clock = null)
+        => DateOnly.FromDateTime(
+            TimeZoneInfo.ConvertTime((clock ?? TimeProvider.System).GetUtcNow(), tz).DateTime);
 
     /// <summary>
     /// Yerel duvar saatini (date + HH:mm) o saat dilimindeki MUTLAK ana çevirir.
@@ -36,9 +47,10 @@ public static class TimeUtil
         => TimeOnly.TryParseExact(value ?? "", "HH:mm", CultureInfo.InvariantCulture,
             DateTimeStyles.None, out var t) ? t : TimeOnly.MinValue;
 
-    public static DateOnly ParseDate(string value, TimeZoneInfo tz)
+    /// <summary>"yyyy-MM-dd" ayrıştırır. Bozuk değer sessizce "bugün"e düşer.</summary>
+    public static DateOnly ParseDate(string value, TimeZoneInfo tz, TimeProvider? clock = null)
         => DateOnly.TryParseExact(value, "yyyy-MM-dd", CultureInfo.InvariantCulture,
-            DateTimeStyles.None, out var d) ? d : Today(tz);
+            DateTimeStyles.None, out var d) ? d : Today(tz, clock);
 
     /// <summary>
     /// Microsoft Graph'in dateTime alanını ayrıştırır.

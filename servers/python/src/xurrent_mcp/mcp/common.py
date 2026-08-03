@@ -77,11 +77,26 @@ def success_result(result: ToolResult) -> types.CallToolResult:
     """Tamamlanmis tool cagrisi -> CallToolResult.
 
     structuredContent VE okunabilir Turkce text blogu BIRLIKTE yayinlanir.
+
+    ★ errors[] DOLUYSA SONUC BASARI DEGILDIR.
+
+    Tool teknik olarak "tamamlandi" (cagri dondu, plan uretildi) ama is kurali
+    reddetti. is_error=False dondurmek, basarisiz bir yazmayi BASARILI olarak
+    bildirmek demektir; sonucu okuyan LLM "yazildi" der ve kullaniciya yanlis
+    bilgi gider. MCP'de alan yoksa da false sayilir, yani "gondermemek" de ayni
+    hatadir.
+
+    Karar BURADA veriliyor, cagri yerlerinde degil: her yazma tool'una tek tek
+    guvenmek yerine tek noktadan zorlaniyor. Uyum denetleyicisi bu maddeyi
+    (mcp-uyum.mjs / isError) tam olarak bu yuzden olcuyor.
     """
+    payload = result.payload if isinstance(result.payload, dict) else {}
+    basarisiz = bool(payload.get("errors"))
+
     return types.CallToolResult(
         content=[types.TextContent(type="text", text=result.text)],
         structured_content=result.payload,
-        is_error=False,
+        is_error=basarisiz,
     )
 
 

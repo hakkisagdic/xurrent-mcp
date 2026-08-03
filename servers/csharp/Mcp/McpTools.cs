@@ -436,6 +436,27 @@ public static class McpTools
     {
         var elicit = BuildElicitation(ask);
 
+        // ★ SPEC MUST: client'ın DESTEKLEMEDİĞİ bir inputRequest GÖNDERİLEMEZ.
+        //
+        // 2026-07-28: "Servers MUST NOT send an inputRequests that the client has not
+        // declared support for in its capabilities."
+        //
+        // Neden ciddi: elicitation bildirmeyen bir client InputRequiredResult'ı
+        // cevaplayamaz, isteği tekrarlamaz ve çağrı KALICI OLARAK tıkanır. Kullanıcı
+        // hata bile görmez — sadece bekler. Sessiz kilitlenme, açık redden kötüdür.
+        //
+        // Buradaki karar UseMrtr'dan AYRIDIR: UseMrtr "hangi yolu kullanayım" sorusunu
+        // cevaplar, bu kontrol "sorabilir miyim" sorusunu. Uyum denetleyicisi (M4)
+        // clientCapabilities={} göndererek tam olarak bunu ölçüyor.
+        if (!ClientElicitationDestekliyor(ctx))
+        {
+            return new ApprovalGate(false,
+                "YAZMA REDDEDİLDİ: bu client onay diyaloğunu (elicitation) desteklemiyor, " +
+                "yeteneklerinde bildirmemiş. Onaysız yazma yapılmaz. " +
+                "dryRun=true ile planı görebilir ya da XURRENT_CONFIRM_POLICY=open " +
+                "(yalnızca CI/otomasyon) kullanabilirsiniz.");
+        }
+
         if (UseMrtr(ctx, cfg))
         {
             var principal = await adapter.ResolvePersonIdAsync("$me", ct);
@@ -493,6 +514,33 @@ public static class McpTools
     private static bool UseMrtr(RequestContext<CallToolRequestParams> ctx, AppConfig cfg)
         => cfg.McpProtocol != ProtocolChoice.V1 && ctx.Server.IsMrtrSupported;
 
+    /// <summary>
+    /// Client onay diyaloğunu (elicitation) DESTEKLİYOR mu?
+    ///
+    /// İki era, iki kaynak:
+    ///   v2 → istek başına `_meta["io.modelcontextprotocol/clientCapabilities"]`
+    ///   v1 → handshake'te bildirilen ve oturumda saklanan yetenekler
+    ///
+    /// Hiçbir yerde bilgi yoksa DESTEKLEMİYOR sayılır (fail-closed). Varsaymak,
+    /// cevaplanamayacak bir istek gönderip çağrıyı kilitlemek demektir.
+    /// </summary>
+    private static bool ClientElicitationDestekliyor(RequestContext<CallToolRequestParams> ctx)
+    {
+        // v1: oturumun handshake'te bildirdiği yetenekler.
+        if (ctx.Server.ClientCapabilities?.Elicitation is not null) return true;
+
+        // v2: yetenekler her istekte _meta ile gelir.
+        var meta = ctx.Params?.Meta;
+        if (meta is not null
+            && meta.TryGetPropertyValue("io.modelcontextprotocol/clientCapabilities", out var caps)
+            && caps is JsonObject capsObj)
+        {
+            return capsObj.ContainsKey("elicitation");
+        }
+
+        return false;
+    }
+
     private static ElicitRequestParams BuildElicitation(ConfirmationRequest ask)
     {
         var detail = string.Join("\n", ask.Details.Select(kv => $"{kv.Key}: {kv.Value}"));
@@ -544,12 +592,36 @@ public static class McpTools
 
     // ── CallToolResult üreticileri ───────────────────────────────────────────
 
-    /// <summary>K2: HER sonuçta structuredContent + okunabilir Türkçe metin.</summary>
-    private static CallToolResult Ok<T>(string text, T structured) => new()
+    /// <summary>
+    /// K2: HER sonuçta structuredContent + okunabilir Türkçe metin.
+    ///
+    /// ★ errors[] DOLUYSA SONUÇ BAŞARI DEĞİLDİR.
+    ///
+    /// Tool teknik olarak "tamamlandı" (çağrı döndü, plan üretildi) ama iş kuralı
+    /// reddetti. IsError'ı hiç göndermemek MCP'de false demektir; yani başarısız
+    /// bir yazma BAŞARILI olarak bildirilir ve sonucu okuyan LLM "yazıldı" der.
+    ///
+    /// Karar burada, tek noktada veriliyor — her yazma tool'unun kendi doğru
+    /// bayrağı set etmesine güvenmek yerine. Uyum denetleyicisi (scripts/mcp-uyum.mjs)
+    /// bu maddeyi tam olarak bu yüzden ölçüyor.
+    /// </summary>
+    private static CallToolResult Ok<T>(string text, T structured)
     {
-        Content = [new TextContentBlock { Text = text }],
-        StructuredContent = JsonSerializer.SerializeToElement(structured, Json.Options),
-    };
+        var eleman = JsonSerializer.SerializeToElement(structured, Json.Options);
+
+        var basarisiz =
+            eleman.ValueKind == JsonValueKind.Object &&
+            eleman.TryGetProperty("errors", out var hatalar) &&
+            hatalar.ValueKind == JsonValueKind.Array &&
+            hatalar.GetArrayLength() > 0;
+
+        return new CallToolResult
+        {
+            Content = [new TextContentBlock { Text = text }],
+            StructuredContent = eleman,
+            IsError = basarisiz,
+        };
+    }
 
     /// <summary>İş kuralı hatası: isError=true + Türkçe açıklama. structuredContent YİNE döner.</summary>
     private static CallToolResult Failure<T>(string text, T structured) => new()

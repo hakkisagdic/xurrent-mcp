@@ -16,6 +16,13 @@
     <!-- ASP.NET Core (http/web modları) ve konsol modları tek projede yaşıyor. -->
     <UseAppHost>true</UseAppHost>
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+
+    <!-- NEDEN: Birim testleri ALT KLASÖRDE ayrı bir projede (XurrentMcp.Tests/).
+         SDK'nın varsayılan **/*.cs glob'u o klasörü de toplardı ve test dosyaları
+         ana uygulamaya derlenirdi (xunit referansı olmadan derleme kırılırdı).
+         Bu satır ana projeyi test projesinden yalıtır; dotnet run modları
+         (stdio | http | chat | web | wizard | sema-testi) etkilenmez. -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);XurrentMcp.Tests/**</DefaultItemExcludes>
   </PropertyGroup>
 
   <ItemGroup>
@@ -32,6 +39,13 @@
 
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Birim testleri, HTTP'den ayrıştırılmış internal eşleyicileri (GraphCalendarProvider.MapEvent,
+         GoogleCalendarProvider.MapEvent) doğrudan çağırır. Bu tipleri public yapmak yerine
+         yalnızca test derlemesine açıyoruz: sağlayıcıların dış yüzeyi değişmiyor. -->
+    <InternalsVisibleTo Include="XurrentMcp.Tests" />
   </ItemGroup>
 
 </Project>

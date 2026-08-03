@@ -138,6 +138,14 @@ public sealed class AppConfig
         }
     }
 
+    /// <summary>
+    /// ★ ENJEKTE EDİLEBİLİR SAAT. Üretimde TimeProvider.System'dir; hiçbir davranış değişmez.
+    /// Birim testleri bunu sabit bir ana kilitler — aksi halde "bugün"e dayanan her kural
+    /// (backdate sınırı, fixture materyalizasyonu, requestState TTL'i) testin çalıştığı
+    /// SAATE bağlı olurdu ve gece yarısı civarında kırılırdı.
+    /// </summary>
+    public TimeProvider Clock { get; init; } = TimeProvider.System;
+
     public bool IsMock => !string.Equals(XurrentMode, "live", StringComparison.OrdinalIgnoreCase);
 
     public static AppConfig Load()

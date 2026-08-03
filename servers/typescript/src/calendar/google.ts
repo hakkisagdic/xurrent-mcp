@@ -162,7 +162,8 @@ export async function googleEvents(
   return out;
 }
 
-function mapGoogleEvent(ev: GoogleEvent, source: CalendarProvider): RawEvent {
+/** export: ağa çıkmadan birim testi edilebilsin diye — üç tuzağın hepsi buradadır. */
+export function mapGoogleEvent(ev: GoogleEvent, source: CalendarProvider = "google"): RawEvent {
   const isAllDay = Boolean(ev.start.date);
   const start = isAllDay ? new Date(`${ev.start.date}T00:00:00Z`) : new Date(ev.start.dateTime!);
   const end = isAllDay ? new Date(`${ev.end.date}T00:00:00Z`) : new Date(ev.end.dateTime!);

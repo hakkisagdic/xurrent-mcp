@@ -125,7 +125,8 @@ export async function graphEvents(
   return out;
 }
 
-function mapGraphEvent(ev: GraphEvent, source: CalendarProvider): RawEvent {
+/** export: ağa çıkmadan birim testi edilebilsin diye — TUZAK 4 tam olarak burada yaşar. */
+export function mapGraphEvent(ev: GraphEvent, source: CalendarProvider = "graph"): RawEvent {
   // TUZAK 4: parseGraphDateTime — 7 kesirli hane + offset yok.
   const start = parseGraphDateTime(ev.start.dateTime, ev.start.timeZone);
   const end = parseGraphDateTime(ev.end.dateTime, ev.end.timeZone);

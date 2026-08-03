@@ -3,12 +3,16 @@ using System.Text.Json.Nodes;
 namespace XurrentMcp.Llm;
 
 /// <summary>
-/// `dotnet run -- sema-testi` — şema çeviricisinin BİRİM TESTİ ve ders artefaktı.
+/// `dotnet run -- sema-testi` — şema çevirisinin DERS ARTEFAKTI.
 ///
-/// Neden ayrı bir test projesi değil: bu doğrulamanın DERSTE çalıştırılması gerekiyor,
-/// `dotnet test` + xunit bağımlılığı ise repoya üçüncü bir paket ve ikinci bir proje
-/// getirirdi. Buradaki iddialar bir test çerçevesinin yapacağının aynısını yapar:
-/// başarısız olan iddia adıyla yazdırılır ve süreç 1 ile çıkar.
+/// ★ DEĞİŞTİ: buradaki iddiaların tamamı artık GERÇEK bir test projesinde de yaşıyor —
+/// XurrentMcp.Tests/SemaTests.cs (`dotnet test`). Sebebi şuydu: elle yazılmış koşucuda
+/// bir iddia kırıldığında ekranda tek satır çıkıyor, diğerlerinin durumu görünmüyordu;
+/// ayrıca CI'da tool bazında raporlama yoktu.
+///
+/// Bu mod SİLİNMEDİ çünkü işi farklı: DERSTE çalıştırılır ve GÖSTERİR — atılan anahtar
+/// tablosunu, açıklamaya taşınanları ve örnek bir functionDeclaration çıktısını basar.
+/// İkisi birlikte kalır: burası anlatır, `dotnet test` denetler.
 ///
 /// Kapsam:
 ///   • contract/tools.json'daki 8 tool'un input şeması çevrilir

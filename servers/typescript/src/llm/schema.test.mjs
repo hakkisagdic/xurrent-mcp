@@ -235,6 +235,35 @@ test("agent/core.ts'in ürettiği 8 functionDeclaration Gemini'ye uygundur", asy
 
   for (const t of tools) {
     assert.ok(t.declaration.description.length > 0, `${t.name}: açıklama boş olamaz`);
+
+    // ★ Parametresiz tool'da `parameters` alanı HİÇ GÖNDERİLMEZ — boş
+    // {type:"object",properties:{}} göndermek Gemini'de "argümansız fonksiyon"un
+    // garantili ifadesi DEĞİLDİR (bkz. agent/core.ts ve tools/fake-gemini
+    // wire denetimi). Alanın YOKLUĞU beklenen davranıştır, kusur değil.
+    const parametresiz = Object.keys(t.translation.schema.properties ?? {}).length === 0;
+    if (parametresiz) {
+      assert.ok(
+        !("parameters" in t.declaration),
+        `${t.name}: parametresiz tool 'parameters' GÖNDERMEMELİ (boş şema göndermek reddedilebilir)`,
+      );
+      continue;
+    }
+
+    assert.ok("parameters" in t.declaration, `${t.name}: parametreli tool 'parameters' GÖNDERMELİ`);
     assertGeminiClean(t.declaration.parameters, `#(${t.name})`);
   }
+});
+
+test("parametresiz tool YALNIZCA xurrent_whoami'dir — sessizce çoğalmamalı", async () => {
+  const { buildTools } = await import("../../dist/agent/core.js");
+  const { loadConfig } = await import("../../dist/config.js");
+  const { createToolContext } = await import("../../dist/core/context.js");
+  const { createXurrentAdapter } = await import("../../dist/xurrent/index.js");
+
+  const cfg = loadConfig();
+  const ctx = createToolContext(cfg, createXurrentAdapter(cfg), async () => ({ action: "decline" }));
+  const parametresizler = buildTools(ctx)
+    .filter((t) => !("parameters" in t.declaration))
+    .map((t) => t.name);
+  assert.deepEqual(parametresizler, ["xurrent_whoami"]);
 });

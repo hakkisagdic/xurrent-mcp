@@ -811,6 +811,99 @@ export function similarity(aTokens: string[], bTokens: string[]): number {
   return (2 * overlap) / (aTokens.length + bTokens.length);
 }
 
+/**
+ * Eşleştirmenin SAF hâli — takvim, ağ ve saat BİLMEZ.
+ *
+ * runPlanFromCalendar'dan ayrıldı çünkü karar mantığı (kesin / bulanık /
+ * belirsiz / eşleşmedi) birim testi edilebilir olmak zorundadır: sihirbaz
+ * uçtan uca geçtiği hâlde eşik değerlerinden biri bozulabilir.
+ */
+export type MatchKind = "exact" | "fuzzy" | "ambiguous" | "none";
+
+export interface MatchFallback {
+  targetType: string;
+  targetId: string;
+  targetLabel: string;
+}
+
+export interface MatchOutcome {
+  kind: MatchKind;
+  targetType: string | null;
+  targetId: string | null;
+  targetLabel: string | null;
+  matchReason: string;
+  matchConfidence: number;
+  needsUserDecision: boolean;
+  /** Belirsizlik uyarısı — çağıran bunu proposal.warnings'e EKLER. */
+  ambiguityWarning: string | null;
+}
+
+export function matchMeetingToWork(
+  title: string,
+  items: WorkItem[],
+  fallback: MatchFallback,
+): MatchOutcome {
+  // ── YOL 1: başlıkta ticket numarası ────────────────────────────────────
+  // Not: match(...) null dönebilir; ?? [] ile boş diziye düşerken tipi açıkça
+  // string[] yazmazsak TS bunu never[] birleşimi olarak çıkarır ve includes patlar.
+  const numbers: string[] = title.match(/\b\d{4,6}\b/g) ?? [];
+  const exact = items.find((it) => numbers.includes(it.displayId));
+  if (exact) {
+    return {
+      kind: "exact",
+      targetType: exact.kind,
+      targetId: exact.id,
+      targetLabel: `#${exact.displayId} — ${exact.subject ?? ""}`.trim(),
+      matchReason: `Toplantı başlığında "${exact.displayId}" numarası geçiyor — kesin eşleşme.`,
+      matchConfidence: 1,
+      needsUserDecision: false,
+      ambiguityWarning: null,
+    };
+  }
+
+  // ── YOL 2: metin benzerliği ────────────────────────────────────────────
+  const titleTokens = normalizeTokens(title);
+  const scored = items
+    .map((it) => ({ item: it, score: similarity(titleTokens, normalizeTokens(it.subject ?? "")) }))
+    .filter((c) => c.score >= FUZZY_THRESHOLD)
+    .sort((a, b) => b.score - a.score);
+
+  if (scored.length === 0) {
+    // ── YOL 3: hiçbiri tutmadı → kullanıcı karar versin ──────────────────
+    return {
+      kind: "none",
+      targetType: fallback.targetType,
+      targetId: fallback.targetId,
+      targetLabel: fallback.targetLabel,
+      matchReason:
+        "Hiçbir açık iş ile eşleşmedi. Varsayılan TimeAllocation önerildi — bu bir TAHMİN değil, güvenli bir varsayılandır.",
+      matchConfidence: 0,
+      needsUserDecision: true,
+      ambiguityWarning: null,
+    };
+  }
+
+  const best = scored[0]!;
+  const second = scored[1];
+  const ambiguous = second !== undefined && best.score - second.score < AMBIGUITY_BAND;
+
+  return {
+    kind: ambiguous ? "ambiguous" : "fuzzy",
+    targetType: best.item.kind,
+    targetId: best.item.id,
+    targetLabel: `#${best.item.displayId} — ${best.item.subject ?? ""}`.trim(),
+    matchReason: ambiguous
+      ? `Birden fazla aday benzer skorda — en yükseği #${best.item.displayId}, ancak karar kullanıcıya ait.`
+      : `Metin benzerliği ile eşleşti (skor ${best.score.toFixed(2)}) — BULANIK eşleşme, doğrulanması önerilir.`,
+    matchConfidence: Number(best.score.toFixed(2)),
+    needsUserDecision: ambiguous,
+    ambiguityWarning: ambiguous
+      ? `Belirsizlik: "${best.item.subject}" (${best.score.toFixed(2)}) ve "${second!.item.subject}" ` +
+        `(${second!.score.toFixed(2)}) birbirine çok yakın. Bot TAHMİN ETMEMELİ, kullanıcıya SORMALI.`
+      : null,
+  };
+}
+
 export interface PlanArgs {
   personId?: string;
   date?: string;
@@ -881,79 +974,27 @@ export async function runPlanFromCalendar(
       );
     }
 
-    // ── YOL 1: başlıkta ticket numarası ────────────────────────────────────
-    // Not: match(...) null dönebilir; ?? [] ile boş diziye düşerken tipi açıkça
-    // string[] yazmazsak TS bunu never[] birleşimi olarak çıkarır ve includes patlar.
-    const numbers: string[] = m.title.match(/\b\d{4,6}\b/g) ?? [];
-    const exact = items.find((it) => numbers.includes(it.displayId));
-    if (exact) {
-      proposals.push({
-        meetingTitle: m.title,
-        startedAt: m.start,
-        rawMinutes: m.minutes,
-        roundedMinutes: rounded,
-        suggestedTargetType: exact.kind,
-        suggestedTargetId: exact.id,
-        suggestedTargetLabel: `#${exact.displayId} — ${exact.subject ?? ""}`.trim(),
-        matchReason: `Toplantı başlığında "${exact.displayId}" numarası geçiyor — kesin eşleşme.`,
-        matchConfidence: 1,
-        needsUserDecision: false,
-        warnings,
-      });
-      continue;
-    }
-
-    // ── YOL 2: metin benzerliği ────────────────────────────────────────────
-    const titleTokens = normalizeTokens(m.title);
-    const scored = items
-      .map((it) => ({ item: it, score: similarity(titleTokens, normalizeTokens(it.subject ?? "")) }))
-      .filter((c) => c.score >= FUZZY_THRESHOLD)
-      .sort((a, b) => b.score - a.score);
-
-    if (scored.length === 0) {
-      // ── YOL 3: hiçbiri tutmadı → kullanıcı karar versin ──────────────────
-      unmatched.push(m.title);
-      proposals.push({
-        meetingTitle: m.title,
-        startedAt: m.start,
-        rawMinutes: m.minutes,
-        roundedMinutes: rounded,
-        suggestedTargetType: fallbackType,
-        suggestedTargetId: fallbackId,
-        suggestedTargetLabel: fallbackLabel,
-        matchReason:
-          "Hiçbir açık iş ile eşleşmedi. Varsayılan TimeAllocation önerildi — bu bir TAHMİN değil, güvenli bir varsayılandır.",
-        matchConfidence: 0,
-        needsUserDecision: true,
-        warnings,
-      });
-      continue;
-    }
-
-    const best = scored[0]!;
-    const second = scored[1];
-    const ambiguous = second !== undefined && best.score - second.score < AMBIGUITY_BAND;
-
-    if (ambiguous) {
-      warnings.push(
-        `Belirsizlik: "${best.item.subject}" (${best.score.toFixed(2)}) ve "${second!.item.subject}" ` +
-          `(${second!.score.toFixed(2)}) birbirine çok yakın. Bot TAHMİN ETMEMELİ, kullanıcıya SORMALI.`,
-      );
-    }
+    // Eşleştirme kararı SAF fonksiyondadır (matchMeetingToWork) — burada
+    // yalnızca sonucu proposal'a çeviririz.
+    const match = matchMeetingToWork(m.title, items, {
+      targetType: fallbackType,
+      targetId: fallbackId,
+      targetLabel: fallbackLabel,
+    });
+    if (match.ambiguityWarning) warnings.push(match.ambiguityWarning);
+    if (match.kind === "none") unmatched.push(m.title);
 
     proposals.push({
       meetingTitle: m.title,
       startedAt: m.start,
       rawMinutes: m.minutes,
       roundedMinutes: rounded,
-      suggestedTargetType: best.item.kind,
-      suggestedTargetId: best.item.id,
-      suggestedTargetLabel: `#${best.item.displayId} — ${best.item.subject ?? ""}`.trim(),
-      matchReason: ambiguous
-        ? `Birden fazla aday benzer skorda — en yükseği #${best.item.displayId}, ancak karar kullanıcıya ait.`
-        : `Metin benzerliği ile eşleşti (skor ${best.score.toFixed(2)}) — BULANIK eşleşme, doğrulanması önerilir.`,
-      matchConfidence: Number(best.score.toFixed(2)),
-      needsUserDecision: ambiguous,
+      suggestedTargetType: match.targetType,
+      suggestedTargetId: match.targetId,
+      suggestedTargetLabel: match.targetLabel,
+      matchReason: match.matchReason,
+      matchConfidence: match.matchConfidence,
+      needsUserDecision: match.needsUserDecision,
       warnings,
     });
   }

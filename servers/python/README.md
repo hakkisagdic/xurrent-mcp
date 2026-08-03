@@ -109,6 +109,29 @@ uv run pytest tests/test_schema.py -q      # 16 passed
 uv run python tests/test_schema.py         # pytest'siz düz assert koşucusu
 ```
 
+## Çekirdek iş mantığının birim testleri
+
+```bash
+uv run pytest -q
+```
+
+Sihirbaz, sözleşme doğrulayıcı ve senaryo koşucuları iş mantığını yalnızca
+**dolaylı** test eder: bir kenar durum bozulduğunda uçtan uca akış genelde yine
+geçer ve hata ancak üretimde görünür. `tests/` altındaki dosyalar strateji,
+ön kontrol, takvim, eşleştirme ve onay imzalama mantığını **doğrudan** kilitler.
+
+Üç kural geçerlidir ve `tests/conftest.py` bunları zorlar:
+
+| Kural | Nasıl |
+|---|---|
+| **I/O yok, ağ yok** | Sağlayıcıların yalnızca alan eşleme fonksiyonları çağrılır, `fetch()` değil. Fixture JSON'u okumak serbest. |
+| **Gerçek zamana bağlı değil** | Autouse fixture `today_in`'i sabitler. ★ Yerel 00:00–03:00 arası UTC tarihi bir gün geridedir; bu repoda tam olarak bu yüzden gece kırılan bir test yaşandı. |
+| **Test adı = iddia** | `test_two_step_ikinci_adimda_assignment_alani_GONDERMEZ` — ad, doğrulanan kuralı söyler. |
+
+`xfail` işaretli testler **gerçek, düzeltilmemiş bulgulardır** ve özet satırında
+gerekçeleriyle görünürler (`addopts = "-rxX"`); yeşile dönerlerse işaret
+kaldırılmalıdır.
+
 ### API anahtarsız uçtan uca test
 
 `tools/fake-gemini` Gemini wire formatını taklit eder. Model **değildir** —
@@ -256,6 +279,13 @@ src/xurrent_mcp/
   wizard.py              docs/wizard/steps.json yürütücü (PASS/FAIL/SKIP)
   __main__.py            CLI
 tests/
+  conftest.py            ortak zemin: "bugün"ü sabitleyen autouse fixture, Config/bağlam üreticileri
+  test_timeutil.py       saat dilimi ve ISO8601 yardımcıları (★ gece yarısı–03:00 tuzağı)
+  test_validate.py       ön kontroller: timeIncrement, backdate penceresi, tavanlar
+  test_strategies.py     üç backdate stratejisi (★ two_step 2. adımda assignment yok)
+  test_calendar.py       normalizasyon, atlama kuralları, dedup, clip, 225 vs 255
+  test_matching.py       toplantı → ticket eşleştirme (kesin / bulanık / kullanıcı kararı)
+  test_confirm.py        requestState imzalama: imza · TTL · parmak izi · nonce · principal
   test_schema.py         şema çevirisi birim testleri (pytest veya düz koşucu)
 ```
 

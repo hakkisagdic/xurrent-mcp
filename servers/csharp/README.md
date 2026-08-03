@@ -14,7 +14,9 @@ dotnet run -- http        # MCP sunucusu, Streamable HTTP (MCP_HTTP_PORT, varsay
 dotnet run -- wizard      # Sihirbaz / ders modu — API key GEREKMEZ
 dotnet run -- chat        # Terminal chatbot   (GEMINI_API_KEY gerekir)
 dotnet run -- web         # Web arayüzü        (WEB_PORT, varsayılan 8787)
-dotnet run -- sema-testi  # Şema çeviricisinin birim testi — API key GEREKMEZ
+dotnet run -- sema-testi  # Şema çevirisi ders artefaktı (tablo + örnek çıktı) — API key GEREKMEZ
+
+dotnet test XurrentMcp.Tests   # ★ Çekirdek iş mantığının birim testleri — API key GEREKMEZ
 ```
 
 `wizard` modu `docs/wizard/steps.json` dosyasını süreç içi bir MCP client ile yürütür:
@@ -46,9 +48,48 @@ sağlanmadığı için çalıştırılamıyorsa **SKIP**'tir, FAIL değil.
 | `Mcp/ServerSetup.cs` | DI kaydı, protokol seçimi, tools/list cache metadata'sı, süreç içi oturum |
 | `Llm/GeminiClient.cs` | Gemini `generateContent` istemcisi — düz `HttpClient`, SDK yok |
 | `Llm/SchemaTranslator.cs` | ★ **MCP JSON Schema 2020-12 → Gemini functionDeclarations** çevirisi + ne atıldığının kaydı |
-| `Llm/SchemaSelfTest.cs` | `dotnet run -- sema-testi` — çeviricinin birim testi (83 iddia) |
+| `Llm/SchemaSelfTest.cs` | `dotnet run -- sema-testi` — çeviri tablosunu ve örnek çıktıyı basan ders artefaktı |
 | `Agent/*` | Chatbot beyni + web sunucusu (`clients/web/API.md` sözleşmesi) |
 | `Wizard.cs` | Ders akışı yürütücüsü |
+| `XurrentMcp.Tests/` | ★ **Birim testleri** (xunit) — çekirdek iş mantığı, ağsız ve saatten bağımsız |
+
+## ★ Birim testleri
+
+```bash
+dotnet test XurrentMcp.Tests
+```
+
+Sihirbaz, sözleşme doğrulayıcı ve senaryo koşucuları **uçtan uca** çalışır: bir kenar durum
+bozulduğunda çoğu zaman yine geçerler ve hata ancak üretimde görünür. Bu proje o boşluğu
+kapatır — çekirdek mantığı **doğrudan** sınar.
+
+| Dosya | Kapsam | Test |
+|---|---|---|
+| `StratejiTests.cs` | Üç backdate stratejisinin PLAN çıktısı; `two_step` 2. adımının ticket bağına dokunamadığı **şema seviyesinde** | 31 |
+| `DogrulamaTests.cs` | `timeIncrement`, negatif süre/`correction`, 80 karakter, T-1 sınırı, mesai tavanı, yol anahtarları | 43 |
+| `TakvimTests.cs` | Eleme kuralları, pencereye kırpma, interval merge, dedup anahtarı, Graph/Google alan tuzakları | 39 |
+| `EslestirmeTests.cs` | Kesin/bulanık/belirsiz eşleşme — **emin olmadığında tahmin etmeme** | 13 |
+| `OnayTests.cs` | `requestState`: imza, parmak izi, TTL, replay, çapraz kullanıcı | 20 |
+| `ZamanTests.cs` | Saat dilimi, ISO8601, interval merge, yuvarlama | 36 |
+| `PlanTests.cs` | Takvimden plan üretimi, onay kapısı (K5), toplu yazma | 38 |
+| `SemaTests.cs` | `sema-testi` iddialarının gerçek test karşılığı — tool başına ayrı vaka | 89 |
+
+**Üç kural**, üçü de kasıtlı:
+
+1. **Ağ yok, yazma I/O yok.** Sağlayıcılar dışarıdan enjekte edilir
+   (`CalendarFactory.ReadAsync(ICalendarProvider, …)`), HTTP eşleyicileri
+   (`GraphCalendarProvider.MapEvent`, `GoogleCalendarProvider.MapEvent`) istekten ayrıştırıldı.
+   Fixture **okumak** serbesttir — zaten üç dilin paylaştığı tek gerçek kaynak odur.
+2. **Zaman enjekte edilir.** `AppConfig.Clock` üretimde `TimeProvider.System`'dir; testte
+   sabitlenir. Sebebi somut: yerel saat 00:00–03:00 arasındayken (`Europe/Istanbul` = UTC+3)
+   UTC tarihi **bir gün geridedir** ve bu repoda tam olarak bu yüzden gece kırılan bir
+   doğrulama yaşandı. Test kendi beklentisini "şu anki gün"den üretirse, testin doğruluğu
+   çalıştırıldığı **saate** bağlanır.
+3. **Test adı ne doğruladığını söyler.** `test1` değil,
+   `two_step_ikinci_adimda_assignment_alani_GONDERMEZ`.
+
+Ana proje etkilenmez: `XurrentMcp.csproj` içindeki `DefaultItemExcludes` test klasörünü
+ana derlemenin dışında tutar; `dotnet run` modlarının hepsi aynen çalışır.
 
 ## ★ Mimari: aynı iş mantığı, iki protokol kabuğu
 
@@ -121,8 +162,13 @@ OpenAPI şemasının **dar bir alt kümesini** alır. Şema olduğu gibi geçiri
 log basmaz. Loglamak çağıranın işidir — `stdio` modunda `stdout` yalnızca JSON-RPC'nindir.
 
 ```bash
-dotnet run -- sema-testi     # 8 tool'u çevirir, atılan anahtarları listeler, 83 iddiayı doğrular
+dotnet run -- sema-testi     # 8 tool'u çevirir, atılan anahtarları listeler, örnek çıktıyı basar
+dotnet test XurrentMcp.Tests --filter SemaTests   # aynı iddialar, tool başına ayrı test vakası
 ```
+
+> İddialar **iki yerde** yaşar ve bu bilinçlidir: `sema-testi` derste **gösterir**
+> (tablo + örnek `functionDeclaration`), `dotnet test` **denetler** (89 vaka, kırılan
+> iddia diğerlerini gizlemez).
 
 Ölçülen sonuç (sözleşme şemaları): `additionalProperties`×8, `pattern`×3, `minimum`,
 `maximum`, `minItems`, `maxItems`, `maxLength` birer kez atıldı; **19 `default` açıklamaya

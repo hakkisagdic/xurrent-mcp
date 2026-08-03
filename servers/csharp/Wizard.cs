@@ -301,7 +301,7 @@ public static class Wizard
     private static Dictionary<string, string> BuildTemplateVariables(AppConfig cfg)
     {
         var tz = cfg.TimeZone;
-        var today = TimeUtil.Today(tz);
+        var today = TimeUtil.Today(tz, cfg.Clock);
         var yesterday = today.AddDays(-1);
         var offset = tz.GetUtcOffset(today.ToDateTime(TimeOnly.MinValue, DateTimeKind.Unspecified));
         var offsetText = (offset < TimeSpan.Zero ? "-" : "+") +

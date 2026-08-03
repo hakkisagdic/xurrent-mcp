@@ -54,36 +54,45 @@ public sealed class GraphCalendarProvider(AppConfig cfg, HttpClient http) : ICal
 
         var events = new List<RawEvent>();
         foreach (var node in body["value"] as JsonArray ?? [])
-        {
-            var e = node!.AsObject();
-            var start = ParseSlot(e["start"]?.AsObject());
-            var end = ParseSlot(e["end"]?.AsObject());
-            if (start is null || end is null) continue;
-
-            var attendees = e["attendees"] as JsonArray ?? [];
-
-            events.Add(new RawEvent
-            {
-                Id = e["id"]?.GetValue<string>() ?? "",
-                // Graph'te iCalUId her OCCURRENCE için farklıdır — dedup anahtarına start da girer.
-                ICalUid = e["iCalUId"]?.GetValue<string>() ?? e["id"]?.GetValue<string>() ?? "",
-                Title = e["subject"]?.GetValue<string>() ?? "(başlıksız)",
-                Start = start.Value,
-                End = end.Value,
-                IsAllDay = e["isAllDay"]?.GetValue<bool>() ?? false,
-                IsCancelled = e["isCancelled"]?.GetValue<bool>() ?? false,
-                Declined = e["responseStatus"]?["response"]?.GetValue<string>() == "declined",
-                // showAs: free | tentative | busy | oof | workingElsewhere | unknown
-                Free = e["showAs"]?.GetValue<string>() == "free",
-                Organizer = e["organizer"]?["emailAddress"]?["address"]?.GetValue<string>(),
-                AttendeeCount = attendees.Count,
-                Categories = (e["categories"] as JsonArray ?? []).Select(c => c!.GetValue<string>()).ToList(),
-                SeriesId = e["seriesMasterId"]?.GetValue<string>(),
-                JoinUrl = e["onlineMeeting"]?["joinUrl"]?.GetValue<string>(),
-            });
-        }
+            if (MapEvent(node!.AsObject()) is { } mapped)
+                events.Add(mapped);
 
         return events;
+    }
+
+    /// <summary>
+    /// Graph event JSON'ını RawEvent'e çevirir. HTTP'den AYRIŞTIRILMIŞTIR: buradaki
+    /// alan tuzakları (offset'siz dateTime, responseStatus.response, showAs) ağ olmadan
+    /// birim testine tabi tutulabilsin diye.
+    /// Başlangıç/bitiş okunamıyorsa null döner (kayıt atlanır).
+    /// </summary>
+    internal static RawEvent? MapEvent(JsonObject e)
+    {
+        var start = ParseSlot(e["start"]?.AsObject());
+        var end = ParseSlot(e["end"]?.AsObject());
+        if (start is null || end is null) return null;
+
+        var attendees = e["attendees"] as JsonArray ?? [];
+
+        return new RawEvent
+        {
+            Id = e["id"]?.GetValue<string>() ?? "",
+            // Graph'te iCalUId her OCCURRENCE için farklıdır — dedup anahtarına start da girer.
+            ICalUid = e["iCalUId"]?.GetValue<string>() ?? e["id"]?.GetValue<string>() ?? "",
+            Title = e["subject"]?.GetValue<string>() ?? "(başlıksız)",
+            Start = start.Value,
+            End = end.Value,
+            IsAllDay = e["isAllDay"]?.GetValue<bool>() ?? false,
+            IsCancelled = e["isCancelled"]?.GetValue<bool>() ?? false,
+            Declined = e["responseStatus"]?["response"]?.GetValue<string>() == "declined",
+            // showAs: free | tentative | busy | oof | workingElsewhere | unknown
+            Free = e["showAs"]?.GetValue<string>() == "free",
+            Organizer = e["organizer"]?["emailAddress"]?["address"]?.GetValue<string>(),
+            AttendeeCount = attendees.Count,
+            Categories = (e["categories"] as JsonArray ?? []).Select(c => c!.GetValue<string>()).ToList(),
+            SeriesId = e["seriesMasterId"]?.GetValue<string>(),
+            JoinUrl = e["onlineMeeting"]?["joinUrl"]?.GetValue<string>(),
+        };
     }
 
     private static DateTimeOffset? ParseSlot(JsonObject? slot)

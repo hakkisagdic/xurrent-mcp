@@ -20,6 +20,21 @@ dev = ["pytest>=8.3.0"]
 [project.scripts]
 xurrent-mcp = "xurrent_mcp.__main__:main"
 
+# Cekirdek is mantiginin birim testleri: uv run pytest -q
+#
+# Testler I/O YAPMAZ, ag KULLANMAZ ve GERCEK ZAMANA BAGLI DEGILDIR.
+# "Bugun" tests/conftest.py'deki autouse fixture ile sabitlenir; sebebi bu
+# repoda yasandi (bkz. commit "Fix timezone-dependent flake ...").
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# -q BILEREK BURADA DEGIL: belgelenen komut `uv run pytest -q` ve addopts'a da
+# koyulursa -qq olur; pytest o seviyede "N passed" ozet satirini HIC basmaz.
+# Bir test kosucusunun kac testin gectigini gizlemesi kabul edilemez.
+# --strict-markers: yanlis yazilmis bir @pytest.mark sessizce yok sayilmasin.
+# -rxX: xfail/xpass olan her test ADIYLA ve GEREKCESIYLE ozete dusmelidir —
+#       bilinen bir bulgunun ekranda gorunmemesi onu gizlemek olurdu.
+addopts = "--strict-markers -rxX"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

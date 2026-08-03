@@ -67,7 +67,9 @@ public static class RequestStateCodec
     /// <summary>Onaylanmış bir çağrı için imzalı state üretir.</summary>
     public static string Sign(AppConfig cfg, string principal, string method, JsonNode? arguments)
     {
-        var now = DateTimeOffset.UtcNow;
+        // cfg.Clock üretimde TimeProvider.System'dir; testte sabitlenir ki TTL davranışı
+        // gerçek saatin geçmesini BEKLEMEDEN doğrulanabilsin.
+        var now = cfg.Clock.GetUtcNow();
         var payload = new JsonObject
         {
             ["v"] = Version,
@@ -120,8 +122,9 @@ public static class RequestStateCodec
         if (payload["v"]?.GetValue<int>() != Version)
             return RequestStateVerdict.Invalid("requestState sürümü desteklenmiyor.");
 
+        var now = cfg.Clock.GetUtcNow();
         var exp = payload["exp"]?.GetValue<long>() ?? 0;
-        if (DateTimeOffset.UtcNow.ToUnixTimeSeconds() > exp)
+        if (now.ToUnixTimeSeconds() > exp)
             return RequestStateVerdict.Invalid(
                 $"requestState SÜRESİ DOLDU (TTL {cfg.StateTtlSeconds} sn). Onay akışı baştan başlatılmalıdır.");
 
@@ -141,7 +144,7 @@ public static class RequestStateCodec
         if (string.IsNullOrEmpty(nonce))
             return RequestStateVerdict.Invalid("requestState nonce taşımıyor.");
 
-        PruneNonces();
+        PruneNonces(now);
         if (!_usedNonces.TryAdd(nonce, DateTimeOffset.FromUnixTimeSeconds(exp)))
             return RequestStateVerdict.Invalid(
                 "requestState ZATEN KULLANILMIŞ — tek kullanımlıktır, tekrar oynatma (replay) kabul edilmez.");
@@ -173,10 +176,9 @@ public static class RequestStateCodec
         => HMACSHA256.HashData(Encoding.UTF8.GetBytes(cfg.StateSecret), payload);
 
     /// <summary>Süresi dolmuş nonce'lar sette birikmesin — uzun süren sunucuda sessiz sızıntı olurdu.</summary>
-    private static void PruneNonces()
+    private static void PruneNonces(DateTimeOffset now)
     {
         if (_usedNonces.Count < 1024) return;
-        var now = DateTimeOffset.UtcNow;
         foreach (var (k, expiry) in _usedNonces)
             if (expiry < now)
                 _usedNonces.TryRemove(k, out _);

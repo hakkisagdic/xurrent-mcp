@@ -10,7 +10,7 @@ kayma uretir; bu sessiz bir hatadir.
 from __future__ import annotations
 
 import re
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 _FRACTIONAL_RE = re.compile(r"(\.\d{3})\d+$")
@@ -89,7 +89,23 @@ def parse_graph_datetime(value: str, tz_name: str = "UTC") -> datetime:
 
 
 def minutes_between(start: datetime, end: datetime) -> int:
-    return max(0, int((end - start).total_seconds() // 60))
+    """Iki an arasindaki GERCEK gecen sureyi dakika olarak doner.
+
+    ★ NEDEN UTC'ye ceviriyoruz: Python'da iki aware datetime AYNI tzinfo
+    nesnesini tasiyorsa cikarma NAIF yapilir — duvar saati farki verir, gecen
+    sure degil. zone() ZoneInfo'yu onbellekten dondurdugu icin ayni bolgedeki
+    her instant ayni nesneyi tasir, yani tuzak burada HER ZAMAN kuruludur.
+
+    Kanit: Europe/Berlin 2026-03-29 01:00 -> 04:00 (ileri saat gecisi)
+      duz cikarma        -> 180 dk  (YANLIS)
+      UTC'ye cevirip fark -> 120 dk  (DOGRU)
+
+    Bu, busyMinutes'i yilda iki gun diller arasinda ayristiriyordu; TypeScript
+    mutlak instant farki aldigi icin 120 veriyordu. Varsayilan Europe/Istanbul
+    2016'dan beri DST uygulamadigi icin uretimde gorunmemisti.
+    """
+    delta = end.astimezone(timezone.utc) - start.astimezone(timezone.utc)
+    return max(0, int(delta.total_seconds() // 60))
 
 
 def merge_intervals(spans: list[tuple[datetime, datetime]]) -> int:

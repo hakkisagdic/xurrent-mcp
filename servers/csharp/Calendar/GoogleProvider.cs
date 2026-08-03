@@ -43,47 +43,55 @@ public sealed class GoogleCalendarProvider(AppConfig cfg, HttpClient http) : ICa
 
         var events = new List<RawEvent>();
         foreach (var node in body["items"] as JsonArray ?? [])
-        {
-            var e = node!.AsObject();
-            var startNode = e["start"]?.AsObject();
-            var endNode = e["end"]?.AsObject();
-            if (startNode is null || endNode is null) continue;
-
-            // All-day etkinlikler dateTime yerine "date" taşır ve end EXCLUSIVE'dir.
-            var isAllDay = startNode["dateTime"] is null;
-            var start = ParseGoogleTime(startNode, window.TimeZone);
-            var end = ParseGoogleTime(endNode, window.TimeZone);
-            if (start is null || end is null) continue;
-
-            // Katılımcı listesinde "self" olan kayıt kullanıcının kendi yanıtıdır.
-            var attendees = e["attendees"] as JsonArray ?? [];
-            var mine = attendees.Select(a => a!.AsObject()).FirstOrDefault(a =>
-                (a["self"]?.GetValue<bool>() ?? false) ||
-                (self.Length > 0 && string.Equals(a["email"]?.GetValue<string>(), self, StringComparison.OrdinalIgnoreCase)));
-
-            events.Add(new RawEvent
-            {
-                Id = e["id"]?.GetValue<string>() ?? "",
-                ICalUid = e["iCalUID"]?.GetValue<string>() ?? e["id"]?.GetValue<string>() ?? "",
-                Title = e["summary"]?.GetValue<string>() ?? "(başlıksız)",
-                Start = start.Value,
-                End = end.Value,
-                IsAllDay = isAllDay,
-                IsCancelled = e["status"]?.GetValue<string>() == "cancelled",
-                Declined = mine?["responseStatus"]?.GetValue<string>() == "declined",
-                // ★ (transparency ?? "opaque") — alan yoksa MEŞGUL demektir.
-                Free = (e["transparency"]?.GetValue<string>() ?? "opaque") == "transparent",
-                Organizer = e["organizer"]?["email"]?.GetValue<string>(),
-                AttendeeCount = attendees.Count,
-                // Google'da "categories" yoktur; en yakın karşılık renk etiketidir.
-                Categories = [],
-                // singleEvents=true iken her occurrence recurringEventId ile seriye bağlanır.
-                SeriesId = e["recurringEventId"]?.GetValue<string>(),
-                JoinUrl = e["hangoutLink"]?.GetValue<string>(),
-            });
-        }
+            if (MapEvent(node!.AsObject(), window.TimeZone, self) is { } mapped)
+                events.Add(mapped);
 
         return events;
+    }
+
+    /// <summary>
+    /// Google event JSON'ını RawEvent'e çevirir. HTTP'den AYRIŞTIRILMIŞTIR: buradaki
+    /// alan tuzakları (transparency alanının HİÇ GELMEMESİ, all-day'in "date" taşıması,
+    /// self katılımcının responseStatus'u) ağ olmadan birim testine tabi tutulabilsin diye.
+    /// </summary>
+    internal static RawEvent? MapEvent(JsonObject e, TimeZoneInfo fallbackTz, string self)
+    {
+        var startNode = e["start"]?.AsObject();
+        var endNode = e["end"]?.AsObject();
+        if (startNode is null || endNode is null) return null;
+
+        // All-day etkinlikler dateTime yerine "date" taşır ve end EXCLUSIVE'dir.
+        var isAllDay = startNode["dateTime"] is null;
+        var start = ParseGoogleTime(startNode, fallbackTz);
+        var end = ParseGoogleTime(endNode, fallbackTz);
+        if (start is null || end is null) return null;
+
+        // Katılımcı listesinde "self" olan kayıt kullanıcının kendi yanıtıdır.
+        var attendees = e["attendees"] as JsonArray ?? [];
+        var mine = attendees.Select(a => a!.AsObject()).FirstOrDefault(a =>
+            (a["self"]?.GetValue<bool>() ?? false) ||
+            (self.Length > 0 && string.Equals(a["email"]?.GetValue<string>(), self, StringComparison.OrdinalIgnoreCase)));
+
+        return new RawEvent
+        {
+            Id = e["id"]?.GetValue<string>() ?? "",
+            ICalUid = e["iCalUID"]?.GetValue<string>() ?? e["id"]?.GetValue<string>() ?? "",
+            Title = e["summary"]?.GetValue<string>() ?? "(başlıksız)",
+            Start = start.Value,
+            End = end.Value,
+            IsAllDay = isAllDay,
+            IsCancelled = e["status"]?.GetValue<string>() == "cancelled",
+            Declined = mine?["responseStatus"]?.GetValue<string>() == "declined",
+            // ★ (transparency ?? "opaque") — alan yoksa MEŞGUL demektir.
+            Free = (e["transparency"]?.GetValue<string>() ?? "opaque") == "transparent",
+            Organizer = e["organizer"]?["email"]?.GetValue<string>(),
+            AttendeeCount = attendees.Count,
+            // Google'da "categories" yoktur; en yakın karşılık renk etiketidir.
+            Categories = [],
+            // singleEvents=true iken her occurrence recurringEventId ile seriye bağlanır.
+            SeriesId = e["recurringEventId"]?.GetValue<string>(),
+            JoinUrl = e["hangoutLink"]?.GetValue<string>(),
+        };
     }
 
     private static DateTimeOffset? ParseGoogleTime(JsonObject node, TimeZoneInfo fallbackTz)
