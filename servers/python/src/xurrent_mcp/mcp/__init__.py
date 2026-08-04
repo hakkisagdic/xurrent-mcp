@@ -4,6 +4,7 @@
     v1.py             2025-11-25: sunucu-baslatmali `elicitation/create`
     v2.py             2026-07-28: `InputRequiredResult` + MRTR (imzali requestState)
     parse_guard.py    protokol-ustu: bozuk JSON -> -32700 (revizyondan BAGIMSIZ)
+    envelope_guard.py eksik/bozuk 2026 `_meta` zarfi -> -32601 DEGIL -32602
 
 Ders acisindan onemli olan bu klasorun BOYUTUDUR. Xurrent adapter'i, takvim
 saglayicilari, uc backdate stratejisi, dogrulama kurallari — hicbiri protokol
@@ -16,4 +17,4 @@ her zaman ust seviye SDK'yi cozer, bu paket `xurrent_mcp.mcp` adiyla yasar.
 
 from __future__ import annotations
 
-__all__ = ["common", "parse_guard", "v1", "v2"]
+__all__ = ["common", "envelope_guard", "parse_guard", "v1", "v2"]

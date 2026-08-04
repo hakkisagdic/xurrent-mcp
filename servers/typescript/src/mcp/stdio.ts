@@ -19,6 +19,7 @@ import { StdioServerTransport as StdioServerTransportV2, serveStdio } from "@mod
 import { loadConfig } from "../config.js";
 import { log } from "../util/log.js";
 import { createParseGuard } from "./parse-guard.js";
+import { metaKoruyucusuTak } from "./meta-guard.js";
 import { parametreKoruyucusuTak } from "./params-guard.js";
 import { createV1Server } from "./v1/server.js";
 import { createV2Server } from "./v2/server.js";
@@ -78,9 +79,21 @@ async function main(): Promise<void> {
   // bir client düz initialize gönderse bile cevapsız kalmaz.
   // Kendi transport'umuzu veriyoruz ki stdin koruyucudan geçsin; era seçimini
   // yine serveStdio yapar (legacy:'serve' varsayılanı korunur).
+  const v2Transport = new StdioServerTransportV2(korumaliGirdi() as never, process.stdout);
   serveStdio(() => createV2Server(cfg).server, {
-    transport: new StdioServerTransportV2(korumaliGirdi() as never, process.stdout),
+    transport: v2Transport,
     onerror: (err) => log.error("v2 stdio hatası", { error: err.message }),
+  });
+  // serveStdio'dan SONRA: serveStdio onmessage'i kendi kuyruğuyla değiştirir.
+  // Zarf iddiası taşımayan bir istek serveStdio'ya ulaşırsa bağlantı SESSİZCE
+  // v1'e sabitlenir ve -32601 döner; spec o kodu "2026 öncesi sunucu" sinyali
+  // saydığı için uyumluluk sondası yanılır (uyum Y2b/Y3b).
+  metaKoruyucusuTak(v2Transport as never, {
+    onReject: (metot, id, hata) =>
+      log.warn("_meta zarfı eksik, -32602 döndürüldü", { metot, id, eksik: hata.data.envelope.missing }),
+    onLegacyPin: (metot) =>
+      log.info("zarfsız el sıkışması görüldü — bağlantı 2025-11-25 era'sına sabitlendi", { metot }),
+    onSendError: (err) => log.error("-32602 yanıtı gönderilemedi", { error: err instanceof Error ? err.message : String(err) }),
   });
   log.info("stdio transport bağlandı (v2 / 2026-07-28)");
 }

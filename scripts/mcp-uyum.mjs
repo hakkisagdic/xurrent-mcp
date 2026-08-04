@@ -843,6 +843,34 @@ async function checkJsonRpcBasics(rec, s, { unknownMethod, badParams, stringIdRe
   }
 }
 
+/**
+ * requestState'i, çözülen baytların DEĞİŞTİĞİ garanti olacak şekilde kurcalar.
+ *
+ * Son haneyi değiştirmek base64 dolgu bitleri yüzünden etkisiz kalabilir.
+ * Bunun yerine imza bölümünün ORTASINDAKİ bir haneyi değiştiriyoruz: orada
+ * altı bitin hepsi anlamlıdır, dolayısıyla her değişiklik baytlara yansır.
+ *
+ * Nokta ile ayrılmış bir yapı varsa (v1.<payload>.<imza>) son parça hedeflenir;
+ * yoksa metnin tamamı. Sonuç girdiden farklı olmak ZORUNDA — aksi halde
+ * fırlatırız, çünkü kurcalamayan bir kurcalama testi sessizce yeşile döner.
+ */
+function kurcala(state) {
+  const parcalar = String(state).split(".");
+  const hedefIndex = parcalar.length > 1 ? parcalar.length - 1 : 0;
+  const hedef = parcalar[hedefIndex];
+
+  if (hedef.length < 3) throw new Error(`requestState kurcalanamayacak kadar kısa: ${q(state)}`);
+
+  const i = Math.floor(hedef.length / 2);           // orta hane: tüm bitler anlamlı
+  const eski = hedef[i];
+  const yeni = eski === "Z" ? "Q" : "Z";            // ikisi de base64url alfabesinde
+  parcalar[hedefIndex] = hedef.slice(0, i) + yeni + hedef.slice(i + 1);
+
+  const sonuc = parcalar.join(".");
+  if (sonuc === state) throw new Error("kurcalama etkisiz kaldı — sonda hatalı");
+  return sonuc;
+}
+
 /** Bozuk JSON testi kendi kısa ömürlü sürecinde çalışır: bağlantıyı öldürebilir. */
 async function checkParseError(rec, srv, protocol) {
   const s = new Session(srv, { protocol });
@@ -1024,8 +1052,20 @@ async function runV2(srv, rec) {
     const state = ir.requestState;
 
     // M5 — kurcalanmış blob
-    const son = state.slice(-1);
-    const bozuk = state.slice(0, -1) + (son === "A" ? "B" : "A");
+    //
+    // ★ SON KARAKTERİ DEĞİŞTİRMEK YETMEZ — bu kontrol tam olarak bu yüzden
+    // koşuların bir kısmında yanlışlıkla GEÇİYORDU.
+    //
+    // requestState base64url taşır ve son hanenin bitlerinin bir bölümü DOLGUDUR.
+    // Son karakteri A↔B gibi değiştirmek, çözülen baytları çoğu zaman
+    // DEĞİŞTİRMEZ: imza aynı kalır, sunucu doğru davranıp kabul eder, biz de
+    // "kurcalama fark edilmedi" diye rapor ederiz. Üstelik nonce tüketildiği
+    // için ARDINDAN gelen M7 (geçerli akış) "zaten kullanılmış" diye düşer —
+    // tek bozuk sonda iki maddeyi birden kırar.
+    //
+    // Ortadaki bir hanede altı bitin hepsi anlamlıdır; oradaki her değişiklik
+    // çözülen baytları KESİNLİKLE değiştirir.
+    const bozuk = kurcala(state);
     const tamper = await s.request("tools/call", {
       name: PROBE.writeTool,
       arguments: PROBE.writeArgs,

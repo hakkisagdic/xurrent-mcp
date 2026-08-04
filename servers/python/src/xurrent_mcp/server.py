@@ -46,7 +46,7 @@ from mcp_types.version import MODERN_PROTOCOL_VERSIONS
 
 from .config import MCP_PROTOCOL_V1, Config, load_config
 from .core.confirm import StateSigner
-from .mcp import common, v1, v2
+from .mcp import common, envelope_guard, v1, v2
 from .mcp.parse_guard import korumali_stdio_server
 from .tools import Runtime
 
@@ -155,18 +155,42 @@ def _reject_both_on_stdio(cfg: Config) -> None:
         )
 
 
+def _stdio_denetleyici(cfg: Config, server: Server) -> envelope_guard.Denetleyici | None:
+    """stdio icin `_meta` zarf denetleyicisi — v1 modunda BILEREK None.
+
+    MCP_PROTOCOL=2025-11-25 iken sunucu v1-only oldugunu IDDIA eder ve
+    `server/discover` sondasina v1-only bir sunucu gibi -32601 vermelidir
+    (`_disable_discover`). Orada zarfi denetleyip -32602 dondurmek, 2026 zarfini
+    anladigimizi ele verir ve pazarlik dersini yalancilastirirdi.
+    """
+    if cfg.mcp_protocol == MCP_PROTOCOL_V1:
+        return None
+    return envelope_guard.zarf_denetleyici(envelope_guard.korunan_metotlar(server))
+
+
 async def run_stdio(config: Config | None = None) -> None:
     """stdio transport. stdout SADECE JSON-RPC tasir; loglar stderr'dedir.
 
-    `stdio_server` DEGIL `korumali_stdio_server`: SDK'nin stdio transport'u
-    ayristirilamayan satiri sessizce yutuyor, oysa JSON-RPC 2.0 `-32700` donmeyi
-    ZORUNLU kilar (uyum maddesi J5). Koruyucu stdin ile SDK arasina girer;
-    gerekcesi ve SDK'dan okunan kanit mcp/parse_guard.py'de.
+    `stdio_server` DEGIL `korumali_stdio_server`: koruyucu stdin ile SDK arasina
+    girer ve IKI ihlali birden kapatir:
+
+      * J5  — SDK ayristirilamayan satiri SESSIZCE yutuyor, oysa JSON-RPC 2.0
+              `-32700` donmeyi ZORUNLU kilar (mcp/parse_guard.py).
+      * Y2b/Y3b — SDK'nin stdio era secimi eksik `_meta` zarfini "2025 trafigi"
+              sanip baglantiyi legacy'e kilitliyor; sonucta `server/discover`
+              `-32601` (= "bu sunucu 2026 oncesi") aliyor ve ondan sonraki
+              KUSURSUZ 2026 istekleri de reddediliyor (mcp/envelope_guard.py).
+
+    HTTP yolunda ikisi de gerekmez: `_streamable_http_modern.py` her istegi
+    dogrudan `classify_inbound_request`ten gecirir ve cerceveleme HTTP'nindir.
     """
     cfg = config or load_config()
     _reject_both_on_stdio(cfg)
     server, _ = build_server(cfg)
-    async with korumali_stdio_server() as (read_stream, write_stream):
+    async with korumali_stdio_server(_stdio_denetleyici(cfg, server)) as (
+        read_stream,
+        write_stream,
+    ):
         await server.run(read_stream, write_stream, server.create_initialization_options())
 
 

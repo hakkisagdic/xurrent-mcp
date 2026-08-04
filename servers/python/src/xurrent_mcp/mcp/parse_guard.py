@@ -45,6 +45,13 @@ TEK YAZAR KURALI: uretilen -32700 yaniti stdout'a ELLE yazilmaz. SDK'nin kendi
 `stdout_writer`'ina, yani `write_stream`'e gonderilir. Boylece stdout'un tek bir
 yazari kalir; iki yazar ayni boruda cerceveleri birbirine karistirirdi.
 
+IKINCI KIRACI: bu modul "stdin ile SDK arasindaki TEK gecit"tir, dolayisiyla
+protokol duzeyinde baska bir reddin de dogal yeridir. `denetle` parametresi
+COZULMUS mesaji goren bir kancadir: hata govdesi donerse cerceve DUSURULUR ve
+yerine o govde yazilir. Bu modul denetleyicinin NE yaptigini bilmez — politikayi
+envelope_guard.py tasir, buradaki is yalnizca kablolamadir. Sira burada da
+KORUNUR: dusurulen cercevenin hatasi, ondan sonraki gecerli satirin ONUNDE kalir.
+
 NE'DEN VAZGECTIK (durustce): stdin'i acikca verdigimiz icin SDK'nin fd 0
 "claim" mekanizmasi (fd 0 -> /dev/null yonlendirmesi) devre disi kalir. O
 mekanizma, handler kodunun veya bir alt surecin protokol baytlarini calmasini
@@ -78,6 +85,10 @@ PARSE_HATA_MESAJI = "Parse error: gövde geçerli JSON değil."
 #:   ("satir", str)  -> SDK'ya iletilecek ham satir (satir sonu HARIC)
 #:   ("hata",  dict) -> tel'e yazilacak JSON-RPC hata govdesi
 Olay = tuple[Literal["satir", "hata"], Any]
+
+#: Cozulmus mesaji inceleyen kanca. Hata govdesi donerse cerceve SDK'ya
+#: ULASMAZ ve yerine o govde yazilir; None donerse cerceve dokunulmadan gecer.
+Denetleyici = Callable[[Any], "dict | None"]
 
 # `"id": 991` veya `"id": "abc-7"`. Kacisli tirnaklar ("\"") govdeyi erken
 # bitirmesin diye string dalinda `(?:[^"\\]|\\.)*` kullanilir.
@@ -121,10 +132,14 @@ class ParseKoruyucu:
 
     I/O yapmaz, async degildir, global durum tutmaz. Bu yuzden birim testi
     dogrudan buraya yazilir (tests/test_parse_guard.py).
+
+    `denetle` verilirse AYRISTIRILABILEN her mesaj ona gosterilir; hata govdesi
+    donerse cerceve SDK'ya gecmez. Politika burada DEGIL, denetleyicidedir.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, denetle: Denetleyici | None = None) -> None:
         self._tampon = ""
+        self._denetle = denetle
 
     def besle(self, parca: str) -> list[Olay]:
         """Yeni bir parca isler; TAMAMLANMIS satirlarin olaylarini doner."""
@@ -157,10 +172,19 @@ class ParseKoruyucu:
             # Bos satir transport'ta anlamsizdir; bozuk JSON DEGILDIR.
             return
         try:
-            json.loads(satir)
+            mesaj = json.loads(satir)
         except ValueError:
             olaylar.append(("hata", hata_govdesi(id_kurtar(satir))))
             return
+        # Ayristirilabildi ama protokol duzeyinde reddedilebilir. Denetleyici
+        # bir govde dondururse cerceve DUSURULUR — SDK onu HIC gormez; bu,
+        # bozuk bir cercevenin baglantinin protokol ERASINI kilitlemesini de
+        # engeller (bkz. envelope_guard.py).
+        if self._denetle is not None:
+            govde = self._denetle(mesaj)
+            if govde is not None:
+                olaylar.append(("hata", govde))
+                return
         # Gecerli: DEGISTIRILMEDEN gecer. (Gecerli JSON olup gecerli bir
         # JSON-RPC mesaji OLMAYAN govdeler -32600'un konusudur, -32700'un
         # degil; onlari bilerek SDK'ya birakiyoruz.)
@@ -170,9 +194,10 @@ class ParseKoruyucu:
 async def korumali_satirlar(
     kaynak: AsyncIterable[str],
     hata_yaz: Callable[[dict], Awaitable[None]],
+    denetle: Denetleyici | None = None,
 ) -> AsyncIterator[str]:
     """Ham parcalari suzer: gecerli satirlari verir, bozuklari `hata_yaz`a yollar."""
-    koruyucu = ParseKoruyucu()
+    koruyucu = ParseKoruyucu(denetle)
     async for parca in kaynak:
         for tur, deger in koruyucu.besle(parca):
             if tur == "hata":
@@ -197,12 +222,14 @@ class KorumaliStdin:
         self,
         kaynak: AsyncIterable[str],
         hata_yaz: Callable[[dict], Awaitable[None]],
+        denetle: Denetleyici | None = None,
     ) -> None:
         self._kaynak = kaynak
         self._hata_yaz = hata_yaz
+        self._denetle = denetle
 
     def __aiter__(self) -> AsyncIterator[str]:
-        return korumali_satirlar(self._kaynak, self._hata_yaz)
+        return korumali_satirlar(self._kaynak, self._hata_yaz, self._denetle)
 
 
 class _SahipsizMetin(io.TextIOWrapper):
@@ -229,26 +256,37 @@ def _utf8_stdin() -> Any:
 
 
 def _hata_mesaji(govde: dict) -> SessionMessage:
-    """Koruyucunun urettigi sozlugu SDK'nin yazabilecegi mesaja cevirir."""
+    """Koruyucunun urettigi sozlugu SDK'nin yazabilecegi mesaja cevirir.
+
+    `data` YALNIZCA govdede varsa verilir: `ErrorData.data` varsayilani None'dir
+    ve SDK stdout'a `exclude_unset=True` ile serilestirir; acikca None gecmek
+    tel'e anlamsiz bir `"data": null` dusururdu.
+    """
+    hata = govde["error"]
     return SessionMessage(
         types.JSONRPCError(
             jsonrpc="2.0",
             id=govde["id"],
-            error=types.ErrorData(
-                code=govde["error"]["code"], message=govde["error"]["message"]
+            error=(
+                types.ErrorData(code=hata["code"], message=hata["message"], data=hata["data"])
+                if "data" in hata
+                else types.ErrorData(code=hata["code"], message=hata["message"])
             ),
         )
     )
 
 
 @asynccontextmanager
-async def korumali_stdio_server():
+async def korumali_stdio_server(denetle: Denetleyici | None = None):
     """`stdio_server` ile ayni sozu verir, ustune J5'i (-32700) tutar.
 
     Kullanim `stdio_server` ile birebir aynidir:
 
         async with korumali_stdio_server() as (read_stream, write_stream):
             await server.run(read_stream, write_stream, ...)
+
+    `denetle` verilirse ayristirilabilen mesajlar ona da ugrar; hata govdesi
+    donen cerceve SDK'ya iletilmez (bkz. envelope_guard.py).
     """
     # `write_stream` ancak `stdio_server` acildiktan SONRA var olur, oysa suzme
     # teorik olarak ondan once baslayabilir. `hazir` bu yarisi kapatir.
@@ -257,7 +295,11 @@ async def korumali_stdio_server():
 
     async def hata_yaz(govde: dict) -> None:
         await hazir.wait()
-        log.warning("bozuk JSON satırı düşürüldü, -32700 döndürüldü (id=%r)", govde["id"])
+        # Kod acikca yazilir: bu kanal artik yalnizca -32700 tasimiyor,
+        # denetleyicinin urettigi redler de (ornegin -32602) buradan gecer.
+        log.warning(
+            "çerçeve düşürüldü, %s döndürüldü (id=%r)", govde["error"]["code"], govde["id"]
+        )
         # ★ GONDERIM BURADA, SUZME GOREVININ ICINDE BEKLENIR — ayri bir "pompa"
         #   gorevine devredilmez. Sebep bir kapanis yarisidir: akisin SON satiri
         #   bozuksa, `bitir()` hatayi uretir, hemen ardindan stdin biter,
@@ -268,7 +310,7 @@ async def korumali_stdio_server():
         with suppress(anyio.ClosedResourceError, anyio.BrokenResourceError):
             await kutu["yazici"].send(_hata_mesaji(govde))
 
-    stdin = KorumaliStdin(_utf8_stdin(), hata_yaz)
+    stdin = KorumaliStdin(_utf8_stdin(), hata_yaz, denetle)
 
     async with stdio_server(stdin=stdin) as (read_stream, write_stream):
         kutu["yazici"] = write_stream
