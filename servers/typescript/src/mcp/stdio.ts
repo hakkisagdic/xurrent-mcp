@@ -15,11 +15,32 @@
  */
 
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { serveStdio } from "@modelcontextprotocol/server/stdio";
+import { StdioServerTransport as StdioServerTransportV2, serveStdio } from "@modelcontextprotocol/server/stdio";
 import { loadConfig } from "../config.js";
 import { log } from "../util/log.js";
+import { createParseGuard } from "./parse-guard.js";
 import { createV1Server } from "./v1/server.js";
 import { createV2Server } from "./v2/server.js";
+
+/**
+ * stdin'i SDK'ya vermeden önce süzen koruyucu.
+ *
+ * Her iki SDK da ayrıştırılamayan satırı sessizce yutuyor; JSON-RPC ise
+ * -32700 dönmeyi ZORUNLU kılıyor (bkz. src/mcp/parse-guard.ts). Sessiz yutma
+ * istemciyi süresiz bekletir. C# SDK'sı aynı durumda -32700 döndürdüğü için
+ * bunun protokolün değil implementasyonun eksiği olduğunu biliyoruz.
+ */
+function korumaliGirdi(): NodeJS.ReadableStream {
+  const guard = createParseGuard({
+    cikis: process.stdout,
+    onDrop: (satir, id) =>
+      log.warn("bozuk JSON satırı düşürüldü, -32700 döndürüldü", {
+        id, onizleme: satir.slice(0, 80),
+      }),
+  });
+  process.stdin.pipe(guard);
+  return guard;
+}
 
 async function main(): Promise<void> {
   const cfg = loadConfig();
@@ -39,7 +60,7 @@ async function main(): Promise<void> {
 
   if (cfg.mcpProtocol === "2025-11-25") {
     const { server } = createV1Server(cfg);
-    const transport = new StdioServerTransport();
+    const transport = new StdioServerTransport(korumaliGirdi() as never, process.stdout);
     await server.connect(transport);
     log.info("stdio transport bağlandı (v1 / 2025-11-25)");
     return;
@@ -48,7 +69,10 @@ async function main(): Promise<void> {
   // v2: serveStdio bağlantının era'sını sahiplenir ve fabrikadan TEK bir örneği
   // bağlantı ömrü boyunca sabitler. legacy:'serve' varsayılanı sayesinde eski
   // bir client düz initialize gönderse bile cevapsız kalmaz.
+  // Kendi transport'umuzu veriyoruz ki stdin koruyucudan geçsin; era seçimini
+  // yine serveStdio yapar (legacy:'serve' varsayılanı korunur).
   serveStdio(() => createV2Server(cfg).server, {
+    transport: new StdioServerTransportV2(korumaliGirdi() as never, process.stdout),
     onerror: (err) => log.error("v2 stdio hatası", { error: err.message }),
   });
   log.info("stdio transport bağlandı (v2 / 2026-07-28)");

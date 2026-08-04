@@ -30,19 +30,6 @@
     {
       "arac": "mcp-uyum",
       "madde": "J5",
-      "sunucu": "ts",
-      "protokol": "*",
-      "seviye": "MUST",
-      "baslik": "Bozuk JSON'a -32700 Parse error dönmüyor",
-      "olculen": "Yarım JSON satırı yazıldı; 1500 ms içinde HİÇ yanıt gelmedi (satır sessizce yutuldu).",
-      "nedenKapali": "ustAkim",
-      "aciklama": "@modelcontextprotocol/sdk stdio transport'u ayrıştırılamayan satırı loglayıp düşürüyor. Bizim kodumuz o satırı hiç görmüyor; repo içinde düzeltilemez. C# aynı testte -32700 döndüğü için bu 'SDK'lar böyle yapar' mazeretiyle kapatılamaz — kayıtta tutulmasının sebebi budur.",
-      "sahip": "upstream: modelcontextprotocol/typescript-sdk",
-      "kaynak": "docs/12-mcp-uyum.md § BULGU 2"
-    },
-    {
-      "arac": "mcp-uyum",
-      "madde": "J5",
       "sunucu": "py",
       "protokol": "*",
       "seviye": "MUST",
