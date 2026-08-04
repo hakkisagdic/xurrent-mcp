@@ -3,6 +3,7 @@ using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using ModelContextProtocol;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
 using XurrentMcp.Calendars;
@@ -81,6 +82,24 @@ public static class ServerSetup
             result.TimeToLive = ToolListTtl;
             result.CacheScope = CacheScope.Public;
             return result;
+        }));
+
+        // ★ J4: geçersiz params → -32602. Mesaj katmanında, tipli parametreye
+        // ÇEVRİLMEDEN ÖNCE denetlenir; gerekçesi InvalidParamsGuard'da anlatıldı.
+        //
+        // NEDEN AddCallToolFilter DEĞİL: request filtreleri CallToolRequestParams'ı
+        // hazır alır. name eksikse deserializer daha o noktaya gelmeden JsonException
+        // atar, dolayısıyla o filtre HİÇ ÇALIŞMAZ. Tek erken nokta mesaj filtresidir.
+        builder.WithMessageFilters(filters => filters.AddIncomingFilter(next => async Task (ctx, ct) =>
+        {
+            if (ctx.JsonRpcMessage is JsonRpcRequest { Method: RequestMethods.ToolsCall } istek &&
+                InvalidParamsGuard.ToolsCallHatasi(istek.Params) is { } hata)
+            {
+                // next ÇAĞRILMAZ: istek handler'a hiç ulaşmaz.
+                throw new McpProtocolException(hata, McpErrorCode.InvalidParams);
+            }
+
+            await next(ctx, ct);
         }));
 
         return builder;

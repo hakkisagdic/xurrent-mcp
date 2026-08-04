@@ -26,47 +26,7 @@
   "surum": 1,
   "olcumTarihi": "2026-08-03",
   "olcumKomutu": "node scripts/mcp-uyum.mjs --hepsi --protokol ikisi --json",
-  "maddeler": [
-    {
-      "arac": "mcp-uyum",
-      "madde": "J5",
-      "sunucu": "py",
-      "protokol": "*",
-      "seviye": "MUST",
-      "baslik": "Bozuk JSON'a -32700 Parse error dönmüyor",
-      "olculen": "Yarım JSON satırı yazıldı; 1500 ms içinde HİÇ yanıt gelmedi (satır sessizce yutuldu).",
-      "nedenKapali": "ustAkim",
-      "aciklama": "TypeScript ile aynı kök neden, farklı SDK: Python SDK'sının stdio okuyucusu da bozuk satırı düşürüyor.",
-      "sahip": "upstream: modelcontextprotocol/python-sdk",
-      "kaynak": "docs/12-mcp-uyum.md § BULGU 2"
-    },
-    {
-      "arac": "mcp-uyum",
-      "madde": "J4",
-      "sunucu": "ts",
-      "protokol": "2025-11-25",
-      "seviye": "MUST",
-      "baslik": "Eksik params -32603 dönüyor, -32602 değil",
-      "olculen": "tools/call (name YOK) → {\"code\":-32603,\"message\":\"[{ \\\"expected\\\": \\\"string\\\" …\"}",
-      "nedenKapali": "ustAkim",
-      "aciklama": "v1 SDK zod doğrulama hatasını Internal error olarak sarmalıyor. Aynı SDK'nın v2 kuşağı -32602 döndüğü için sapma sürüme özgüdür ve v1 yolu yalnızca geriye dönük uyumluluk için duruyor. Ayrım önemli: -32603'te client tekrar denemeye çalışır, -32602'de aynı istek sonsuza kadar başarısızdır.",
-      "sahip": "upstream: @modelcontextprotocol/sdk 1.30.0",
-      "kaynak": "docs/12-mcp-uyum.md § BULGU 3"
-    },
-    {
-      "arac": "mcp-uyum",
-      "madde": "J4",
-      "sunucu": "cs",
-      "protokol": "*",
-      "seviye": "MUST",
-      "baslik": "Eksik params -32603 dönüyor, -32602 değil",
-      "olculen": "tools/call (name YOK) → {\"code\":-32603,\"message\":\"An error occurred.\"}",
-      "nedenKapali": "ustAkim",
-      "aciklama": "C# SDK'sı şema hatasını Internal error'a sarmalıyor ve mesajı da siliyor — hangi alanın hatalı olduğu söylenmiyor. Hata ayıklanabilirlik açısından üç dil içinde en kötü davranış budur.",
-      "sahip": "upstream: ModelContextProtocol (C#)",
-      "kaynak": "docs/12-mcp-uyum.md § BULGU 3"
-    }
-  ],
+  "maddeler": [],
   "$cozulmusKayit": [
     "Buradan SİLİNEN ya da hiç girmemiş olup ARTIK GÖRÜLMEYEN maddeler tarihe",
     "düşsün diye not edilir — liste küçüldükçe ne kadar yol alındığı görünür kalsın.",

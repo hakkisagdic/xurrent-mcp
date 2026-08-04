@@ -21,6 +21,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { createMcpHandler } from "@modelcontextprotocol/server";
 import { loadConfig, type AppConfig } from "../config.js";
 import { log } from "../util/log.js";
+import { parametreKoruyucusuTak } from "./params-guard.js";
 import { createV1Server } from "./v1/server.js";
 import { createV2Server } from "./v2/server.js";
 
@@ -49,6 +50,11 @@ async function handleV1(cfg: AppConfig, req: IncomingMessage, res: ServerRespons
     void server.close();
   });
   await server.connect(transport);
+  // stdio ile AYNI koruyucu — taşıyıcı değişse de spec değişmiyor (uyum J4).
+  parametreKoruyucusuTak(transport as never, {
+    onReject: (metot, id, hata) => log.warn("geçersiz params reddedildi, -32602 döndürüldü", { metot, id, detay: hata.message }),
+    onSendError: (err) => log.error("-32602 yanıtı gönderilemedi", { error: err instanceof Error ? err.message : String(err) }),
+  });
   await transport.handleRequest(req, res, body);
 }
 

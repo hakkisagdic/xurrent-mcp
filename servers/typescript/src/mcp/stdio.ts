@@ -19,6 +19,7 @@ import { StdioServerTransport as StdioServerTransportV2, serveStdio } from "@mod
 import { loadConfig } from "../config.js";
 import { log } from "../util/log.js";
 import { createParseGuard } from "./parse-guard.js";
+import { parametreKoruyucusuTak } from "./params-guard.js";
 import { createV1Server } from "./v1/server.js";
 import { createV2Server } from "./v2/server.js";
 
@@ -62,6 +63,12 @@ async function main(): Promise<void> {
     const { server } = createV1Server(cfg);
     const transport = new StdioServerTransport(korumaliGirdi() as never, process.stdout);
     await server.connect(transport);
+    // connect'ten SONRA: Protocol.connect onmessage'i kendi işleyicisiyle değiştirir.
+    // v1 SDK şema hatasını -32603'e sarmalıyor; spec -32602 istiyor (uyum J4).
+    parametreKoruyucusuTak(transport as never, {
+      onReject: (metot, id, hata) => log.warn("geçersiz params reddedildi, -32602 döndürüldü", { metot, id, detay: hata.message }),
+      onSendError: (err) => log.error("-32602 yanıtı gönderilemedi", { error: err instanceof Error ? err.message : String(err) }),
+    });
     log.info("stdio transport bağlandı (v1 / 2025-11-25)");
     return;
   }

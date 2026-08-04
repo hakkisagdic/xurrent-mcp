@@ -40,7 +40,6 @@ from typing import Any
 
 import mcp_types as types
 from mcp.server.lowlevel.server import Server, ServerRequestContext
-from mcp.server.stdio import stdio_server
 from mcp.shared.exceptions import MCPError
 from mcp_types import METHOD_NOT_FOUND
 from mcp_types.version import MODERN_PROTOCOL_VERSIONS
@@ -48,6 +47,7 @@ from mcp_types.version import MODERN_PROTOCOL_VERSIONS
 from .config import MCP_PROTOCOL_V1, Config, load_config
 from .core.confirm import StateSigner
 from .mcp import common, v1, v2
+from .mcp.parse_guard import korumali_stdio_server
 from .tools import Runtime
 
 log = logging.getLogger(__name__)
@@ -156,11 +156,17 @@ def _reject_both_on_stdio(cfg: Config) -> None:
 
 
 async def run_stdio(config: Config | None = None) -> None:
-    """stdio transport. stdout SADECE JSON-RPC tasir; loglar stderr'dedir."""
+    """stdio transport. stdout SADECE JSON-RPC tasir; loglar stderr'dedir.
+
+    `stdio_server` DEGIL `korumali_stdio_server`: SDK'nin stdio transport'u
+    ayristirilamayan satiri sessizce yutuyor, oysa JSON-RPC 2.0 `-32700` donmeyi
+    ZORUNLU kilar (uyum maddesi J5). Koruyucu stdin ile SDK arasina girer;
+    gerekcesi ve SDK'dan okunan kanit mcp/parse_guard.py'de.
+    """
     cfg = config or load_config()
     _reject_both_on_stdio(cfg)
     server, _ = build_server(cfg)
-    async with stdio_server() as (read_stream, write_stream):
+    async with korumali_stdio_server() as (read_stream, write_stream):
         await server.run(read_stream, write_stream, server.create_initialization_options())
 
 
