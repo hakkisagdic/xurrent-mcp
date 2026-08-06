@@ -1,0 +1,11 @@
+{
+  "$schema": "../manifest.schema.json",
+  "ad": "xurrent-rest",
+  "tur": "backend",
+  "ozet": "Canlı Xurrent REST v1 adaptörü (üç dilde): snake_case lehçe, HTTP 422 hata modeli, whoami/context N ayrı istek — aynı tool sözleşmesi, ikinci transport.",
+  "yerlesik": true,
+  "secimAnahtari": { "env": "XURRENT_API", "deger": "rest" },
+  "gerektirdigiEnv": ["XURRENT_TOKEN", "XURRENT_ACCOUNT", "XURRENT_REST_URL"],
+  "dokuman": "docs/16-rest-ve-sdk.md",
+  "dogrulamaKomutu": "node tools/fake-xurrent/senaryolar.mjs --dil ts"
+}

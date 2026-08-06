@@ -1,0 +1,11 @@
+{
+  "$schema": "../manifest.schema.json",
+  "ad": "google-calendar",
+  "tur": "calendar",
+  "ozet": "Google Calendar API'sinden canlı takvim okur; OAuth akışı bir kez scripts/google-auth.mjs ile JS'te koşulur, üç sunucu yalnızca refresh token'ı POST'lar.",
+  "yerlesik": true,
+  "secimAnahtari": { "env": "CALENDAR_PROVIDER", "deger": "google" },
+  "gerektirdigiEnv": ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_TOKEN_PATH", "GOOGLE_CALENDAR_ID"],
+  "dokuman": "docs/04-takvim.md",
+  "dogrulamaKomutu": "node scripts/google-auth.mjs --help"
+}

@@ -1,0 +1,11 @@
+{
+  "$schema": "../manifest.schema.json",
+  "ad": "xurrent-graphql",
+  "tur": "backend",
+  "ozet": "Varsayılan canlı Xurrent adaptörü: el yazması GraphQL istemcisi (üç dilde). Tek istekte zengin sorgu; iş kuralı hataları HTTP 200 + payload.errors ile gelir.",
+  "yerlesik": true,
+  "secimAnahtari": { "env": "XURRENT_API", "deger": "graphql" },
+  "gerektirdigiEnv": ["XURRENT_TOKEN", "XURRENT_ACCOUNT", "XURRENT_GRAPHQL_URL"],
+  "dokuman": "docs/01-xurrent-api.md",
+  "dogrulamaKomutu": "node tools/fake-xurrent/senaryolar.mjs --dil ts"
+}

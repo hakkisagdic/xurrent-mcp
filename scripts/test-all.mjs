@@ -481,6 +481,24 @@ const ADIMLAR = [
     },
   },
   {
+    id: "adimlar-atolye",
+    ad: "Atölye adım şeması",
+    grup: "sema",
+    async kos() {
+      // Uzun süre yalnızca wizard şeması CI'daydı; atölye şeması runtime'da
+      // okunuyor ama hiç DOĞRULANMIYORDU — "editörde kırmızı çizgi yoksa CI
+      // çizsin" kuralının atladığı köşe. (Semantik katman wizard'a özgüdür;
+      // burada değerli olan YAPISAL katmandır.)
+      const r = await kos("node", [
+        "scripts/validate-steps.mjs",
+        "--steps", "docs/atolye/adimlar.json",
+        "--schema", "docs/atolye/adimlar.schema.json",
+      ]);
+      if (r.kod !== 0) return { durum: KALDI, kanit: ilkHataSatiri(r), detay: r.out + r.err };
+      return { durum: GECTI, kanit: "docs/atolye/adimlar.json şemaya uygun" };
+    },
+  },
+  {
     id: "prompt-defteri",
     ad: "Prompt defteri güncelliği",
     grup: "sema",
@@ -493,6 +511,38 @@ const ADIMLAR = [
           detay: r.out + r.err,
         };
       return { durum: GECTI, kanit: "docs/11 ↔ docs/atolye/adimlar.json güncel" };
+    },
+  },
+  {
+    id: "pluginler",
+    ad: "Plugin manifest'leri",
+    grup: "sema",
+    async kos() {
+      const { r, rapor } = await kosJson("node", ["scripts/validate-plugins.mjs", "--json"]);
+      if (r.kod !== 0) {
+        const ilk = rapor?.sorunlar?.[0];
+        return {
+          durum: KALDI,
+          kanit: ilk ? `[${ilk.plugin}] ${ilk.mesaj}` : ilkHataSatiri(r),
+          detay: r.out + r.err,
+        };
+      }
+      return { durum: GECTI, kanit: `${rapor?.pluginSayisi ?? "?"} manifest şemaya ve anlamsal kurallara uygun` };
+    },
+  },
+  {
+    id: "konektor",
+    ad: "Copilot Studio konektör güncelliği",
+    grup: "sema",
+    async kos() {
+      const r = await kos("node", ["scripts/gen-connector.mjs", "--kontrol"]);
+      if (r.kod !== 0)
+        return {
+          durum: KALDI,
+          kanit: "plugins/copilot-studio/connector.yaml üreticisiyle ayrışmış — düzeltme: node scripts/gen-connector.mjs --host ORNEK-TUNNEL.devtunnels.ms",
+          detay: r.out + r.err,
+        };
+      return { durum: GECTI, kanit: "connector.yaml ↔ gen-connector.mjs senkron" };
     },
   },
 
@@ -548,6 +598,95 @@ const ADIMLAR = [
       const kanit = `${t.adim ?? "?"} adım · ${t.gecti ?? "?"} geçti, ${t.basarisiz ?? "?"} başarısız, ${t.atlandi ?? "?"} atlandı`;
       if (rapor.ok === false || (t.basarisiz ?? 0) > 0) return { durum: KALDI, kanit, detay: r.err };
       return { durum: GECTI, kanit };
+    },
+  },
+
+  // ── HTTP kabuğu ───────────────────────────────────────────────────────────
+  {
+    id: "kabuk-http",
+    ad: "HTTP yüzeyi: çift çağ + API anahtarı kapısı",
+    grup: "uctan-uca",
+    yavas: true,
+    gerektirir: ["derle-ts", "derle-py", "derle-cs"],
+    async kos() {
+      // Üç dilde AYNI yol/oturum matrisi (WP6 sözleşmesi):
+      //   /mcp/v1 → 2025-11-25, OTURUMLU (initialize yanıtı Mcp-Session-Id taşır)
+      //   /mcp/v2 → 2026-07-28, STATELESS (_meta zorunlu, resultType döner)
+      //   MCP_API_KEY doluysa X-MCP-Api-Key başlıksız istek 401 alır.
+      // Copilot Studio'nun bağlanma ön koşulu tam olarak bu üçlüdür (docs/17);
+      // tenant gerektirmeyen kısmı CI'da budur.
+      const ANAHTAR = "kabuk-smoke-anahtari";
+      const DILLER_HTTP = [
+        ["ts", (port) => ["node", ["servers/typescript/dist/mcp/http.js"], { MCP_HTTP_PORT: String(port) }]],
+        ["py", (port) => ["uv", ["--directory", "servers/python", "run", "xurrent-mcp", "--http", "--port", String(port)], {}]],
+        ["cs", (port) => ["dotnet", ["run", "--project", "servers/csharp/XurrentMcp.csproj", "--no-build", "--", "http"], { MCP_HTTP_PORT: String(port) }]],
+      ];
+      const kanitlar = [];
+      for (const [dil, komut] of DILLER_HTTP) {
+        const port = 8300 + Math.floor(Math.random() * 500);
+        const [cmd, argv, ekEnv] = komut(port);
+        const p = (await import("node:child_process")).spawn(cmd, argv, {
+          cwd: REPO,
+          env: { ...process.env, XURRENT_MODE: "mock", MCP_PROTOCOL: "both", MCP_API_KEY: ANAHTAR, ...ekEnv },
+          stdio: ["ignore", "ignore", "pipe"],
+        });
+        try {
+          // Port dinlenene kadar bekle (dotnet soğuk başlangıcı yavaş olabilir).
+          const uc = `http://127.0.0.1:${port}`;
+          let hazir = false;
+          for (let i = 0; i < 120 && !hazir; i++) {
+            await new Promise((z) => setTimeout(z, 500));
+            try { await fetch(uc + "/mcp/v2", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }); hazir = true; }
+            catch { /* henüz değil */ }
+          }
+          if (!hazir) return { durum: KALDI, kanit: `${dil}: HTTP sunucusu ${port} portunda açılmadı` };
+
+          // 1) v1 oturumlu el sıkışma
+          const r1 = await fetch(uc + "/mcp/v1", {
+            method: "POST",
+            headers: { "content-type": "application/json", accept: "application/json, text/event-stream", "x-mcp-api-key": ANAHTAR },
+            body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {
+              protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "kabuk-smoke", version: "1.0.0" } } }),
+          });
+          const oturum = r1.headers.get("mcp-session-id");
+          if (!r1.ok || !oturum) return { durum: KALDI, kanit: `${dil}: /mcp/v1 initialize → HTTP ${r1.status}, Mcp-Session-Id ${oturum ? "var" : "YOK"}` };
+
+          // 2) v2 stateless tools/list
+          // MCP-Protocol-Version başlığı: _meta zaten sürümü taşır ama C# SDK'sı
+          // HTTP'de başlığı da bekliyor (ölçülmüş SDK davranışı); TS/Py tolere
+          // ediyor. Gerçek istemciler de geriye-uyum için başlığı gönderir.
+          const r2 = await fetch(uc + "/mcp/v2", {
+            method: "POST",
+            headers: { "content-type": "application/json", accept: "application/json, text/event-stream",
+              "x-mcp-api-key": ANAHTAR, "mcp-method": "tools/list", "mcp-name": "xurrent-mcp",
+              "mcp-protocol-version": "2026-07-28" },
+            body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list", params: { _meta: {
+              "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+              "io.modelcontextprotocol/clientCapabilities": {},
+              "io.modelcontextprotocol/clientInfo": { name: "kabuk-smoke", version: "1.0.0" } } } }),
+          });
+          const govde2 = await r2.text();
+          const json2 = (() => { try {
+            const satir = govde2.split("\n").find((l) => l.startsWith("data:"));
+            return JSON.parse(satir ? satir.slice(5) : govde2);
+          } catch { return null; } })();
+          const toolSayisi = json2?.result?.tools?.length ?? 0;
+          if (!r2.ok || toolSayisi !== 10)
+            return { durum: KALDI, kanit: `${dil}: /mcp/v2 tools/list → HTTP ${r2.status}, tool=${toolSayisi} (beklenen 10)` };
+
+          // 3) anahtarsız istek reddedilir
+          const r3 = await fetch(uc + "/mcp/v2", { method: "POST",
+            headers: { "content-type": "application/json" }, body: "{}" });
+          if (r3.status !== 401)
+            return { durum: KALDI, kanit: `${dil}: anahtarsız istek ${r3.status} aldı (beklenen 401)` };
+
+          kanitlar.push(`${dil}: v1 oturum ✓ v2 10 tool ✓ 401 ✓`);
+        } finally {
+          try { p.kill(); } catch { /* zaten ölmüş olabilir */ }
+          await new Promise((z) => setTimeout(z, 300));
+        }
+      }
+      return { durum: GECTI, kanit: kanitlar.join(" · ") };
     },
   },
 

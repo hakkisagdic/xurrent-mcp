@@ -1,0 +1,10 @@
+{
+  "$schema": "../manifest.schema.json",
+  "ad": "xurrent-graphql-sdk",
+  "tur": "backend",
+  "ozet": "Resmî Xurrent.GraphQL NuGet SDK'sı üzerinden canlı adaptör — YALNIZ C#. Vendor SDK vs el yazması karşıtlığının ders örneği; endpoint override'ı olmadığından sahte sunucuyla test edilemez, canlı davranış DOĞRULANMALI.",
+  "yerlesik": true,
+  "secimAnahtari": { "env": "XURRENT_API", "deger": "graphql-sdk" },
+  "gerektirdigiEnv": ["XURRENT_TOKEN", "XURRENT_ACCOUNT"],
+  "dokuman": "docs/16-rest-ve-sdk.md"
+}

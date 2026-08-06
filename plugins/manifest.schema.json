@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/hakkisagdic/xurrent-mcp/plugins/manifest.schema.json",
+  "title": "xurrent-mcp plugin manifestosu",
+  "description": "Bir plugin, çekirdeğe KOD enjekte etmez; konfigürasyonla seçilen bir adaptörü ya da paketlenmiş bir yüzey tanımını belgeler. 'Yerleşik' pluginler üç sunucunun fabrika dikişlerinde (CalendarFactory, adaptör seçimi) yaşar ve env ile etkinleşir; 'paket' pluginler ise dizinlerindeki artefaktlarla (ör. Copilot Studio konektör YAML'ı) dış bir sisteme bağlanır. Doğrulama: scripts/validate-plugins.mjs",
+  "type": "object",
+  "required": ["ad", "tur", "ozet", "yerlesik", "dokuman"],
+  "additionalProperties": false,
+  "properties": {
+    "ad": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]*$",
+      "description": "Plugin adı — dizin adıyla BİREBİR aynı olmak zorundadır (validate-plugins bunu denetler)"
+    },
+    "tur": {
+      "enum": ["surface", "backend", "calendar"],
+      "description": "surface: MCP sunucusunu tüketen bir yüzey (Copilot Studio, Claude Code) · backend: Xurrent'a giden adaptör (graphql, rest) · calendar: takvim sağlayıcısı"
+    },
+    "ozet": {
+      "type": "string",
+      "minLength": 10,
+      "description": "Bir cümlelik Türkçe özet"
+    },
+    "yerlesik": {
+      "type": "boolean",
+      "description": "true: üç sunucunun içindeki fabrika dikişlerinde yaşar, env ile seçilir · false: bu dizindeki artefaktlarla dışarıdan bağlanır"
+    },
+    "secimAnahtari": {
+      "type": "object",
+      "required": ["env", "deger"],
+      "additionalProperties": false,
+      "properties": {
+        "env": { "type": "string", "pattern": "^[A-Z0-9_]+$" },
+        "deger": { "type": "string" }
+      },
+      "description": "Yerleşik plugin'i etkinleştiren env anahtarı ve değeri (ör. CALENDAR_PROVIDER=google)"
+    },
+    "gerektirdigiEnv": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^[A-Z0-9_]+$" },
+      "uniqueItems": true,
+      "description": "Çalışmak için dolu olması gereken env anahtarları — hepsi .env.example'da belgelenmiş olmak ZORUNDADIR (validate-plugins denetler)"
+    },
+    "artefaktlar": {
+      "type": "array",
+      "items": { "type": "string" },
+      "uniqueItems": true,
+      "description": "Paket pluginin dizinindeki dosyalar (manifest'e göreli yol) — hepsi diskte var olmak zorundadır"
+    },
+    "dokuman": {
+      "type": "string",
+      "description": "Plugin'i anlatan doküman — repo köküne göreli yol, diskte var olmak zorundadır"
+    },
+    "dogrulamaKomutu": {
+      "type": "string",
+      "description": "Plugin'in sağlığını denetleyen komut (repo kökünden çalıştırılır) — CI'da koşturulmaz, insana yol gösterir"
+    }
+  }
+}

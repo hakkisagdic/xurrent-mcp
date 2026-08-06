@@ -37,8 +37,8 @@ Arayüz açılışta bir kez çağırır. Sol paneldeki rozetleri doldurur.
   "mode": "mock",                    // "mock" | "live"        — XURRENT_MODE
   "strategy": "two_step",            // "two_step" | "link_first" | "date_first"
   "calendarProvider": "mock",        // "mock" | "ics" | "google" | "graph" | "auto"
-  "model": "claude-opus-5",          // ANTHROPIC_MODEL
-  "hasApiKey": true,                 // ANTHROPIC_API_KEY dolu mu
+  "model": "gemini-3.6-flash",       // GEMINI_MODEL
+  "hasApiKey": true,                 // GEMINI_API_KEY dolu mu
 
   // --- aşağıdakiler İSTEĞE BAĞLIDIR; yoksa arayüz sessizce gizler ---
   "language": "typescript",          // "typescript" | "python" | "csharp" — rozet olarak gösterilir
@@ -49,8 +49,9 @@ Arayüz açılışta bir kez çağırır. Sol paneldeki rozetleri doldurur.
 }
 ```
 
-`hasApiKey: false` ise arayüz yazma alanını kilitler ve `.env` içine `ANTHROPIC_API_KEY`
-eklenmesi gerektiğini söyleyen Türkçe bir uyarı gösterir.
+`hasApiKey: false` ise arayüz yazma alanını kilitler ve `.env` içine `GEMINI_API_KEY`
+eklenmesi (ya da `GEMINI_BASE_URL` ile sahte Gemini'ye yönlenilmesi) gerektiğini
+söyleyen Türkçe bir uyarı gösterir.
 
 ---
 
@@ -73,8 +74,9 @@ Sohbetin tamamı **her istekte yeniden gönderilir**; backend oturum durumu tutm
 
 **`messages` dizisi ARAYÜZ TARAFINDAN YORUMLANMAZ.** Arayüz, en son `done` olayında gelen
 `messages` değerini olduğu gibi saklar ve bir sonraki istekte aynen geri gönderir. Böylece
-Anthropic'in `tool_use` / `tool_result` blok biçimi arayüze sızmaz ve üç backend kendi SDK'sının
-doğal biçimini kullanabilir.
+Gemini'nin `functionCall` / `functionResponse` blok biçimi arayüze sızmaz ve üç backend
+sağlayıcının doğal biçimini kullanabilir. (Sağlayıcı değişse — bu repo bir kez Anthropic'ten
+Gemini'ye geçti — arayüz kodu değişmez; sözleşmenin amacı tam olarak budur.)
 
 **Yanıt** `200 text/event-stream`
 

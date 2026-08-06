@@ -849,6 +849,36 @@ function resolvePlaceholders(value, ctx) {
   return value;
 }
 
+/**
+ * callToolSequence içinde "{{prev.<yol>}}" yer tutucusu: bir ÖNCEKİ çağrının
+ * structuredContent'inden nokta-yollu değer okur (örn. "{{prev.sessionState}}").
+ *
+ * NEDEN: timesheet_wizard bir sohbettir — her tur, önceki turun döndürdüğü
+ * imzalı sessionState'i AYNEN geri göndermek zorundadır. Statik args ile bu
+ * ifade EDİLEMEZDİ; ders dosyası (steps.json) diyaloğu ancak bu yer tutucuyla
+ * veri olarak taşıyabilir. Yalnız TAM eşleşme desteklenir (metin içine gömme
+ * yok): değer ya "{{prev.x.y}}"dir ya da olduğu gibi bırakılır.
+ */
+function resolvePrevPlaceholders(value, prevData) {
+  if (typeof value === "string") {
+    const m = /^\{\{prev\.([A-Za-z_][A-Za-z0-9_.]*)\}\}$/.exec(value);
+    if (!m) return value;
+    let cur = prevData;
+    for (const seg of m[1].split(".")) {
+      if (cur == null || typeof cur !== "object") return null;
+      cur = cur[seg];
+    }
+    return cur ?? null;
+  }
+  if (Array.isArray(value)) return value.map((v) => resolvePrevPlaceholders(v, prevData));
+  if (value && typeof value === "object") {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) out[k] = resolvePrevPlaceholders(v, prevData);
+    return out;
+  }
+  return value;
+}
+
 // ── Sonuç okuma ──────────────────────────────────────────────────────────────
 // MCP tools/call iki şekilde veri döndürebilir: structuredContent (outputSchema
 // varsa) veya content[].text. Sihirbaz ikisini de kabul eder ki üç sunucu
@@ -1352,8 +1382,10 @@ async function main() {
     // 4) callToolSequence → yan yana karşılaştırma
     if (Array.isArray(step.callToolSequence) && step.callToolSequence.length) {
       const results = [];
+      let prevSeqData = null; // "{{prev.*}}" yer tutucularının kaynağı
       for (const c of step.callToolSequence) {
-        const d = await doCall(c.name, c.args, c.label);
+        const d = await doCall(c.name, resolvePrevPlaceholders(c.args ?? {}, prevSeqData), c.label);
+        prevSeqData = d;
         results.push({ label: c.label ?? c.name, data: d });
       }
       lastData = results.at(-1)?.data ?? null;

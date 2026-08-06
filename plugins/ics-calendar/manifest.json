@@ -1,0 +1,11 @@
+{
+  "$schema": "../manifest.schema.json",
+  "ad": "ics-calendar",
+  "tur": "calendar",
+  "ozet": "RFC 5545 .ics dosyasından ya da URL'inden takvim okur — OAuth'suz tek canlı takvim yolu (Google 'gizli adres' ve Outlook yayınlanmış takvim URL'leriyle çalışır).",
+  "yerlesik": true,
+  "secimAnahtari": { "env": "CALENDAR_PROVIDER", "deger": "ics" },
+  "gerektirdigiEnv": ["CALENDAR_ICS_PATH", "CALENDAR_ICS_URL"],
+  "dokuman": "docs/04-takvim.md",
+  "dogrulamaKomutu": "node scripts/gen-ics.mjs --print"
+}

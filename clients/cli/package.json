@@ -1,0 +1,16 @@
+{
+  "name": "xurrent-xmcp",
+  "version": "1.0.0",
+  "description": "xmcp — çift-era (2026-07-28 / 2025-11-25) ham JSON-RPC MCP istemcisi + Ink TUI sohbet. Derleme adımı YOK: Ink arayüzü React.createElement ile yazılmıştır, node doğrudan çalıştırır.",
+  "type": "module",
+  "bin": {
+    "xmcp": "./xmcp.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "ink": "7.1.1",
+    "react": "19.2.8"
+  }
+}

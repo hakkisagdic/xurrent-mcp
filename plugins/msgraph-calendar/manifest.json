@@ -1,0 +1,10 @@
+{
+  "$schema": "../manifest.schema.json",
+  "ad": "msgraph-calendar",
+  "tur": "calendar",
+  "ozet": "Microsoft Graph'tan (Outlook) canlı takvim okur; Entra ID client-credentials akışıyla, kullanıcı başına izin gerektirmeden.",
+  "yerlesik": true,
+  "secimAnahtari": { "env": "CALENDAR_PROVIDER", "deger": "graph" },
+  "gerektirdigiEnv": ["MS_TENANT_ID", "MS_CLIENT_ID", "MS_CLIENT_SECRET", "MS_IMPERSONATE_USER"],
+  "dokuman": "docs/04-takvim.md"
+}

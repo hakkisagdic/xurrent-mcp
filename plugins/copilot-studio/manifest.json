@@ -1,0 +1,11 @@
+{
+  "$schema": "../manifest.schema.json",
+  "ad": "copilot-studio",
+  "tur": "surface",
+  "ozet": "Xurrent MCP sunucusunu Microsoft Copilot Studio'ya oturumlu Streamable HTTP (/mcp/v1) üzerinden tool olarak bağlayan konektör paketi — chatbot yüzeyi Microsoft'ta, iş mantığı MCP'de.",
+  "yerlesik": false,
+  "gerektirdigiEnv": ["MCP_API_KEY", "MCP_HTTP_PORT"],
+  "artefaktlar": ["connector.yaml", "README.md"],
+  "dokuman": "plugins/copilot-studio/README.md",
+  "dogrulamaKomutu": "node scripts/gen-connector.mjs --kontrol"
+}
