@@ -277,6 +277,12 @@ def _time_entry_update(
         payload["startedAt"] = req.startedAt
     if req.personId and req.personId != "$me":
         payload["personId"] = req.personId
+    if req.description:
+        # REST Yol B'de time_entry_description parametresi YOKTUR
+        # (developer.xurrent.com/v1/requests) — aciklama 1. adimda ancak
+        # note'a dusurulur. 2. adim description'i burada DUZELTIR; GraphQL'de
+        # ayni deger yeniden yazilir (idempotent, zararsiz).
+        payload["description"] = req.description[:80]
 
     return PlannedMutation(
         path="timeEntryUpdate",

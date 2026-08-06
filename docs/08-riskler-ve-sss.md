@@ -250,6 +250,21 @@ korunuyor mu?
 *Geçildiğinde:* TypeScript için yazılan elle v1/v2 adaptörü **silinir**. O katman
 kalıcı mimari değil, geçici köprüdür ([09](09-protokol-gecisi.md#olcum)).
 
+### D14–D18 — güvenilirlik ve dış yüzey maddeleri (2026-08-06'da açıldı ve KAPATILDI)
+
+Genişleme fazı (docs/10 FAZ 7) beş yeni madde açtı; hepsi aynı gün **resmî
+dokümantasyona ve yerel ölçüme karşı** kapatıldı. Kapanış yöntemi maddenin
+kendisi kadar öğreticidir: *canlı hesap gerektirmeyen her belirsizlik, hesap
+beklemeden kapatılabilir.*
+
+| Madde | Soru | Sonuç |
+|---|---|---|
+| **D14** ✅ | GraphQL `TimeEntryFilter`'da `sourceID` filtresi var mı? (dedup geri-okuması buna dayanır) | **VAR** — `sourceID` ve `source` `StringFilter` olarak belgeli; REST tarafında da `sourceID` filtrelenebilir alan listesinde (developer.xurrent.com/graphql/input_object/timeentryfilter + /v1/time_entries) |
+| **D15** ✅ | `Retry-After` birimi saniye mi? | **SANİYE** — dokümandaki 429 örneği `retry-after: 30` (developer.xurrent.com/v1 → Rate limiting) |
+| **D16** ✅ | 429, istek işlenmeden mi dönüyor? | Limit **kullanıcı başına istek sayacıdır** ve 429 gövdesi işlem çıktısı değil düz `Too Many Requests`tır — sayaç-bazlı kapı davranışı belgeli; politika zaten 429'u tüm operasyon sınıflarında güvenli tekrar sayar. Canlı smoke isteğe bağlı teyittir, ön koşul değildir |
+| **D17** ✅ | REST yanıt/istek şekilleri çıkarımdı — gerçek lehçe ne? | **Doğrulandı ve altı varsayım düzeltildi**: referans alanları id'siz (`person`, `effort_class`, `time_allocation`); tarih filtresi tek parametrede operatörlü (`?date=>=X<=Y`); 422 gövdesi `"Validation Failed"` + `[alan, mesaj]` **ikilileri**; yanıtta `assignment` yok, koşullu `request`/`task` referansları var; Yol B parametreleri `time_spent` + `time_spent_effort_class` + `note` (time entry description REST'te taşınamaz); sayfalama `x-pagination-*` başlıkları. Sahte sunucu ve üç adaptör bu lehçeye çekildi (docs/16) |
+| **D18** ✅ | Copilot Studio `initialize`'da hangi sürümü önerir? | Önerisi ancak tenant'ta görülür — ama **etkisizdir**: `/mcp/v1` ucu dört aday öneriyle ölçüldü (`2024-11-05`, `2025-03-26`, `2025-06-18`, `2025-11-25`). TS/Python öneriyi aynen kabul ediyor; C# spec kuralınca `2025-11-25` öneriyor; dördünde de **200 + `Mcp-Session-Id`**. Müzakere standart MCP istemci davranışıdır |
+
 ### Doğrulama sırası
 
 | Sıra | Madde | Neden bu sırada |
@@ -258,10 +273,11 @@ kalıcı mimari değil, geçici köprüdür ([09](09-protokol-gecisi.md#olcum)).
 | 2 | **D9** | Boş liste dönerse hiçbir şey yapılamaz |
 | 3 | **D4** | `timeIncrement` olmadan yazma kör |
 | 4 | **D5** | `two_step` stratejisinin kaderi |
-| 5 | D6, D7, D8, D2, D1 | İşlevsel ama kritik değil |
+| 5 | D6, D7, D8, D2, D1 | İşlevsel ama kritik değil (D1'in REST yarısı kapandı: header adları ve `retry-after` birebir belgeli; GraphQL header adları hâlâ bu maddede) |
 | 6 | **D10** | Sunumdan önce, istemci üzerinde |
-| 7 | **D11** | **Sunumdan önce** — ölçülmemiş ve demoyu tamamen durdurabilir |
+| 7 | ~~D11~~ | ✅ Ölçüldü — iki revizyon da kabul ediliyor (aşağıda) |
 | 8 | D12, D13 | Ders sonrası; bakım planlaması |
+| — | ~~D14–D18~~ | ✅ 2026-08-06'da doküman + yerel ölçümle kapatıldı (yukarıda) |
 
 ---
 
@@ -439,7 +455,7 @@ Ayrıntı: [demo/senaryo.md](demo/senaryo.md) → C bölümü.
 | Time entry silme / güncelleme tool'u | İster listesinde yok; `deleted` alanı belgelendi ama tool yok |
 | Project task / problem senaryoları | `targetType` destekliyor, fixture yok |
 | Türkçe dışında dil | Ders Türkçe; sistem promptu tek dilde |
-| Streamable HTTP kimlik doğrulama | Port açık; OAuth katmanı yok — **üretimde şart** |
+| Streamable HTTP OAuth katmanı | `MCP_API_KEY` kapısı var (boşsa yalnız loopback — docs/17); tam OAuth **üretimde şart** |
 | Takvim yazma (etkinlik oluşturma) | Yalnızca okuma; yazma yönü ister dışı |
 
 ---
@@ -449,9 +465,9 @@ Ayrıntı: [demo/senaryo.md](demo/senaryo.md) → C bölümü.
 | Konu | Sonuç |
 |---|---|
 | Mock mod | ✅ Test edilmiş, internetsiz çalışır |
-| Live mod | ⚠️ Canlı hesapta çalıştırılmadı — **13 `DOĞRULANMALI` maddesi** (D1–D13) |
+| Live mod | ⚠️ Canlı hesapta çalıştırılmadı — açık `DOĞRULANMALI` maddeleri **D1(GraphQL)–D10, D12, D13**; D11 ve D14–D18 kapatıldı |
 | En kritik doğrulama | **D5** — `requestUpdate` payload'ı `timeEntry` dönüyor mu? |
-| Sunumdan önce ölçülecek | **D11** — Claude Code hangi protokol revizyonunu kabul ediyor? **Henüz ölçülmedi** |
+| Sunumdan önce ölçülecek | ~~D11~~ ✅ ölçüldü: Claude Code **iki revizyonu da** kabul ediyor |
 | Ölçülmüş olan | SDK protokol desteği: ts `1.30.0` yalnızca v1; py/cs `2.0.0` ikisi de |
 | İlk canlı bağlantı | `XURRENT_DRY_RUN=1` ile başla |
 | En pahalı hata | Artımlı `timeSpent`'in toplam sanılması |

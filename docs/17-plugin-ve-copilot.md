@@ -117,11 +117,12 @@ sunucunun tool'ları.
 
 CI neyi denetler, neyi DENETLEYEMEZ:
 
-| Denetlenen (CI) | Denetlenemeyen (tenant ister — `DOĞRULANMALI`) |
+| Denetlenen (CI) | Denetlenemeyen (tenant ister) |
 |---|---|
-| YAML ↔ üretici senkronu | Copilot Studio'nun `initialize`'da önerdiği revizyon |
-| `/mcp/v1` oturumlu el sıkışma smoke testi | Gerçek keşif + tool çağrısı davranışı |
-| Plugin manifest sözleşmesi | Elicitation desteğinin olup olmadığı |
+| YAML ↔ üretici senkronu | Gerçek keşif + tool çağrısı davranışı |
+| `/mcp/v1` oturumlu el sıkışma smoke testi | Elicitation desteğinin olup olmadığı |
+| Plugin manifest sözleşmesi | |
+| **Sürüm müzakeresi (D18 ✅):** `/mcp/v1` dört aday öneriyle ölçüldü — `2024-11-05`/`2025-03-26`/`2025-06-18`/`2025-11-25` önerilerinin DÖRDÜNDE de üç sunucu `200 + Mcp-Session-Id` veriyor (TS/Py öneriyi aynen kabul eder, C# spec kuralınca `2025-11-25` önerir). Copilot hangi sürümü önerirse önersin uç uyumludur | |
 
 ## Yeni plugin eklemek (özet)
 

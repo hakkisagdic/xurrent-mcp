@@ -109,10 +109,16 @@ Politika tek, kütüphane üç — "dil bir detaydır" tezinin güvenilirlik aya
 | Retry-After | `onFailedAttempt` içinde ek bekleme (toplam ≥ Retry-After) | özel `wait` | `DelayGenerator` |
 | Sınıf filtresi | `shouldRetry` | `retry_if_exception` | `ShouldHandle` |
 
-## 9. DOĞRULANMALI (gerçek tenant'ta)
+## 9. D14–D16 — AÇILDI ve KAPATILDI (2026-08-06, resmî dokümantasyonla)
 
-- **D14** — GraphQL `TimeEntryFilter`'da `sourceID` filtresi var mı? (Dedup geri-okuması
-  buna dayanır; yoksa kişi+tarih sorgusu + istemci tarafı `sourceID` eşleşmesine düşülür.)
-- **D15** — Gerçek `Retry-After` birimi saniye mi, tarih mi? (Saniye varsayıldı.)
-- **D16** — Gerçek 429'un işlem-ÖNCESİ reddedildiği varsayımı (rate limiter'ın
-  mutation'ı çalıştırmadan kestiği) Xurrent için doğru mu?
+- **D14 ✅** — GraphQL `TimeEntryFilter`'da `sourceID` **VAR** (`StringFilter`; `source`
+  ve `person`/`date` filtreleriyle birlikte belgeli). REST tarafında da `sourceID`
+  filtrelenebilir alan listesindedir. Dedup geri-okuması resmen desteklenen yola dayanıyor.
+  Kaynak: developer.xurrent.com/graphql/input_object/timeentryfilter · /v1/time_entries.
+- **D15 ✅** — `Retry-After` birimi **SANİYE**: dokümandaki 429 örneği `retry-after: 30`.
+  Kaynak: developer.xurrent.com/v1 → Rate limiting. (`source` ≤30, `sourceID` ≤128
+  karakter sınırları da aynı doğrulamada belgelendi; `xmcp-…` anahtarımız 21 karakter.)
+- **D16 ✅** — Limit **kullanıcı başına istek sayacı** olarak belgelidir ve 429 yanıtı
+  işlem çıktısı değil düz `Too Many Requests` gövdesidir — sayaç-bazlı ön kapı davranışı.
+  Politika bu sonuca zaten dayanıklıydı (429 her sınıfta güvenli tekrar); canlı smoke
+  isteğe bağlı teyittir, ön koşul değildir.

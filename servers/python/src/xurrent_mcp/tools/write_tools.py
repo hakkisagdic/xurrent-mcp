@@ -306,6 +306,9 @@ def _plan_and_maybe_write(rt: Runtime, req: TimeEntryRequest) -> dict[str, Any]:
             payload["id"] = resolved
 
         outcome = rt.adapter.run_mutation({"path": step.path, "input": payload})
+        # Adaptor seviyesi uyarilar (or. REST Yol B'de aciklamanin note'a
+        # dusurulmesi) SESSIZ kalamaz — sonucun warnings'ine tasinir.
+        warnings.extend(outcome.get("warnings") or [])
         step_errors = outcome.get("errors") or []
         if step_errors:
             exec_errors.extend(step_errors)

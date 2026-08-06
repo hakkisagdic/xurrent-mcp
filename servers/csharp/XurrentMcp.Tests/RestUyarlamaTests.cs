@@ -9,10 +9,15 @@ namespace XurrentMcp.Tests;
 /// <summary>
 /// ★ WP3 — REST v1 adaptörü (Xurrent/RestAdapter.cs, lehçe: tools/fake-xurrent handleRest).
 ///
-/// Kapsam:
-///   · endpoint/parametre eşlemesi (whoami 2 istek, member/assignee, date_from/date_to/sourceID)
-///   · snake_case → adaptör içi camelCase normalizasyonu
-///   · 422 → errors[] normalizasyonu (İSTİSNAİ DEĞİL, ASLA retry edilmez)
+/// Kapsam (lehçe 2026-08-06'da developer.xurrent.com'a karşı doğrulandı):
+///   · endpoint/parametre eşlemesi (whoami 2 istek, member/assignee, sourceID,
+///     tarih filtresi: operatör DEĞERİN içinde — ?date=&gt;=X&lt;=Y, date_from/date_to YOK)
+///   · referans alanları İD'SİZ ad + düz id (person, effort_class, time_allocation...)
+///   · snake_case → adaptör içi camelCase normalizasyonu; bağlı kayıt KOŞULLU
+///     request/task/problem/project_task referanslarından türetilir (assignment alanı YOK)
+///   · 422 → errors[] normalizasyonu — gövde ["alan","mesaj"] İKİLİLERİ taşır
+///     (İSTİSNAİ DEĞİL, ASLA retry edilmez)
+///   · Yol B'de description note'a düşer + uyarı (time_entry_description parametresi YOK)
 ///   · operasyon başına retry sınıflandırması (transport değişti, politika değişmedi)
 ///   · dedup geri-okuması (GET /time_entries?sourceID=)
 ///
@@ -132,9 +137,13 @@ public class RestUyarlamaTests
         Assert.Equal("2026-08-04T17:00:00+03:00", istek.TargetAt);
     }
 
-    /// <summary>list_time_entries: person + date_from + date_to + sourceID sorgu parametreleri.</summary>
+    /// <summary>
+    /// list_time_entries: person + date + sourceID sorgu parametreleri. ★ date_from/date_to
+    /// diye parametreler YOKTUR — operatör tek "date" parametresinin DEĞERİNİN içindedir:
+    /// ?date=&gt;=2026-08-01&lt;=2026-08-03 (developer.xurrent.com/v1/general/filtering).
+    /// </summary>
     [Fact]
-    public async Task list_time_entries_parametreleri_dogru_eslenir()
+    public async Task list_time_entries_tarih_araligini_tek_date_parametresinde_tasir()
     {
         var handler = new SahteRest((_, yol) =>
             yol.EndsWith("/me") ? Json(200, MeYaniti) : Json(200, "[]"));
@@ -143,9 +152,21 @@ public class RestUyarlamaTests
         await adapter.ListTimeEntriesAsync(
             new ListTimeEntriesArgs("$me", "2026-08-01", "2026-08-03", "xmcp-abc", 50), CancellationToken.None);
 
-        Assert.Contains(handler.Istekler, i => i.PathAndQuery ==
-            "/v1/time_entries?person=P1&date_from=2026-08-01&date_to=2026-08-03&sourceID=xmcp-abc");
+        Assert.Contains(handler.Istekler, i => Uri.UnescapeDataString(i.PathAndQuery) ==
+            "/v1/time_entries?person=P1&date=>=2026-08-01<=2026-08-03&sourceID=xmcp-abc");
+        Assert.DoesNotContain(handler.Istekler, i => i.PathAndQuery.Contains("date_from"));
     }
+
+    /// <summary>Tarih filtresi değeri: operatör değerin içinde; tek uç açık aralık üretir,
+    /// eşit uçlar düz eşitliğe düşer, hiç uç yoksa filtre gönderilmez.</summary>
+    [Theory]
+    [InlineData(null, null, null)]
+    [InlineData("2026-08-01", null, ">=2026-08-01")]
+    [InlineData(null, "2026-08-03", "<=2026-08-03")]
+    [InlineData("2026-08-02", "2026-08-02", "2026-08-02")]
+    [InlineData("2026-08-01", "2026-08-03", ">=2026-08-01<=2026-08-03")]
+    public void tarih_filtresi_operatoru_degerin_icinde_uretir(string? from, string? to, string? beklenen)
+        => Assert.Equal(beklenen, RestAdapter.BuildDateFilter(from, to));
 
     /// <summary>Mutation adı → REST (yöntem, yol) tablosu.</summary>
     [Fact]
@@ -162,9 +183,10 @@ public class RestUyarlamaTests
 
     // ── Gövde eşlemesi ve normalizasyon ──────────────────────────────────────
 
-    /// <summary>camelCase input → snake_case gövde; id/clientMutationId düşer; sourceID camel KALIR.</summary>
+    /// <summary>camelCase input → snake_case gövde; referans alanları İD'SİZ ad + düz id
+    /// (developer.xurrent.com/v1/time_entries); id/clientMutationId düşer; sourceID camel KALIR.</summary>
     [Fact]
-    public void rest_govdesi_snake_case_uretir_sourceID_haric()
+    public void rest_govdesi_snake_case_ve_idsiz_referans_adlari_uretir()
     {
         var input = new JsonObject
         {
@@ -177,31 +199,57 @@ public class RestUyarlamaTests
 
         Assert.Equal(30, govde["time_spent"]!.GetValue<int>());
         Assert.Equal("2026-08-02T14:00:00+03:00", govde["started_at"]!.GetValue<string>());
-        Assert.Equal("P1", govde["person_id"]!.GetValue<string>());
-        Assert.Equal("TA1", govde["time_allocation_id"]!.GetValue<string>());
-        Assert.Equal("EC1", govde["effort_class_id"]!.GetValue<string>());
+        // ★ İD'SİZ referans adları: person_id/effort_class_id/time_allocation_id DEĞİL.
+        Assert.Equal("P1", govde["person"]!.GetValue<string>());
+        Assert.Equal("TA1", govde["time_allocation"]!.GetValue<string>());
+        Assert.Equal("EC1", govde["effort_class"]!.GetValue<string>());
+        Assert.False(govde.ContainsKey("person_id"));
+        Assert.False(govde.ContainsKey("time_allocation_id"));
+        Assert.False(govde.ContainsKey("effort_class_id"));
         Assert.Equal("xmcp-abc", govde["sourceID"]!.GetValue<string>());  // ★ tek istisna
         Assert.False(govde.ContainsKey("clientMutationId"));
         Assert.False(govde.ContainsKey("id"));
         Assert.False(govde.ContainsKey("timeSpent"));                      // camel sızmadı
     }
 
-    /// <summary>Yol B gövdesi: time_spent + time_spent_effort_class_id + time_entry_description (+note).</summary>
+    /// <summary>
+    /// Yol B gövdesi: time_spent + time_spent_effort_class (İD'SİZ) + note
+    /// (developer.xurrent.com/v1/requests). ★ time_entry_description diye bir parametre
+    /// YOKTUR: açıklama note'a düşürülür ve bilgi kaybı UYARI olarak raporlanır —
+    /// two_step 2. adımı description'ı gerçek alanına yazar.
+    /// </summary>
     [Fact]
-    public void yol_b_govdesi_parent_patch_alanlarini_esler()
+    public void yol_b_govdesi_aciklamayi_nota_dusurur_ve_uyari_uretir()
     {
+        var uyarilar = new List<string>();
         var input = new JsonObject
         {
             ["id"] = "R1", ["timeSpent"] = 45, ["timeSpentEffortClassId"] = "EC2",
             ["timeEntryDescription"] = "VPN bakımı", ["note"] = "iç not", ["clientMutationId"] = "x",
         };
-        var govde = RestAdapter.ToRestBody("requestUpdate", input, "xurrent-mcp");
+        var govde = RestAdapter.ToRestBody("requestUpdate", input, "xurrent-mcp", uyarilar);
 
         Assert.Equal(45, govde["time_spent"]!.GetValue<int>());
-        Assert.Equal("EC2", govde["time_spent_effort_class_id"]!.GetValue<string>());
-        Assert.Equal("VPN bakımı", govde["time_entry_description"]!.GetValue<string>());
-        Assert.Equal("iç not", govde["note"]!.GetValue<string>());
+        Assert.Equal("EC2", govde["time_spent_effort_class"]!.GetValue<string>());
+        Assert.False(govde.ContainsKey("time_spent_effort_class_id"));
+        Assert.False(govde.ContainsKey("time_entry_description"));         // ★ REST'te YOK
+        var not = govde["note"]!.GetValue<string>();
+        Assert.StartsWith("iç not", not);                                  // mevcut not korunur
+        Assert.Contains("VPN bakımı", not);                                // açıklama note'a düştü
         Assert.False(govde.ContainsKey("id"));
+        Assert.Contains(uyarilar, u => u.Contains("note'a yazıldı"));
+    }
+
+    /// <summary>Açıklama yoksa note olduğu gibi kalır ve uyarı ÜRETİLMEZ.</summary>
+    [Fact]
+    public void yol_b_govdesi_aciklama_yoksa_uyari_uretmez()
+    {
+        var uyarilar = new List<string>();
+        var input = new JsonObject { ["id"] = "R1", ["timeSpent"] = 30, ["note"] = "sadece not" };
+        var govde = RestAdapter.ToRestBody("requestUpdate", input, "xurrent-mcp", uyarilar);
+
+        Assert.Equal("sadece not", govde["note"]!.GetValue<string>());
+        Assert.Empty(uyarilar);
     }
 
     /// <summary>
@@ -220,21 +268,26 @@ public class RestUyarlamaTests
         var govde = RestAdapter.ToRestBody("timeEntryUpdate", input, "xurrent-mcp");
 
         Assert.Equal("2026-08-02", govde["date"]!.GetValue<string>());
-        Assert.Equal("P1", govde["person_id"]!.GetValue<string>());
+        Assert.Equal("P1", govde["person"]!.GetValue<string>());          // İD'SİZ referans adı
         Assert.Equal("xurrent-mcp", govde["source"]!.GetValue<string>());
         Assert.Equal("xmcp-abc123", govde["sourceID"]!.GetValue<string>());
     }
 
-    /// <summary>snake_case REST time entry → adaptör içi camelCase şekil.</summary>
+    /// <summary>
+    /// snake_case REST time entry → adaptör içi camelCase şekil. ★ Yanıtta "assignment"
+    /// diye bir alan YOKTUR: bağlı kayıt KOŞULLU request/task/problem/project_task
+    /// referans nesnesi olarak gelir ve iç şekle oradan türetilir
+    /// (developer.xurrent.com/v1/time_entries).
+    /// </summary>
     [Fact]
-    public void normalize_time_entry_snake_caseden_camelCasee_cevirir()
+    public void normalize_time_entry_kosullu_referanstan_assignment_turetir()
     {
         var rest = JsonNodeParse("""
             {"id":"TE9","date":"2026-08-03","started_at":"2026-08-03T09:00:00+03:00","time_spent":90,
              "description":"bakım","correction":false,"source":"xurrent-mcp","sourceID":"xmcp-def",
              "person":{"id":"P1","name":"Ayşe"},"effort_class":{"id":"EC1","name":"Normal"},
              "time_allocation":{"id":"TA1","name":"İç toplantılar"},
-             "assignment":{"type":"Request","id":"R1"}}
+             "request":{"id":"R1"}}
             """);
         var n = RestAdapter.NormalizeTimeEntry(rest);
 
@@ -246,8 +299,27 @@ public class RestUyarlamaTests
         Assert.Equal("Normal", n["effortClass"]!["name"]!.GetValue<string>());
         Assert.Equal("İç toplantılar", n["timeAllocation"]!["name"]!.GetValue<string>());
         Assert.Equal("Request", n["assignment"]!["__typename"]!.GetValue<string>());
+        Assert.Equal("R1", n["assignment"]!["id"]!.GetValue<string>());
         Assert.False(n.ContainsKey("started_at"));
         Assert.False(n.ContainsKey("time_spent"));
+    }
+
+    /// <summary>Dört koşullu referans alanının her biri doğru __typename'e çevrilir;
+    /// hiçbiri yoksa bağ türetilmez (Yol A kaydı).</summary>
+    [Theory]
+    [InlineData("request", "Request")]
+    [InlineData("task", "Task")]
+    [InlineData("problem", "Problem")]
+    [InlineData("project_task", "ProjectTask")]
+    public void kosullu_referans_alani_dogru_ture_cevrilir(string alan, string beklenenTur)
+    {
+        var derived = RestAdapter.DeriveAssignment(new JsonObject
+        { ["id"] = "TE1", [alan] = new JsonObject { ["id"] = "X1" } });
+        Assert.NotNull(derived);
+        Assert.Equal(beklenenTur, derived!.Value.Type);
+        Assert.Equal("X1", derived.Value.Id);
+
+        Assert.Null(RestAdapter.DeriveAssignment(JsonNodeParse("""{"id":"TE1","date":"2026-08-03"}""")));
     }
 
     /// <summary>timesheet_settings + effort_classes + time_allocations → TimeTrackingContext.
@@ -289,17 +361,19 @@ public class RestUyarlamaTests
 
     /// <summary>
     /// ★ REST hata modelinin kalbi: HTTP 422, GraphQL'in "200 + payload.errors"
-    /// dersinin ikizidir. Tek istek çıkar (retry YOK), sonuç istisna değil
-    /// yapılandırılmış errors[] olur ve attribute → path'e çevrilir.
+    /// dersinin ikizidir. Gövde {"message":"Validation Failed","errors":[["alan",
+    /// "mesaj"],...]} biçimindedir — hatalar İKİLİ DİZİLERDİR, nesne değil
+    /// (developer.xurrent.com/v1/#http-status-codes). Tek istek çıkar (retry YOK),
+    /// sonuç istisna değil yapılandırılmış errors[] olur: ikili[0] → path, ikili[1] → message.
     /// </summary>
     [Fact]
-    public async Task http_422_tek_istekle_errors_dizisine_normalize_edilir()
+    public async Task http_422_ikili_dizileri_errors_dizisine_normalize_edilir()
     {
         var izler = new List<string>();
         using var kayit = ReliabilityTrace.CaptureForTest(izler.Add);
 
         var handler = new SahteRest((_, _) => Json(422,
-            """{"errors":[{"message":"timeSpent (45) bu organizasyonun timeIncrement değerinin (30) katı değil.","attribute":"time_spent"}]}"""));
+            """{"message":"Validation Failed","errors":[["time_spent","timeSpent (45) bu organizasyonun timeIncrement değerinin (30) katı değil."]]}"""));
         using var adapter = new RestAdapter(Ayarlar(), new HttpClient(handler));
 
         var sonuc = await adapter.ExecuteAsync(ParentAdim(), CancellationToken.None);
@@ -307,8 +381,8 @@ public class RestUyarlamaTests
         Assert.False(sonuc.Ok);
         Assert.Single(handler.Istekler);                                  // retry YOK
         Assert.DoesNotContain(izler, l => l.StartsWith("[retry]"));
-        Assert.Contains("timeIncrement", sonuc.Errors[0].Message);
-        Assert.Equal(["time_spent"], sonuc.Errors[0].Path);               // attribute → path
+        Assert.Contains("timeIncrement", sonuc.Errors[0].Message);        // ikili[1] → message
+        Assert.Equal(["time_spent"], sonuc.Errors[0].Path);               // ikili[0] → path
     }
 
     /// <summary>422, guarded_create yolunda da aynı: retry ve geri-okuma tetiklenmez.</summary>
@@ -316,7 +390,7 @@ public class RestUyarlamaTests
     public async Task http_422_create_yolunda_da_retry_tetiklemez()
     {
         var handler = new SahteRest((_, _) => Json(422,
-            """{"errors":[{"message":"Negatif timeSpent yalnızca correction: true ile gönderilebilir.","attribute":"time_spent"}]}"""));
+            """{"message":"Validation Failed","errors":[["time_spent","Negatif timeSpent yalnızca correction: true ile gönderilebilir."]]}"""));
         using var adapter = new RestAdapter(Ayarlar(), new HttpClient(handler));
 
         var sonuc = await adapter.ExecuteAsync(CreateAdim("xmcp-422"), CancellationToken.None);
@@ -324,6 +398,58 @@ public class RestUyarlamaTests
         Assert.False(sonuc.Ok);
         Assert.Single(handler.Istekler);
         Assert.Contains("correction", sonuc.Errors[0].Message);
+        Assert.Equal(["time_spent"], sonuc.Errors[0].Path);
+    }
+
+    /// <summary>Taşıma katmanı hataları (404 vb.) düz {"message":"..."} gövdesi taşır
+    /// (developer.xurrent.com/v1 — 429 örneğiyle aynı biçim); mesaj hata detayına geçer.</summary>
+    [Fact]
+    public async Task rest_4xx_govdesindeki_message_alani_hata_detayina_tasinir()
+    {
+        var handler = new SahteRest((_, _) => Json(404, """{"message":"TimeEntry bulunamadı: TE1"}"""));
+        using var adapter = new RestAdapter(Ayarlar(), new HttpClient(handler));
+
+        var sonuc = await adapter.ExecuteAsync(UpdateAdim(), CancellationToken.None);
+
+        Assert.False(sonuc.Ok);
+        Assert.Single(handler.Istekler);                                  // kesin-reddedildi: retry YOK
+        Assert.Contains("TimeEntry bulunamadı", sonuc.Errors[0].Message);
+    }
+
+    // ── Yol B yürütme: gövde, uyarı ve geri-okuma uçtan uca ──────────────────
+
+    /// <summary>
+    /// Yol B yürütmesi: PATCH gövdesi time_entry_description TAŞIMAZ (açıklama note'a
+    /// düşer), bilgi kaybı outcome.Warnings ile yüzeye çıkar, ve oluşan kayıt geri-okuma
+    /// listesindeki KOŞULLU request referansından bulunur (REST'te assignment alanı yok).
+    /// </summary>
+    [Fact]
+    public async Task yol_b_yurutmesi_uyariyi_dondurur_ve_kaydi_kosullu_referanstan_bulur()
+    {
+        var handler = new SahteRest((metot, yol) =>
+            metot == "PATCH" ? Json(200, """{"id":"R1","subject":"x","status":"in_progress","time_spent":30}""")
+            : yol.EndsWith("/me") ? Json(200, MeYaniti)
+            : Json(200, """
+                [{"id":"TE-B","date":"2026-08-03","time_spent":30,"description":null,
+                  "person":{"id":"P1","name":"Ayşe"},"request":{"id":"R1"}}]
+                """));
+        using var adapter = new RestAdapter(Ayarlar(), new HttpClient(handler));
+
+        var sonuc = await adapter.ExecuteAsync(ParentAdim(), CancellationToken.None);
+
+        Assert.True(sonuc.Ok);
+        // Gövde: time_entry_description YOK, açıklama note'a düştü.
+        var patchGovde = handler.Istekler.Single(i => i.Method == "PATCH").Body;
+        Assert.DoesNotContain("time_entry_description", patchGovde);
+        Assert.Contains("note", patchGovde);
+        Assert.Contains("rest testi", patchGovde);
+        // Uyarı outcome üzerinden yüzeye çıkar (Strategies bunu tool warnings'ine ekler).
+        Assert.NotNull(sonuc.Warnings);
+        Assert.Contains(sonuc.Warnings!, u => u.Contains("note'a yazıldı"));
+        // Oluşan kayıt koşullu request referansından bulundu ve normalize edildi.
+        Assert.Equal("TE-B", sonuc.TimeEntry!["id"]!.GetValue<string>());
+        Assert.Equal("Request", sonuc.TimeEntry!["assignment"]!["__typename"]!.GetValue<string>());
+        Assert.Equal("R1", sonuc.TimeEntry!["assignment"]!["id"]!.GetValue<string>());
     }
 
     // ── Retry sınıflandırması: transport değişti, politika DEĞİŞMEDİ ─────────
@@ -339,7 +465,7 @@ public class RestUyarlamaTests
         var handler = new SahteRest((metot, yol) =>
             metot == "PATCH"
                 ? (Interlocked.Increment(ref deneme) == 1
-                    ? Json(429, """{"errors":[{"message":"rate limit"}]}""")
+                    ? Json(429, """{"message":"Too Many Requests"}""")
                     : Json(200, """{"id":"R1","subject":"x","status":"in_progress"}"""))
                 : yol.EndsWith("/me") ? Json(200, MeYaniti)
                 : Json(200, "[]"));
@@ -359,7 +485,7 @@ public class RestUyarlamaTests
         var izler = new List<string>();
         using var kayit = ReliabilityTrace.CaptureForTest(izler.Add);
 
-        var handler = new SahteRest((_, _) => Json(500, """{"errors":[{"message":"kaos"}]}"""));
+        var handler = new SahteRest((_, _) => Json(500, """{"message":"kaos"}"""));
         using var adapter = new RestAdapter(Ayarlar(), new HttpClient(handler));
 
         var sonuc = await adapter.ExecuteAsync(ParentAdim(), CancellationToken.None);
@@ -380,7 +506,7 @@ public class RestUyarlamaTests
         var deneme = 0;
         var handler = new SahteRest((_, _) =>
             Interlocked.Increment(ref deneme) == 1
-                ? Json(500, """{"errors":[{"message":"kaos"}]}""")
+                ? Json(500, """{"message":"kaos"}""")
                 : Json(200, """{"id":"TE1","date":"2026-08-03","time_spent":60,"person":{"id":"P1","name":"A"}}"""));
         using var adapter = new RestAdapter(Ayarlar(), new HttpClient(handler));
 
@@ -404,7 +530,7 @@ public class RestUyarlamaTests
         var postDenemesi = 0;
         var handler = new SahteRest((metot, yol) =>
             metot == "POST"
-                ? (Interlocked.Increment(ref postDenemesi), Json(500, """{"errors":[{"message":"kaos"}]}""")).Item2
+                ? (Interlocked.Increment(ref postDenemesi), Json(500, """{"message":"kaos"}""")).Item2
                 : Json(200, """[{"id":"TE-MEVCUT","date":"2026-08-03","time_spent":30,"sourceID":"xmcp-hit1"}]"""));
         using var adapter = new RestAdapter(Ayarlar(), new HttpClient(handler));
 
@@ -429,7 +555,7 @@ public class RestUyarlamaTests
         var handler = new SahteRest((metot, _) =>
             metot == "POST"
                 ? (Interlocked.Increment(ref postDenemesi) == 1
-                    ? Json(500, """{"errors":[{"message":"kaos"}]}""")
+                    ? Json(500, """{"message":"kaos"}""")
                     : Json(201, """
                         {"id":"TE-YENI","date":"2026-08-03","time_spent":30,
                         "person":{"id":"P1","name":"A"},"sourceID":"xmcp-miss1"}

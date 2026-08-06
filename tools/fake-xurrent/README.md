@@ -101,8 +101,8 @@ curl -X POST http://127.0.0.1:4000/_kaos -d '{"kirDesc": null, "k429": 3}'
 ```
 
 `timeEntries` sorgusu `sourceID` değişkenini de filtreler — dedup geri-okumasının
-(reliability.md §5) dayandığı yol. Gerçek `TimeEntryFilter`'da bu filtrenin varlığı
-**DOĞRULANMALI**'dır (D14).
+(reliability.md §5) dayandığı yol. ✅ Gerçek `TimeEntryFilter`'da `sourceID`
+filtresi **belgelidir** (D14 kapatıldı, 2026-08-06 — reliability.md §9).
 
 ## Nasıl çalışır
 
@@ -141,6 +141,8 @@ Bu sunucu geçtiği için değil, **geçmediği** için önemli olanlar:
    `two_step`'in ara sorgusu şart — bkz. `docs/08` D5)
 3. `timeIncrement` ihlalinde sunucu **reddediyor** mu yoksa **yuvarlıyor** mu
 4. `personId != self` yazma denemesinde hangi hata dönüyor
-5. Rate limit header'larının gerçek adları (`x-ratelimit-*` varsayımdır)
+5. ~~Rate limit header'larının gerçek adları~~ ✅ REST tarafında birebir belgeli:
+   `x-ratelimit-limit/remaining/reset` + `retry-after` (saniye). GraphQL yüzeyinin
+   kendi header adları hâlâ D1 kapsamındadır
 
 Tam liste: [docs/08 — DOĞRULANMALI](../../docs/08-riskler-ve-sss.md).

@@ -18,8 +18,12 @@ public sealed record ListTimeEntriesArgs(
     string? SourceId,
     int First);
 
-/// <summary>Bir mutation'ın sonucu. Xurrent doğrulama hatalarını HTTP 200 + errors[] ile döner.</summary>
-public sealed record MutationOutcome(JsonObject? TimeEntry, IReadOnlyList<ValidationError> Errors)
+/// <summary>Bir mutation'ın sonucu. Xurrent doğrulama hatalarını HTTP 200 + errors[] ile döner.
+/// Warnings: adaptörün YÜRÜTME sırasında ürettiği, kullanıcıya görünmesi gereken notlar
+/// (ör. REST Yol B'de description'ın note'a düşürülmesi) — Strategies bunları tool
+/// çıktısındaki warnings listesine ekler. Null/boş = uyarı yok.</summary>
+public sealed record MutationOutcome(JsonObject? TimeEntry, IReadOnlyList<ValidationError> Errors,
+    IReadOnlyList<string>? Warnings = null)
 {
     public bool Ok => Errors.Count == 0;
     public static MutationOutcome Fail(string message, params string[] path)

@@ -179,6 +179,9 @@ public static class Strategies
                 toRun = step with { Input = SubstitutePlaceholder(step.Input, createdId) };
 
             var outcome = await adapter.ExecuteAsync(toRun, ct);
+            // Adaptörün yürütme sırasında ürettiği uyarılar (ör. REST Yol B'de
+            // description → note düşmesi) kullanıcıya kaybolmadan ulaşmalı.
+            if (outcome.Warnings is { Count: > 0 }) warnings.AddRange(outcome.Warnings);
             if (!outcome.Ok)
             {
                 foreach (var e in outcome.Errors) errors.Add(e);
@@ -273,6 +276,12 @@ public static class Strategies
             ["personId"] = personId,
         };
         AddIfSet(fixInput, "startedAt", req.StartedAt);
+        // ★ Açıklama 2. adımda DA gönderilir. NEDEN: REST Yol B'de time entry
+        // açıklaması taşınamaz (time_entry_description parametresi belgeli değil —
+        // developer.xurrent.com/v1/requests); adaptör onu note'a düşürür. Kalıcı
+        // kaydın description'ı bu adımda yazılır. GraphQL yolunda 1. adım
+        // timeEntryDescription ile taşımıştı — aynı değeri tekrar SET etmek zararsızdır.
+        AddIfSet(fixInput, "description", req.Description);
         fixInput["clientMutationId"] = sourceId + "-fix";
 
         var stepTwoWarnings = new List<string>

@@ -8,12 +8,15 @@ zaman sabitlenir, test adi = iddia.
 Kapsanan iddialar:
   1. Uc nokta / parametre eslemesi: whoami IKI istek (/me + /account),
      people?primary_email, requests?member, tasks?assignee,
-     time_entries?person&date_from&date_to&sourceID.
+     time_entries?person&date&sourceID — tarih filtresinde operator DEGERIN
+     ICINDEDIR (?date=>=X<=Y), date_from/date_to YOKTUR
+     (developer.xurrent.com/v1/general/filtering).
   2. snake_case -> ic sozlesme (camelCase) normalizasyonu: kisi, is ogesi,
      baglam (time_increment -> timeIncrement, *_effort_class -> defaults) ve
-     TimeEntryRecord.
-  3. 422 -> errors[] normalizasyonu: is kurali reddi exception DEGILDIR ve
-     ASLA retry edilmez (GraphQL "200 + payload.errors" dersinin ikizi).
+     TimeEntryRecord (bagli kayit KOSULLU request/task/... referansindan).
+  3. 422 -> errors[] normalizasyonu: govde ["alan","mesaj"] IKILI DIZILERIDIR
+     (developer.xurrent.com/v1/#http-status-codes); is kurali reddi exception
+     DEGILDIR ve ASLA retry edilmez (GraphQL "200 + payload.errors" ikizi).
   4. Operasyon siniflari (reliability.md §2) REST'te de AYNIDIR:
      POST /time_entries guarded_create, PATCH /time_entries idempotent_update,
      PATCH /requests|tasks no_retry.
@@ -91,7 +94,8 @@ _ENTRY_REST = {
     "person": {"id": "P1", "name": "Ayse Yilmaz"},
     "effort_class": {"id": "EC1", "name": "Standart"},
     "time_allocation": {"id": "TA1", "name": "Ic toplantilar"},
-    "assignment": None,
+    # ★ REST'te "assignment" alani YOKTUR — bagli kayit kosullu request/task/
+    # problem/project_task referansi olarak gelir; bu kayit bagsizdir.
 }
 
 
@@ -294,15 +298,20 @@ def test_baglam_uc_ayri_get_ile_kurulur_ve_snake_case_normallesir(yapilandirma) 
 def test_list_time_entries_parametre_eslemesi_ve_kayit_normalizasyonu(
     yapilandirma,
 ) -> None:
+    """Tarih araligi TEK 'date' parametresidir ve operator degerin ICINDEDIR:
+    ?date=>=2026-08-01<=2026-08-03 (developer.xurrent.com/v1/general/filtering).
+    date_from/date_to UYDURMAYDI ve gercek sunucuda sessizce YOK SAYILIRDI."""
+
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/v1/time_entries"
         p = request.url.params
         assert p["person"] == "P1"
-        assert p["date_from"] == "2026-08-01"
-        assert p["date_to"] == "2026-08-03"
+        assert p["date"] == ">=2026-08-01<=2026-08-03"
+        assert "date_from" not in p and "date_to" not in p
         assert p["sourceID"] == "xmcp-abc123"
         kayit = dict(_ENTRY_REST)
-        kayit["assignment"] = {"type": "Request", "id": "R1"}
+        # Bagli kayit KOSULLU referans olarak gelir, "assignment" degil.
+        kayit["request"] = {"id": "R1"}
         return httpx.Response(200, json=[kayit])
 
     adapter = _rest_adapter(yapilandirma, handler)
@@ -315,6 +324,56 @@ def test_list_time_entries_parametre_eslemesi_ve_kayit_normalizasyonu(
     assert r["sourceID"] == "xmcp-abc123"  # istisna: oldugu gibi
     assert r["effortClass"] == {"id": "EC1", "name": "Standart"}  # effort_class
     assert r["assignment"] == {"type": "Request", "id": "R1", "displayId": None}
+
+
+@pytest.mark.parametrize(
+    ("date_from", "date_to", "beklenen"),
+    [
+        ("2026-08-01", None, ">=2026-08-01"),
+        (None, "2026-08-03", "<=2026-08-03"),
+        (None, None, None),
+    ],
+)
+def test_list_time_entries_tek_yonlu_aralik_operatoru_degerin_icinde(
+    yapilandirma, date_from, date_to, beklenen
+) -> None:
+    """Acik uclu araliklar da ayni sozdizimiyle kurulur; iki uc da yoksa
+    'date' parametresi HIC gonderilmez."""
+    gorulen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        gorulen["date"] = request.url.params.get("date")
+        return httpx.Response(200, json=[])
+
+    adapter = _rest_adapter(yapilandirma, handler)
+    adapter.list_time_entries("P1", date_from, date_to, None, 25)
+    assert gorulen["date"] == beklenen
+
+
+@pytest.mark.parametrize(
+    ("rest_alan", "beklenen_tip"),
+    [
+        ("request", "Request"),
+        ("task", "Task"),
+        ("problem", "Problem"),
+        ("project_task", "ProjectTask"),
+    ],
+)
+def test_bagli_kayit_kosullu_referanstan_turetilir(
+    yapilandirma, rest_alan, beklenen_tip
+) -> None:
+    """REST yanitinda 'assignment' alani YOKTUR; ic sozlesmenin {type, id}
+    sekli hangi kosullu referans (request/task/problem/project_task) varsa
+    ondan turetilir (developer.xurrent.com/v1/time_entries)."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        kayit = dict(_ENTRY_REST)
+        kayit[rest_alan] = {"id": "X9"}
+        return httpx.Response(200, json=[kayit])
+
+    adapter = _rest_adapter(yapilandirma, handler)
+    rows = adapter.list_time_entries("P1", None, None, None, 25)
+    assert rows[0]["assignment"] == {"type": beklenen_tip, "id": "X9", "displayId": None}
 
 
 def test_dedup_geri_okumasi_sourceID_parametresiyle_sorgular(yapilandirma) -> None:
@@ -335,7 +394,9 @@ def test_dedup_geri_okumasi_sourceID_parametresiyle_sorgular(yapilandirma) -> No
 def test_create_snake_case_govde_gonderir_201_bekler(yapilandirma) -> None:
     """TimeEntryCreateInput (camelCase) -> POST /time_entries (snake_case).
     sourceID ISTISNADIR ve oldugu gibi gider; clientMutationId GraphQL'e
-    ozgudur, REST govdesine SIZMAZ."""
+    ozgudur, REST govdesine SIZMAZ. Referans alanlari ID'SIZ addir ve duz id
+    tasir: time_allocation / effort_class — time_allocation_id DEGIL
+    (developer.xurrent.com/v1/time_entries, 2026-08-06'da dogrulandi)."""
     gorulen: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -363,8 +424,8 @@ def test_create_snake_case_govde_gonderir_201_bekler(yapilandirma) -> None:
         "time_spent": 30,
         "date": "2026-08-03",
         "started_at": "2026-08-03T09:00:00+03:00",
-        "time_allocation_id": "TA1",
-        "effort_class_id": "EC1",
+        "time_allocation": "TA1",
+        "effort_class": "EC1",
         "description": "test kalemi",
         "source": "xurrent-mcp",
         "sourceID": "xmcp-abc123",
@@ -374,9 +435,31 @@ def test_create_snake_case_govde_gonderir_201_bekler(yapilandirma) -> None:
     assert sonuc["timeEntry"]["timeSpent"] == 30  # normalize edildi
 
 
+def test_create_baskasi_adina_yazmada_person_alani_duz_id_tasir(yapilandirma) -> None:
+    """personId -> person (ID'SIZ ad, deger duz id). person_id gondermek
+    gercek sunucuda SESSIZCE yok sayilir ve kayit yanlis kisiye yazilirdi."""
+    gorulen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            gorulen.update(json.loads(request.content.decode("utf-8")))
+            return httpx.Response(201, json=_ENTRY_REST)
+        return httpx.Response(200, json=[])
+
+    adapter = _rest_adapter(yapilandirma, handler)
+    adapter.run_mutation({
+        "path": "timeEntryCreate",
+        "input": {"timeSpent": 30, "personId": "P2", "sourceID": "xmcp-p2"},
+    })
+    assert gorulen["person"] == "P2"
+    assert "person_id" not in gorulen
+
+
 def test_parent_update_patch_requests_yoluna_gider(yapilandirma) -> None:
     """Yol B'nin REST karsiligi: PATCH /requests/:id. Yanit PARENT'tir,
-    olusan TimeEntry DEGIL — two_step 2. adimi kaydi ayrica bulmak zorunda."""
+    olusan TimeEntry DEGIL — two_step 2. adimi kaydi ayrica bulmak zorunda.
+    Parametreler ID'SIZdir: time_spent_effort_class, _id eki YOK
+    (developer.xurrent.com/v1/requests, 2026-08-06'da dogrulandi)."""
     gorulen: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -395,23 +478,49 @@ def test_parent_update_patch_requests_yoluna_gider(yapilandirma) -> None:
             "id": "R1",
             "timeSpent": 30,
             "timeSpentEffortClassId": "EC1",
-            "timeEntryDescription": "VPN bakim",
             "clientMutationId": "xmcp-abc123",
         },
     })
     assert gorulen == {
         "time_spent": 30,
-        "time_spent_effort_class_id": "EC1",
-        "time_entry_description": "VPN bakim",
+        "time_spent_effort_class": "EC1",
     }
     assert sonuc["errors"] == []
     assert sonuc["timeEntry"] is None  # parent doner, entry DEGIL
     assert sonuc["parent"]["id"] == "R1"
+    assert sonuc["warnings"] == []  # aciklama yok -> uyari yok
+
+
+def test_parent_update_aciklamayi_note_a_dusurur_ve_uyarir(yapilandirma) -> None:
+    """★ REST Yol B'de time_entry_description parametresi YOKTUR
+    (developer.xurrent.com/v1/requests) — aciklama SESSIZCE atilamaz.
+    Metin note'a dusurulur, uyari uretilir; two_step'te 2. adimin
+    PATCH /time_entries/:id'i description'i zaten duzeltir."""
+    gorulen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        gorulen.update(json.loads(request.content.decode("utf-8")))
+        return httpx.Response(200, json={"id": "R1", "subject": "VPN"})
+
+    adapter = _rest_adapter(yapilandirma, handler)
+    sonuc = adapter.run_mutation({
+        "path": "requestUpdate",
+        "input": {
+            "id": "R1",
+            "timeSpent": 30,
+            "timeEntryDescription": "VPN bakim",
+            "note": "Not: kesinti yok",
+        },
+    })
+    assert "time_entry_description" not in gorulen  # boyle bir parametre YOK
+    assert gorulen["note"] == "Not: kesinti yok\nAciklama: VPN bakim"
+    assert any("note'a yazildi" in u for u in sonuc["warnings"])
+    assert any("2. adim" in u for u in sonuc["warnings"])
 
 
 def test_time_entry_update_patch_ve_govde_eslemesi(yapilandirma) -> None:
     """two_step 2. adim: PATCH /time_entries/:id. Govdede assignment YOKTUR —
-    ticket bagi bozulAMAZ; date/started_at/person_id snake_case gider."""
+    ticket bagi bozulAMAZ; date/started_at snake_case, person ID'SIZ gider."""
     gorulen: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -436,7 +545,7 @@ def test_time_entry_update_patch_ve_govde_eslemesi(yapilandirma) -> None:
     assert gorulen == {
         "date": "2026-08-02",
         "started_at": "2026-08-02T14:00:00+03:00",
-        "person_id": "P2",
+        "person": "P2",  # referans alani ID'SIZ: person_id DEGIL
     }
     assert sonuc["errors"] == []
     assert sonuc["timeEntry"]["date"] == "2026-08-02"
@@ -467,17 +576,21 @@ def test_422_errors_dizisine_normallesir_exception_degil_retry_yok(
     yapilandirma, capsys
 ) -> None:
     """GraphQL'de is kurali reddi '200 + payload.errors'tur; REST'te ayni red
-    'HTTP 422 + errors govdesi'dir. Adaptor ikisini AYNI errors[] sekline
-    indirger: exception yok, retry yok, bulk akisi surebilir."""
+    'HTTP 422 + Validation Failed' govdesidir ve errors ogeleri IKILI
+    DIZILERDIR: ["alan", "yerellesmis mesaj"] — nesne DEGIL
+    (developer.xurrent.com/v1/#http-status-codes). Adaptor ikisini AYNI
+    errors[] sekline indirger: exception yok, retry yok, bulk akisi surebilir."""
     sayac = {"post": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.method == "POST":
             sayac["post"] += 1
-            return httpx.Response(422, json={"errors": [{
-                "message": "timeSpent (45) timeIncrement degerinin (30) kati degil.",
-                "attribute": "time_spent",
-            }]})
+            return httpx.Response(422, json={
+                "message": "Validation Failed",
+                "errors": [
+                    ["time_spent", "timeSpent (45) timeIncrement degerinin (30) kati degil."],
+                ],
+            })
         return httpx.Response(200, json=[])
 
     adapter = _rest_adapter(yapilandirma, handler)
@@ -494,12 +607,39 @@ def test_422_errors_dizisine_normallesir_exception_degil_retry_yok(
     assert _retry_satirlari(capsys) == []
 
 
+def test_422_coklu_ikili_hepsi_ayri_error_olur(yapilandirma) -> None:
+    """Govdedeki HER ["alan","mesaj"] ikilisi ayri bir errors[] ogesine
+    donusur: mesaj = ikili[1], path = [ikili[0]]. Ilkini alip gerisini
+    yutmak, kullanicidan ikinci hatayi SAKLAMAK olurdu."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(422, json={
+                "message": "Validation Failed",
+                "errors": [
+                    ["time_spent", "kati degil"],
+                    ["description", "en fazla 80 karakter olabilir"],
+                ],
+            })
+        return httpx.Response(200, json=[])
+
+    adapter = _rest_adapter(yapilandirma, handler)
+    sonuc = adapter.run_mutation({
+        "path": "timeEntryCreate",
+        "input": {"timeSpent": 45, "sourceID": "xmcp-cift"},
+    })
+    assert sonuc["errors"] == [
+        {"message": "kati degil", "path": ["time_spent"]},
+        {"message": "en fazla 80 karakter olabilir", "path": ["description"]},
+    ]
+
+
 def test_422_parent_update_te_de_ayni_sekilde_normallesir(yapilandirma) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(422, json={"errors": [{
-            "message": "Gunluk toplam workday sinirini asiyor.",
-            "attribute": "time_spent",
-        }]})
+        return httpx.Response(422, json={
+            "message": "Validation Failed",
+            "errors": [["time_spent", "Gunluk toplam workday sinirini asiyor."]],
+        })
 
     adapter = _rest_adapter(yapilandirma, handler)
     sonuc = adapter.run_mutation({
@@ -513,13 +653,15 @@ def test_422_parent_update_te_de_ayni_sekilde_normallesir(yapilandirma) -> None:
 
 
 def test_query_429_retry_ile_toparlar(yapilandirma, capsys) -> None:
+    """429 govdesi {"message": "Too Many Requests"} tasir (developer.xurrent.com
+    /v1/#http-status-codes ornegi) — retry karari yine STATUS koduna bakar."""
     sayac = {"n": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:
         sayac["n"] += 1
         if sayac["n"] == 1:
             return httpx.Response(
-                429, json={"errors": [{"message": "rate limit"}]},
+                429, json={"message": "Too Many Requests"},
                 headers={"retry-after": "0"},
             )
         return httpx.Response(200, json=[_ME_REST])
@@ -541,7 +683,7 @@ def test_guarded_create_5xx_te_once_dedup_okur_hit_ise_retry_yok(
     def handler(request: httpx.Request) -> httpx.Response:
         if request.method == "POST":
             sayac["post"] += 1
-            return httpx.Response(500, json={"errors": [{"message": "kaos"}]})
+            return httpx.Response(500, json={"message": "kaos"})
         sayac["get"] += 1
         assert request.url.params["sourceID"] == "xmcp-abc123"
         return httpx.Response(200, json=[_ENTRY_REST])
@@ -568,7 +710,7 @@ def test_parent_update_5xx_te_asla_retry_edilmez_belirsizligi_soyler(
 
     def handler(request: httpx.Request) -> httpx.Response:
         sayac["n"] += 1
-        return httpx.Response(500, json={"errors": [{"message": "kaos"}]})
+        return httpx.Response(500, json={"message": "kaos"})
 
     adapter = _rest_adapter(yapilandirma, handler)
     sonuc = adapter.run_mutation({
@@ -588,7 +730,7 @@ def test_time_entry_update_5xx_te_retry_edilir(yapilandirma, capsys) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         sayac["n"] += 1
         if sayac["n"] == 1:
-            return httpx.Response(502, json={"errors": [{"message": "kaos"}]})
+            return httpx.Response(502, json={"message": "kaos"})
         return httpx.Response(200, json=_ENTRY_REST)
 
     adapter = _rest_adapter(yapilandirma, handler)

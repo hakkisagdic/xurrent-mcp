@@ -273,13 +273,23 @@ function validateWrite({ timeSpent, correction, description, personId, date }) {
 // Aynı fixture durumu, aynı davranış kuralları — İKİNCİ bir wire biçimi.
 // GraphQL ile bilinçli farklar (dersin konusu, bkz. docs/16):
 //   · Alan adları snake_case'tir (started_at, time_spent) — sourceID HARİÇ
-//     (Xurrent REST dokümantasyonu da sourceID yazar).
-//   · Validation hatası HTTP 422 + {errors:[...]} döner — GraphQL'in
-//     "HTTP 200 + payload.errors" modelinin tam tersi.
+//     (Xurrent REST dokümantasyonu da sourceID yazar; source 30, sourceID 128 kr).
+//   · Referans alanları yazarken İD'SİZ addır ve değeri düz id'dir:
+//     person, effort_class, time_allocation, service, customer
+//     (developer.xurrent.com/v1/time_entries — person_id DEĞİL).
+//   · Validation hatası HTTP 422 + {"message":"Validation Failed",
+//     "errors":[["alan","mesaj"], ...]} döner — İKİLİ DİZİLER, nesne değil
+//     (developer.xurrent.com/v1/#http-status-codes'taki örnek birebir).
+//   · Filtrelerde operatör DEĞERİN İÇİNDEDİR: ?date=>=2026-01-01<=2026-01-31
+//     (developer.xurrent.com/v1/general/filtering — date_from/date_to YOKTUR).
+//   · Koleksiyon yanıtları x-pagination-* başlıkları taşır (per_page maks 100).
 //   · whoami/context tek istekte alınamaz: /me, /account, /timesheet_settings,
 //     /effort_classes, /time_allocations ayrı ayrıdır (1 sorgu vs N istek).
-// ⚠️ Gerçek REST yanıt şekilleri dokümantasyondan ÇIKARIMDIR; alan adları ve
-//    hata gövdesi biçimi DOĞRULANMALI'dır (docs/08).
+//   · Yol B: PATCH /requests/:id {time_spent, time_spent_effort_class, note} —
+//     time entry description'ı REST'te taşınamaz (belgelenmemiştir).
+// Bu yüzey 2026-08-06'da developer.xurrent.com'a karşı DOĞRULANMIŞTIR
+// (alan adları, hata gövdesi, filtre sözdizimi, sayfalama). Canlıda kalan tek
+// belirsizlik sunucunun ürettiği değerlerin içeriğidir, şekli değil.
 
 const personRest = (p) => ({
   id: p.id, name: p.name, primary_email: p.primaryEmail, job_title: p.jobTitle,
@@ -319,14 +329,44 @@ const timeEntryRest = (t) => ({
     ? (() => { const a = F.allocations.timeAllocations.find((x) => x.id === t.timeAllocationId);
                return a ? { id: a.id, name: a.name } : null; })()
     : null,
-  assignment: t.assignment ? { type: t.assignment.type, id: t.assignment.id } : null,
+  // ★ REST'te "assignment" diye bir alan YOKTUR: bağlı kayıt KOŞULLU
+  // request/task/problem/project_task referansları olarak döner.
+  request: t.assignment?.type === "Request" ? { id: t.assignment.id } : undefined,
+  task: t.assignment?.type === "Task" ? { id: t.assignment.id } : undefined,
+  problem: t.assignment?.type === "Problem" ? { id: t.assignment.id } : undefined,
+  project_task: t.assignment?.type === "ProjectTask" ? { id: t.assignment.id } : undefined,
 });
 
+/**
+ * REST filtre değeri ayrıştırıcısı: operatör DEĞERİN İÇİNDEDİR.
+ *   "2026-01-15"                → { eq: "2026-01-15" }
+ *   ">=2026-01-01"              → { gte: "..." }
+ *   "<=2026-01-31"              → { lte: "..." }
+ *   ">=2026-01-01<=2026-01-31"  → { gte: "...", lte: "..." }
+ * Desteklenmeyen biçim eq sayılır — gerçek sunucu daha geniştir (>, <, !=, "in").
+ */
+function parseRestRangeFilter(raw) {
+  if (raw == null) return null;
+  const out = {};
+  let rest = String(raw);
+  const m1 = /^>=([^<>]+)/.exec(rest);
+  if (m1) { out.gte = m1[1]; rest = rest.slice(m1[0].length); }
+  const m2 = /^<=(.+)$/.exec(rest);
+  if (m2) { out.lte = m2[1]; rest = ""; }
+  if (!("gte" in out) && !("lte" in out)) out.eq = String(raw);
+  else if (rest) out.eq = null; // ">=X<garip" — eq'a düşürme, sessizce daraltma
+  return out;
+}
+
 function handleRest(method, segs, q, body) {
-  const notFound = (m) => ({ code: 404, body: { errors: [{ message: m }] } });
-  // ★ REST hata modeli: 422 + errors gövdesi. GraphQL'deki "200 + payload.errors"
-  // dersinin ikizi — istemci HTTP koduna BAKMAK zorundadır.
-  const unprocessable = (m, attr = null) => ({ code: 422, body: { errors: [{ message: m, attribute: attr }] } });
+  const notFound = (m) => ({ code: 404, body: { message: m } });
+  // ★ REST hata modeli — birebir dokümandaki biçim: 422 + "Validation Failed" +
+  // [alan, mesaj] İKİLİLERİ (nesne değil!). GraphQL'deki "200 + payload.errors"
+  // dersinin ikizi — istemci HTTP koduna VE gövde biçimine bakmak zorundadır.
+  const unprocessable = (attr, m) => ({
+    code: 422,
+    body: { message: "Validation Failed", errors: [[attr ?? "base", m]] },
+  });
   const pid = (v) => (v === "$me" || !v ? ME.id : v);
   const kaynak = segs[0];
 
@@ -336,21 +376,21 @@ function handleRest(method, segs, q, body) {
     if (kaynak === "people") {
       const email = q.get("primary_email");
       const found = F.people.people.filter((p) => !email || p.primaryEmail === email);
-      return { code: 200, body: found.map(personRest) };
+      return { code: 200, body: found.map(personRest), liste: true };
     }
     if (kaynak === "requests" && !segs[1]) {
       const m = pid(q.get("member"));
       return { code: 200, body: F.requests.requests
-        .filter((r) => r.memberId === m && OPEN_REQUEST_STATUSES.has(r.status)).map(requestRest) };
+        .filter((r) => r.memberId === m && OPEN_REQUEST_STATUSES.has(r.status)).map(requestRest), liste: true };
     }
     if (kaynak === "tasks" && !segs[1]) {
       const a = pid(q.get("assignee"));
       return { code: 200, body: F.tasks.tasks
-        .filter((t) => t.assigneeId === a && OPEN_TASK_STATUSES.has(t.status)).map(taskRest) };
+        .filter((t) => t.assigneeId === a && OPEN_TASK_STATUSES.has(t.status)).map(taskRest), liste: true };
     }
     if (kaynak === "timesheet_settings") {
       const s = TS_SET;
-      return { code: 200, body: [{
+      return { code: 200, liste: true, body: [{
         id: s.id, name: s.name, unit: s.unit, workday: s.workday, workweek: s.workweek,
         time_increment: s.timeIncrement, percentage_increment: s.percentageIncrement,
         allow_workday_overtime: s.allowWorkdayOvertime, allow_workweek_overtime: s.allowWorkweekOvertime,
@@ -365,50 +405,60 @@ function handleRest(method, segs, q, body) {
     }
     if (kaynak === "effort_classes") {
       // disabled olanlar BİLEREK dahil — eleme GraphQL'deki gibi CLIENT tarafında.
-      return { code: 200, body: F.effortClasses.effortClasses.map((e) => ({
+      return { code: 200, liste: true, body: F.effortClasses.effortClasses.map((e) => ({
         id: e.id, name: e.name, position: e.position,
         cost_multiplier: e.costMultiplier, disabled: e.disabled })) };
     }
     if (kaynak === "time_allocations") {
-      return { code: 200, body: F.allocations.timeAllocations.map((a) => ({
+      return { code: 200, liste: true, body: F.allocations.timeAllocations.map((a) => ({
         id: a.id, name: a.name, group: a.group, description_required: a.descriptionRequired })) };
     }
     if (kaynak === "time_entries") {
       const person = q.get("person") ? pid(q.get("person")) : null;
-      const from = q.get("date_from");
-      const to = q.get("date_to");
-      const exact = q.get("date");
+      // ★ Gerçek sözdizimi: operatör DEĞERİN içinde — ?date=>=X<=Y ya da ?date=X.
+      // date_from/date_to diye parametreler GERÇEKTE YOKTUR (ilk taslağımız öyle
+      // uydurmuştu; developer.xurrent.com/v1/general/filtering düzeltti).
+      const tarih = parseRestRangeFilter(q.get("date"));
       const bySource = q.get("sourceID");
       const rows = store
         .filter((t) => (!person || t.personId === person)
-          && (!from || t.date >= from)
-          && (!to || t.date <= to)
-          && (!exact || t.date === exact)
+          && (!tarih || (
+               (tarih.eq == null || t.date === tarih.eq)
+            && (tarih.gte == null || t.date >= tarih.gte)
+            && (tarih.lte == null || t.date <= tarih.lte)))
           && (!bySource || t.sourceID === bySource))
         .slice().reverse().slice(0, 100);
-      return { code: 200, body: rows.map(timeEntryRest) };
+      return { code: 200, liste: true, body: rows.map(timeEntryRest) };
     }
     return notFound(`Bilinmeyen REST kaynağı: GET /v1/${segs.join("/")}`);
   }
 
   if (method === "POST" && kaynak === "time_entries" && !segs[1]) {
+    // ★ Referans alanları İD'SİZ addır ve düz id taşır: person, effort_class,
+    // time_allocation (developer.xurrent.com/v1/time_entries POST parametreleri).
+    // source ≤30, sourceID ≤128 karakter (v1/general/source).
+    if (typeof body.source === "string" && body.source.length > 30)
+      return unprocessable("source", "Source en fazla 30 karakter olabilir.");
+    if (typeof body.sourceID === "string" && body.sourceID.length > 128)
+      return unprocessable("sourceID", "Source ID en fazla 128 karakter olabilir.");
     const input = {
       timeSpent: body.time_spent, correction: !!body.correction,
-      description: body.description, personId: body.person_id, date: body.date,
+      description: body.description, personId: body.person, date: body.date,
     };
     const bad = validateWrite(input);
-    if (bad) return unprocessable(bad, "time_spent");
+    if (bad) return unprocessable("time_spent", bad);
     const entry = {
       id: mintId("TimeEntry"),
-      personId: body.person_id || ME.id,
+      personId: body.person || ME.id,
       date: body.date || todayLocal(),
       startedAt: body.started_at ?? null,
       timeSpent: body.time_spent,
       description: body.description ?? null,
-      effortClassId: body.effort_class_id ?? TS_SET.defaults.timeAllocationEffortClassId,
+      effortClassId: body.effort_class ?? TS_SET.defaults.timeAllocationEffortClassId,
       correction: !!body.correction,
-      timeAllocationId: body.time_allocation_id ?? null,
-      // ★ GraphQL ile AYNI kısıt: REST'te de time entry bir ticket'a bağlanamaz.
+      timeAllocationId: body.time_allocation ?? null,
+      // ★ GraphQL ile AYNI kısıt: REST'te de time entry bir ticket'a bağlanamaz
+      // (POST parametrelerinde request/task alanı yoktur).
       assignment: null,
       source: body.source ?? null,
       sourceID: body.sourceID ?? null,
@@ -423,39 +473,41 @@ function handleRest(method, segs, q, body) {
     if (body.time_spent != null) {
       const bad = validateWrite({ timeSpent: body.time_spent, correction: !!body.correction,
         description: body.description, personId: t.personId, date: body.date });
-      if (bad) return unprocessable(bad, "time_spent");
+      if (bad) return unprocessable("time_spent", bad);
       t.timeSpent = body.time_spent;
     }
-    // two_step'in dayanağı REST'te de aynı: assignment'a DOKUNULMAZ.
+    // two_step'in dayanağı REST'te de aynı: bağlı kayıt alanlarına DOKUNULMAZ.
     if (body.date != null) t.date = body.date;
     if (body.started_at != null) t.startedAt = body.started_at;
-    if (body.person_id != null) t.personId = body.person_id;
+    if (body.person != null) t.personId = body.person;
     if (body.description != null) t.description = body.description;
-    if (body.effort_class_id != null) t.effortClassId = body.effort_class_id;
+    if (body.effort_class != null) t.effortClassId = body.effort_class;
     if (body.source != null) t.source = body.source;
     if (body.sourceID != null) t.sourceID = body.sourceID;
     return { code: 200, body: timeEntryRest(t) };
   }
 
   if (method === "PATCH" && (kaynak === "requests" || kaynak === "tasks") && segs[1]) {
-    // ⚠️ Yol B'nin REST karşılığı: PATCH ile time_spent göndermek. Gerçek REST'te
-    // bu parametrenin adı/varlığı DOĞRULANMAMIŞTIR (docs/08) — davranış GraphQL
-    // requestUpdate/taskUpdate ile bilinçli olarak AYNI tutuldu.
+    // Yol B'nin REST karşılığı — 2026-08-06'da DOĞRULANDI: PATCH /requests/:id
+    // update parametreleri time_spent + time_spent_effort_class + note içerir
+    // (developer.xurrent.com/v1/requests). time entry DESCRIPTION'ı REST'te
+    // taşınamaz — böyle bir parametre belgeli değildir; adaptörler bunu note'a
+    // düşürür ve uyarı üretir (two_step'te 2. adım description'ı zaten düzeltir).
     const rows = kaynak === "requests" ? F.requests.requests : F.tasks.tasks;
     const parent = rows.find((r) => r.id === segs[1]);
     if (!parent) return notFound(`${kaynak === "requests" ? "Request" : "Task"} bulunamadı: ${segs[1]}`);
     if (body.time_spent != null) {
       const bad = validateWrite({ timeSpent: body.time_spent, correction: false,
-        description: body.time_entry_description, personId: ME.id, date: todayLocal() });
-      if (bad) return unprocessable(bad, "time_spent");
+        description: null, personId: ME.id, date: todayLocal() });
+      if (bad) return unprocessable("time_spent", bad);
       const entry = {
         id: mintId("TimeEntry"),
         personId: ME.id,                     // ★ kontrol EDİLEMEZ — authenticated user
         date: todayLocal(),                  // ★ kontrol EDİLEMEZ — bugün
         startedAt: null,
         timeSpent: body.time_spent,          // ★ ARTIMLI
-        description: body.time_entry_description ?? null,
-        effortClassId: body.time_spent_effort_class_id ?? TS_SET.defaults.requestEffortClassId,
+        description: null,                   // ★ REST Yol B'de description taşınamaz
+        effortClassId: body.time_spent_effort_class ?? TS_SET.defaults.requestEffortClassId,
         correction: false,
         timeAllocationId: null,
         assignment: { type: kaynak === "requests" ? "Request" : "Task", id: parent.id },
@@ -728,30 +780,34 @@ const server = http.createServer((req, res) => {
   if (!req.headers["x-xurrent-account"])
     return send(400, gqlError("X-Xurrent-Account header zorunludur (hesap slug'ı, numerik değil)."));
 
+  // REST hataları gövdeyi {message} biçiminde taşır (429 örneği dokümanda böyle);
+  // GraphQL yüzeyi errors dizisi bekler. İki lehçe, tek yardımcı.
+  const hataGovde = (mesaj) => (isRest ? { message: mesaj } : gqlError(mesaj));
+
   // ── kaos: auth'tan SONRA, rate-check'ten ÖNCE ──
   // 429 kaosu "istek işlenmeden reddedildi" sınıfını taklit eder — istemci
   // Retry-After'a uyup tekrarlamalı, kayıt ÇİFTLENMEMELİDİR (senaryo f).
   if (KAOS.k429 > 0) {
     KAOS.k429--;
     log("429 KAOS".padEnd(24), `kalan=${KAOS.k429}`);
-    return send(429, gqlError("Kaos: rate limit."), { "retry-after": "1" });
+    return send(429, hataGovde("Too Many Requests"), { "retry-after": "1" });
   }
   if (KAOS.k500 > 0) {
     KAOS.k500--;
     log("500 KAOS".padEnd(24), `kalan=${KAOS.k500}`);
-    return send(500, gqlError("Kaos: sunucu iç hatası."));
+    return send(500, hataGovde("Kaos: sunucu iç hatası."));
   }
   if (KAOS.oran500 > 0 && prng() < KAOS.oran500) {
     log("500 KAOS(oran)".padEnd(24), `p=${KAOS.oran500}`);
-    return send(500, gqlError("Kaos: sunucu iç hatası (oranlı)."));
+    return send(500, hataGovde("Kaos: sunucu iç hatası (oranlı)."));
   }
 
   const rl = rateCheck();
   if (!rl.ok) {
     // 429 GÖRÜNÜR olmalı: istemcinin throttle etmediğini ancak böyle fark ederiz.
+    // Retry-After birimi SANİYEDİR (developer.xurrent.com/v1 örneği: retry-after: 30).
     log("429 RATE-LIMIT".padEnd(24), `${RATE_MAX} istek / ${RATE_WINDOW_MS / 1000} sn aşıldı`);
-    return send(429, gqlError(`Rate limit aşıldı: ${RATE_MAX} istek / ${RATE_WINDOW_MS / 1000} saniye.`),
-      { "retry-after": "2" });
+    return send(429, hataGovde("Too Many Requests"), { "retry-after": "2" });
   }
 
   let raw = "";
@@ -768,16 +824,23 @@ const server = http.createServer((req, res) => {
       if (KAOS.kirDesc && req.method === "POST" && u.pathname === "/v1/time_entries"
           && String(restBody.description ?? "").includes(KAOS.kirDesc)) {
         log("500 KAOS(kir-desc)".padEnd(24), `REST ${KAOS.kirDesc}`);
-        return send(500, { errors: [{ message: `Kaos: '${KAOS.kirDesc}' kalemi kalıcı kırık.` }] });
+        return send(500, { message: `Kaos: '${KAOS.kirDesc}' kalemi kalıcı kırık.` });
       }
       try {
         const segs = u.pathname.replace(/^\/v1\/?/, "").split("/").filter(Boolean);
         const out = handleRest(req.method, segs, u.searchParams, restBody);
         log(`REST ${req.method} /v1/${segs.join("/")}`.padEnd(24), out.code < 400 ? "ok" : String(out.code));
-        return send(out.code, out.body);
+        // Koleksiyon yanıtları x-pagination-* başlıkları taşır (v1/general/pagination).
+        const sayfaBasliklari = out.liste ? {
+          "x-pagination-per-page": "100",
+          "x-pagination-current-page": "1",
+          "x-pagination-total-pages": "1",
+          "x-pagination-total-entries": String(Array.isArray(out.body) ? out.body.length : 0),
+        } : {};
+        return send(out.code, out.body, sayfaBasliklari);
       } catch (e) {
         log("REST iç hata:", e?.message);
-        return send(500, { errors: [{ message: `Sahte sunucu iç hatası: ${e?.message}` }] });
+        return send(500, { message: `Sahte sunucu iç hatası: ${e?.message}` });
       }
     }
 

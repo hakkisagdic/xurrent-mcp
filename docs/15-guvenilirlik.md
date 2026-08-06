@@ -137,10 +137,19 @@ diller onun altında.
 > 30 saniye sürer. `created=3 failed=1` → `created=1 deduped=3` geçişini ekranda
 > görmek, bu bölümün bütün teorisinden daha kalıcıdır.
 
-## DOĞRULANMALI (gerçek tenant'ta)
+## D14–D16: açıldı ve KAPATILDI
 
-- **D14** — `TimeEntryFilter`'da `sourceID` filtresi gerçekten var mı? (Dedup
-  geri-okuması buna dayanır; yoksa kişi+tarih sorgusu + istemci tarafı eşleşmeye düşülür.)
-- **D15** — `Retry-After` birimi saniye mi? (Saniye varsayıldı.)
-- **D16** — Gerçek 429, mutation işlenmeden **önce** mi kesiyor? (Rate limiter'ın
-  ön-kapıda olduğu varsayıldı; değilse 429 da "belirsiz" sınıfına iner.)
+Bu bölüm ilk yazıldığında üç madde `DOĞRULANMALI` idi. Üçü de resmî
+dokümantasyona karşı **kapatıldı** (2026-08-06, ayrıntı ve kaynaklar:
+[contract/reliability.md §9](../contract/reliability.md)):
+
+- **D14 ✅** `TimeEntryFilter.sourceID` belgeli — dedup geri-okuması resmen
+  desteklenen filtreye dayanıyor (REST tarafında da filtrelenebilir).
+- **D15 ✅** `Retry-After` saniyedir (`retry-after: 30` örneği dokümanda).
+- **D16 ✅** Limit kullanıcı-başına istek sayacıdır; 429 sayaç kapısıdır.
+  Politika bu sonuca zaten dayanıklıydı.
+
+> 🎤 **Anlatım notu:** Buradaki ders maddelerin kendisi değil, kapanma biçimi:
+> *canlı hesap gerektirmeyen hiçbir belirsizlik canlı hesap beklememeli.* Üç
+> madde de bir öğleden sonra, dokümana bakarak kapandı — aylarca "tenant yok"
+> diye açık kalabilirlerdi.

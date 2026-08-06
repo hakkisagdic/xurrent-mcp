@@ -6,10 +6,17 @@
  *
  *   · Alan adları snake_case'tir (started_at, time_spent) — sourceID HARİÇ
  *     (Xurrent REST dokümantasyonu da sourceID yazar).
- *   · Validation hataları HTTP 422 + {errors:[...]} döner — GraphQL'in
+ *   · Referans alanları YAZARKEN İD'SİZ addır ve değeri düz id'dir:
+ *     person, effort_class, time_allocation, service, customer
+ *     (developer.xurrent.com/v1/time_entries — person_id DEĞİL).
+ *   · Validation hataları HTTP 422 + {"message":"Validation Failed",
+ *     "errors":[["alan","mesaj"], ...]} döner — İKİLİ DİZİLER, nesne değil
+ *     (developer.xurrent.com/v1/#http-status-codes). GraphQL'in
  *     "HTTP 200 + payload.errors" modelinin TAM TERSİ. İstemci HTTP koduna
  *     BAKMAK zorundadır. İki model de aynı errors[] şekline normalize edilir;
  *     422 bir "kesin-reddedildi"dir ve ASLA retry edilmez.
+ *   · Filtrelerde operatör DEĞERİN İÇİNDEDİR: ?date=>=2026-01-01<=2026-01-31
+ *     (developer.xurrent.com/v1/general/filtering — date_from/date_to YOKTUR).
  *   · whoami tek istekte alınamaz: GET /me + GET /account = 2 istek
  *     (GraphQL'de 1 sorguydu). context 3 istektir: /timesheet_settings +
  *     /effort_classes + /time_allocations. "1 sorgu vs N istek" kontrastı.
@@ -25,10 +32,11 @@
  *   · Dedup geri-okuması GET /time_entries?sourceID= ile yapılır.
  *   · x-ratelimit-* başlıkları aynı şekilde yakalanır.
  *
- * ⚠️ Gerçek REST yanıt şekilleri dokümantasyondan ÇIKARIMDIR; alan adları ve
- *    hata gövdesi biçimi DOĞRULANMALI'dır (docs/08). Sahte sunucu
- *    (tools/fake-xurrent/server.mjs → handleRest) bu dosyanın tek somut
- *    doğrulama yüzeyidir.
+ * Alan adları, hata gövdesi biçimi, filtre sözdizimi ve sayfalama 2026-08-06'da
+ * developer.xurrent.com'a karşı DOĞRULANMIŞTIR. Canlıda kalan tek belirsizlik
+ * sunucunun ürettiği değerlerin içeriğidir, şekli değil. Sahte sunucu
+ * (tools/fake-xurrent/server.mjs → handleRest) bu dosyanın yürütülebilir
+ * spesifikasyonudur.
  */
 
 import type { AppConfig } from "../config.js";
@@ -97,15 +105,24 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
- * REST hata gövdesi {errors:[{message, attribute?}]} → sözleşmenin errors[]
- * şekli. attribute snake_case olarak AYNEN path'e taşınır (çevirmek yeni bir
- * yalan katmanı olurdu; gerçek API'nin ne döndürdüğü DOĞRULANMALI).
+ * REST hata gövdesi → sözleşmenin errors[] şekli. Belgelenen biçim
+ * (developer.xurrent.com/v1/#http-status-codes) 422'de İKİLİ DİZİLERDİR:
+ *   {"message": "Validation Failed", "errors": [["alan", "yerel mesaj"], ...]}
+ * Her ikili [alan, mesaj] → {message: mesaj, path: [alan]} olarak taşınır;
+ * alan adı snake_case olarak AYNEN korunur (çevirmek yalan katmanı olurdu).
+ * errors[] yoksa gövdedeki düz {"message": "..."} kullanılır — 404 ve benzeri
+ * transport-dışı 4xx'ler bu biçimde gelir.
  */
 function normalizeRestErrors(body: unknown, status: number): ValidationError[] {
   const list = (body as { errors?: unknown })?.errors;
   if (Array.isArray(list) && list.length > 0) {
     return list.map((e) => {
+      // ★ Belgelenen ikili biçim: ["alan", "mesaj"] (nesne DEĞİL).
+      if (Array.isArray(e) && e.length >= 2) {
+        return { message: String(e[1]), path: [String(e[0])] };
+      }
       if (typeof e === "string") return { message: e };
+      // Savunmacı dal: belgelenmemiş bir nesne biçimi görülürse mesajı kurtar.
       const obj = e as { message?: unknown; attribute?: unknown };
       return {
         message: typeof obj.message === "string" ? obj.message : JSON.stringify(e),
@@ -113,6 +130,8 @@ function normalizeRestErrors(body: unknown, status: number): ValidationError[] {
       };
     });
   }
+  const msg = (body as { message?: unknown })?.message;
+  if (typeof msg === "string" && msg) return [{ message: `Xurrent REST HTTP ${status}: ${msg}` }];
   return [{ message: `Xurrent REST HTTP ${status} (gövdede errors[] yok).` }];
 }
 
@@ -133,6 +152,23 @@ function qs(params: Record<string, string | null | undefined>): string {
   }
   const s = sp.toString();
   return s ? `?${s}` : "";
+}
+
+/**
+ * ★ REST filtre değeri: operatör DEĞERİN İÇİNDEDİR
+ * (developer.xurrent.com/v1/general/filtering). date_from/date_to diye
+ * parametreler GERÇEKTE YOKTUR — tek "date" parametresi taşınır:
+ *   from=to        → "2026-01-15"                 (eşitlik)
+ *   yalnız from    → ">=2026-01-01"
+ *   yalnız to      → "<=2026-01-31"
+ *   ikisi de       → ">=2026-01-01<=2026-01-31"   (kapalı aralık)
+ * URL kodlaması URLSearchParams'a bırakılır (>= → %3E%3D — normal davranış).
+ */
+function restDateFilter(dateFrom?: string | null, dateTo?: string | null): string | null {
+  if (dateFrom && dateTo) return dateFrom === dateTo ? dateFrom : `>=${dateFrom}<=${dateTo}`;
+  if (dateFrom) return `>=${dateFrom}`;
+  if (dateTo) return `<=${dateTo}`;
+  return null;
 }
 
 /** Tek REST çağrısının sonucu. errors DOLU ⇔ kesin-reddedildi (4xx, 429 hariç). */
@@ -170,8 +206,31 @@ function personFromRest(p: RestPerson): Person {
   };
 }
 
+/**
+ * ★ REST yanıtında "assignment" diye bir alan YOKTUR: bağlı kayıt KOŞULLU
+ * request / task / problem / project_task referans nesneleri olarak gelir
+ * (developer.xurrent.com/v1/time_entries). İçsel {type,id} şekli hangisi
+ * mevcutsa ondan türetilir — GraphQL yolunun ürettiği şekle normalize edilir.
+ */
+const REST_ASSIGNMENT_REFS: ReadonlyArray<readonly [field: string, type: string]> = [
+  ["request", "Request"],
+  ["task", "Task"],
+  ["problem", "Problem"],
+  ["project_task", "ProjectTask"],
+];
+
+function assignmentFromRest(t: Record<string, any>): TimeEntryRecord["assignment"] {
+  for (const [field, type] of REST_ASSIGNMENT_REFS) {
+    const ref = t[field] as { id?: unknown } | null | undefined;
+    if (ref && ref.id != null) {
+      // UI numarası (displayId) bu uçta yoktur.
+      return { type, id: String(ref.id), displayId: null };
+    }
+  }
+  return null;
+}
+
 function timeEntryFromRest(t: Record<string, any>): TimeEntryRecord {
-  const a = t["assignment"] as { type?: string | null; id?: string | null } | null;
   return {
     id: String(t["id"]),
     date: String(t["date"]),
@@ -182,8 +241,7 @@ function timeEntryFromRest(t: Record<string, any>): TimeEntryRecord {
     source: t["source"] ?? null,
     sourceID: t["sourceID"] ?? null, // ★ REST'te de camel — tek istisna
     person: t["person"] ? { id: String(t["person"].id), name: t["person"].name ?? null } : null,
-    // REST assignment {type,id} taşır; UI numarası (displayId) bu uçta yoktur.
-    assignment: a ? { type: a.type ?? null, id: a.id ?? null, displayId: null } : null,
+    assignment: assignmentFromRest(t),
     effortClass: t["effort_class"]
       ? { id: String(t["effort_class"].id), name: t["effort_class"].name ?? null }
       : null,
@@ -546,9 +604,10 @@ export class RestXurrentAdapter implements XurrentAdapter {
   ): Promise<{ dayMinutes: number; weekMinutes: number }> {
     const weekStart = weekStartISO(dateISO);
     const person = await this.resolveMe(personId, signal);
+    // Hafta [weekStart, weekStart+7) — kapalı aralık için son gün weekStart+6.
     const res = await this.rest<Array<Record<string, any>>>(
       "GET",
-      `time_entries${qs({ person, date_from: weekStart })}`,
+      `time_entries${qs({ person, date: restDateFilter(weekStart, addDaysISO(weekStart, 6)) })}`,
       { label: "usage", ...(signal ? { signal } : {}) },
     );
     if (res.errors.length) {
@@ -582,8 +641,8 @@ export class RestXurrentAdapter implements XurrentAdapter {
       "GET",
       `time_entries${qs({
         person: person ?? null,
-        date_from: args.dateFrom ?? null,
-        date_to: args.dateTo ?? null,
+        // Operatör değerin içinde: ?date=>=X<=Y (date_from/date_to YOKTUR).
+        date: restDateFilter(args.dateFrom, args.dateTo),
         sourceID: args.sourceId ?? null, // ★ camel istisnası burada da geçerli
       })}`,
       { label: "listTimeEntries", ...(signal ? { signal } : {}) },
@@ -706,18 +765,21 @@ export class RestXurrentAdapter implements XurrentAdapter {
 
     if (path === "timeEntryCreate") {
       // Yol A: POST /time_entries — 201 beklenir. Alanlar snake_case, sourceID camel.
+      // ★ Referans alanları İD'SİZ addır ve düz id taşır: person, effort_class,
+      // time_allocation, service, customer (developer.xurrent.com/v1/time_entries
+      // POST parametreleri — person_id/effort_class_id DEĞİL).
       const body = compactBody({
         time_spent: inner["timeSpent"],
         date: inner["date"],
         started_at: inner["startedAt"],
-        person_id: inner["personId"],
-        time_allocation_id: inner["timeAllocationId"],
-        effort_class_id: inner["effortClassId"],
+        person: inner["personId"],
+        time_allocation: inner["timeAllocationId"],
+        effort_class: inner["effortClassId"],
         description: inner["description"],
-        customer_id: inner["customerId"],
-        service_id: inner["serviceId"],
-        organization_id: inner["organizationId"],
-        team_id: inner["teamId"],
+        customer: inner["customerId"],
+        service: inner["serviceId"],
+        organization: inner["organizationId"],
+        team: inner["teamId"],
         correction: inner["correction"] === true ? true : undefined,
         source: inner["source"],
         sourceID: inner["sourceID"],
@@ -746,14 +808,17 @@ export class RestXurrentAdapter implements XurrentAdapter {
 
     if (path === "timeEntryUpdate") {
       // Path-B telafisi / düzeltme: PATCH /time_entries/:id (mutlak SET).
+      // Referans alanları burada da İD'SİZDİR (person, effort_class).
+      // two_step 2. adımı description'ı BURADA düzeltir — Yol B'de taşınamayan
+      // açıklama nihai kayıtta böylece doğru yerde biter.
       const id = String(inner["id"]);
       const body = compactBody({
         time_spent: inner["timeSpent"],
         date: inner["date"],
         started_at: inner["startedAt"],
-        person_id: inner["personId"],
+        person: inner["personId"],
         description: inner["description"],
-        effort_class_id: inner["effortClassId"],
+        effort_class: inner["effortClassId"],
         // source/sourceID two_step 2. adımında yazılır — dedup kimliği burada doğar.
         source: inner["source"],
         sourceID: inner["sourceID"],
@@ -770,12 +835,25 @@ export class RestXurrentAdapter implements XurrentAdapter {
     if (collection) {
       // Yol B: PATCH /requests|tasks/:id — time_spent ARTIMLIDIR, date=bugün,
       // person=authenticated user (kontrol EDİLEMEZ). GraphQL ile aynı ders.
+      // ★ Parametreler: time_spent + time_spent_effort_class (İD'SİZ) + note
+      // (developer.xurrent.com/v1/requests). time_entry_description diye bir
+      // REST parametresi YOKTUR — açıklama Yol B'de time entry'ye taşınamaz.
       const id = String(inner["id"]);
+      const desc = typeof inner["timeEntryDescription"] === "string" ? inner["timeEntryDescription"] : null;
+      const note = typeof inner["note"] === "string" && inner["note"] ? (inner["note"] as string) : null;
+      let mergedNote = note;
+      if (desc) {
+        // Açıklama kaybolmasın diye note'a doğal bir önekle düşürülür.
+        mergedNote = note ? `${note}\n\nZaman girişi açıklaması: ${desc}` : `Zaman girişi açıklaması: ${desc}`;
+        log.warn(
+          "REST Yol B'de açıklama time entry'ye taşınamaz; note'a yazıldı — two_step 2. adım düzeltir",
+          { path, description: desc },
+        );
+      }
       const body = compactBody({
         time_spent: inner["timeSpent"],
-        time_spent_effort_class_id: inner["timeSpentEffortClassId"],
-        time_entry_description: inner["timeEntryDescription"],
-        note: inner["note"],
+        time_spent_effort_class: inner["timeSpentEffortClassId"],
+        note: mergedNote,
       });
       return this.rest<Record<string, any>>("PATCH", `${collection}/${encodeURIComponent(id)}`, {
         body,

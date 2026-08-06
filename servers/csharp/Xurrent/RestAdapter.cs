@@ -28,8 +28,15 @@ public sealed class RestValidationException(IReadOnlyList<ValidationError> error
 /// AYNI tool sözleşmesi, İKİNCİ transport. GraphQL ile bilinçli farklar dersin konusudur:
 ///   · Alan adları snake_case'tir (started_at, time_spent) — sourceID HARİÇ
 ///     (Xurrent REST dokümantasyonu da sourceID yazar).
-///   · Validation hatası HTTP 422 + {errors:[...]} döner — GraphQL'in
+///   · Referans alanları yazarken İD'SİZ addır ve düz id değeri taşır: person,
+///     effort_class, time_allocation, service, customer
+///     (developer.xurrent.com/v1/time_entries — person_id DEĞİL).
+///   · Validation hatası HTTP 422 + {"message":"Validation Failed",
+///     "errors":[["alan","mesaj"],...]} döner — İKİLİ DİZİLER, nesne değil
+///     (developer.xurrent.com/v1/#http-status-codes). GraphQL'in
 ///     "HTTP 200 + payload.errors" modelinin tam tersi. İstemci HTTP koduna BAKMAK zorundadır.
+///   · Filtrelerde operatör DEĞERİN İÇİNDEDİR: ?date=&gt;=2026-01-01&lt;=2026-01-31
+///     (developer.xurrent.com/v1/general/filtering — date_from/date_to YOKTUR).
 ///   · whoami tek istekte alınamaz: GET /me + GET /account (1 sorgu vs 2 istek).
 ///   · context üç istektir: /timesheet_settings + /effort_classes + /time_allocations.
 ///     disabled effort class eleme GraphQL'deki gibi CLIENT tarafındadır.
@@ -47,9 +54,11 @@ public sealed class RestValidationException(IReadOnlyList<ValidationError> error
 /// ile birebir aynı katman ve biçimdedir; senaryo koşucusu bunları transport'tan
 /// bağımsız sayar.
 ///
-/// ⚠️ Gerçek REST yanıt şekilleri dokümantasyondan ÇIKARIMDIR; alan adları ve hata
-/// gövdesi biçimi DOĞRULANMALI'dır (docs/08). Bu adaptör sahte sunucunun /v1
-/// yüzeyiyle (tek doğruluk kaynağı) birebir aynı lehçeyi konuşur.
+/// Lehçe 2026-08-06'da developer.xurrent.com'a karşı DOĞRULANDI (alan adları, hata
+/// gövdesi biçimi, filtre sözdizimi, sayfalama başlıkları). Canlıda kalan tek
+/// belirsizlik sunucunun ürettiği değerlerin İÇERİĞİDİR, şekli değil. Sahte
+/// sunucunun /v1 yüzeyi yürütülebilir spesifikasyondur; bu adaptör onunla birebir
+/// aynı lehçeyi konuşur.
 /// </summary>
 public sealed class RestAdapter : IXurrentAdapter, IDisposable
 {
@@ -166,22 +175,45 @@ public sealed class RestAdapter : IXurrentAdapter, IDisposable
         }
     }
 
-    /// <summary>422/4xx gövdesi: {errors:[{message, attribute}]} → ValidationError listesi.</summary>
+    /// <summary>
+    /// REST hata gövdesi → ValidationError listesi.
+    /// 422 gövdesi {"message":"Validation Failed","errors":[["alan","mesaj"],...]}
+    /// biçimindedir — hatalar İKİLİ DİZİLERDİR, nesne değil
+    /// (developer.xurrent.com/v1/#http-status-codes'taki örnek birebir böyle).
+    /// İkilinin [0]'ı GraphQL'in errors[].path sözleşme alanına, [1]'i message'a
+    /// çevrilir. Diğer hatalar (404/429...) düz {"message":"..."} taşır
+    /// (developer.xurrent.com/v1 — 429 örneği); errors[] yoksa bu mesaja düşülür.
+    /// </summary>
     internal static IReadOnlyList<ValidationError> ParseRestErrors(string text)
     {
         try
         {
-            var errs = (JsonNode.Parse(text)?["errors"] as JsonArray ?? [])
+            var root = JsonNode.Parse(text)?.AsObject();
+            var errs = ((root?["errors"] as JsonArray) ?? [])
                 .OfType<JsonNode>()
-                .Select(e => new ValidationError(
-                    e["message"]?.GetValue<string>() ?? "Bilinmeyen REST hatası",
-                    // REST'te path yerine tek bir "attribute" alanı vardır — GraphQL'in
-                    // errors[].path dizisiyle AYNI sözleşme alanına çevrilir.
-                    e["attribute"]?.GetValueKind() == JsonValueKind.String
-                        ? [e["attribute"]!.GetValue<string>()]
-                        : null))
+                .Select(e => e switch
+                {
+                    // ★ Belgelenen biçim: ["alan", "yerelleştirilmiş mesaj"] ikilisi.
+                    JsonArray { Count: >= 2 } t => new ValidationError(
+                        t[1]?.GetValueKind() == JsonValueKind.String
+                            ? t[1]!.GetValue<string>() : "Bilinmeyen REST hatası",
+                        t[0]?.GetValueKind() == JsonValueKind.String
+                            ? [t[0]!.GetValue<string>()] : null),
+                    // Savunma: nesne biçimli hata belgeli değildir ama görülürse kaybetme.
+                    JsonObject o => new ValidationError(
+                        o["message"]?.GetValue<string>() ?? "Bilinmeyen REST hatası",
+                        o["attribute"]?.GetValueKind() == JsonValueKind.String
+                            ? [o["attribute"]!.GetValue<string>()] : null),
+                    _ => new ValidationError("Bilinmeyen REST hatası", null),
+                })
                 .ToList();
-            return errs.Count > 0 ? errs : [new ValidationError("REST hatası: gövde çözümlenemedi", null)];
+            if (errs.Count > 0) return errs;
+
+            // errors[] yok: taşıma katmanı hataları {"message":"Too Many Requests"} gibi
+            // düz bir mesaj gövdesiyle gelir — onu detay olarak koru.
+            return root?["message"]?.GetValue<string>() is { } mesaj
+                ? [new ValidationError(mesaj, null)]
+                : [new ValidationError("REST hatası: gövde çözümlenemedi", null)];
         }
         catch (JsonException)
         {
@@ -270,8 +302,10 @@ public sealed class RestAdapter : IXurrentAdapter, IDisposable
             tasks = ToWorkPage(rows, "task");
         }
 
-        // NOT: REST yüzeyi cursor sayfalaması sunmaz (sahte yüzeyde yok; gerçek REST
-        // sayfa parametreleri DOĞRULANMALI) — first/after burada bilinçli yok sayılır.
+        // NOT: REST'te cursor sayfalaması YOKTUR — sayfalama x-pagination-* yanıt
+        // başlıklarıyla sayfa temellidir, per_page en fazla 100
+        // (developer.xurrent.com/v1/general/pagination). Bu adaptör ilk sayfayla
+        // yetinir; first/after burada bilinçli yok sayılır.
         return new ListOpenWorkResult(_cfg.XurrentAccount, requests, tasks);
     }
 
@@ -445,8 +479,12 @@ public sealed class RestAdapter : IXurrentAdapter, IDisposable
         var first = Math.Clamp(args.First, 1, 100);
 
         var query = new StringBuilder($"time_entries?person={Uri.EscapeDataString(personId)}");
-        if (!string.IsNullOrWhiteSpace(args.DateFrom)) query.Append("&date_from=").Append(Uri.EscapeDataString(args.DateFrom));
-        if (!string.IsNullOrWhiteSpace(args.DateTo)) query.Append("&date_to=").Append(Uri.EscapeDataString(args.DateTo));
+        // ★ date_from/date_to diye parametreler GERÇEKTE YOKTUR (ilk taslak öyle
+        // uydurmuştu): operatör tek "date" parametresinin DEĞERİNİN içindedir —
+        // ?date=2026-01-15 eşitlik, ?date=>=2026-01-01<=2026-01-31 kapalı aralık
+        // (developer.xurrent.com/v1/general/filtering). Kodlama olağan URL kaçışı.
+        if (BuildDateFilter(args.DateFrom, args.DateTo) is { } tarih)
+            query.Append("&date=").Append(Uri.EscapeDataString(tarih));
         if (!string.IsNullOrWhiteSpace(args.SourceId)) query.Append("&sourceID=").Append(Uri.EscapeDataString(args.SourceId));
 
         var rows = (await GetAsync(query.ToString(), ct)).AsArray();
@@ -454,12 +492,33 @@ public sealed class RestAdapter : IXurrentAdapter, IDisposable
         return new TimeEntryPage(_cfg.XurrentAccount, records, records.Sum(r => r.TimeSpent));
     }
 
+    /// <summary>
+    /// REST tarih filtresi değeri: operatör DEĞERİN İÇİNDEDİR
+    /// (developer.xurrent.com/v1/general/filtering).
+    ///   (from, to)   → ">=from&lt;=to" (kapalı aralık; from==to ise düz eşitlik)
+    ///   (from, null) → ">=from"
+    ///   (null, to)   → "&lt;=to"
+    ///   (null, null) → null (filtre yok)
+    /// </summary>
+    internal static string? BuildDateFilter(string? dateFrom, string? dateTo)
+    {
+        var from = string.IsNullOrWhiteSpace(dateFrom) ? null : dateFrom;
+        var to = string.IsNullOrWhiteSpace(dateTo) ? null : dateTo;
+        return (from, to) switch
+        {
+            (null, null) => null,
+            (not null, null) => $">={from}",
+            (null, not null) => $"<={to}",
+            _ => from == to ? from : $">={from}<={to}",
+        };
+    }
+
     /// <summary>snake_case REST satırı → sözleşme kaydı (birim testin hedefi).</summary>
     internal static TimeEntryRecord ToTimeEntryRecord(JsonObject o)
     {
         var person = o["person"]?.AsObject();
         var effort = o["effort_class"]?.AsObject();
-        var assignment = o["assignment"]?.AsObject();
+        var assignment = DeriveAssignment(o);
 
         return new TimeEntryRecord(
             Id: MockAdapter.Str(o, "id") ?? "",
@@ -473,14 +532,12 @@ public sealed class RestAdapter : IXurrentAdapter, IDisposable
             Person: person is null
                 ? null
                 : new TimeEntryPersonRef(MockAdapter.Str(person, "id") ?? "", MockAdapter.Str(person, "name")),
-            // Yol A kayıtlarında assignment REST'te de null'dır — ders aynı ders.
-            // REST assignment {type,id} taşır; UI numarası (displayId) bu yüzeyde YOKTUR.
+            // Yol A kayıtlarında bağlı kayıt referansı REST'te de yoktur — ders aynı ders.
+            // Bağ, koşullu request/task/... nesnelerinden türetilir (DeriveAssignment);
+            // UI numarası (displayId) bu yüzeyde YOKTUR.
             Assignment: assignment is null
                 ? null
-                : new TimeEntryAssignmentRef(
-                    MockAdapter.Str(assignment, "type"),
-                    MockAdapter.Str(assignment, "id"),
-                    null),
+                : new TimeEntryAssignmentRef(assignment.Value.Type, assignment.Value.Id, null),
             EffortClass: effort is null
                 ? null
                 : new TimeEntryEffortClassRef(MockAdapter.Str(effort, "id") ?? "", MockAdapter.Str(effort, "name")));
@@ -514,31 +571,57 @@ public sealed class RestAdapter : IXurrentAdapter, IDisposable
         ["timeSpent"] = "time_spent",
         ["date"] = "date",
         ["startedAt"] = "started_at",
-        ["personId"] = "person_id",
-        ["timeAllocationId"] = "time_allocation_id",
-        ["effortClassId"] = "effort_class_id",
+        // ★ Referans alanları REST gövdesinde İD'SİZ addır ve DÜZ id değeri taşır:
+        // person, effort_class, time_allocation, service, customer — person_id DEĞİL
+        // (developer.xurrent.com/v1/time_entries POST/PATCH parametreleri).
+        ["personId"] = "person",
+        ["timeAllocationId"] = "time_allocation",
+        ["effortClassId"] = "effort_class",
+        ["customerId"] = "customer",
+        ["serviceId"] = "service",
+        ["organizationId"] = "organization",
+        ["teamId"] = "team",
         ["description"] = "description",
         ["correction"] = "correction",
         ["source"] = "source",
         ["sourceID"] = "sourceID",          // ★ tek istisna: REST dokümantasyonu da sourceID yazar
-        ["customerId"] = "customer_id",
-        ["serviceId"] = "service_id",
-        ["organizationId"] = "organization_id",
-        ["teamId"] = "team_id",
-        // Yol B (parent PATCH) üçlüsü + note:
-        ["timeSpentEffortClassId"] = "time_spent_effort_class_id",
-        ["timeEntryDescription"] = "time_entry_description",
+        // Yol B (parent PATCH) parametreleri (developer.xurrent.com/v1/requests):
+        // time_spent + time_spent_effort_class (İD'SİZ) + note.
+        ["timeSpentEffortClassId"] = "time_spent_effort_class",
         ["note"] = "note",
+        // ★ timeEntryDescription BİLEREK YOK: REST'te time_entry_description diye bir
+        // parametre BELGELİ DEĞİLDİR — açıklama Yol B'de taşınamaz. ToRestBody onu
+        // note'a düşürür ve uyarı üretir; two_step 2. adımı description'ı düzeltir.
     };
 
-    /// <summary>GraphQL biçimli PlannedMutation input'u → REST gövdesi (birim testin hedefi).</summary>
-    internal static JsonObject ToRestBody(string mutationPath, JsonObject input, string? sourceTag)
+    /// <summary>GraphQL biçimli PlannedMutation input'u → REST gövdesi (birim testin hedefi).
+    /// Bilgi kaybı olan çeviriler (ör. Yol B'de description → note) uyarı üretir.</summary>
+    internal static JsonObject ToRestBody(string mutationPath, JsonObject input, string? sourceTag,
+        ICollection<string>? warnings = null)
     {
         var body = new JsonObject();
         foreach (var (key, value) in input)
         {
             if (value is null || key is "id" or "clientMutationId") continue;
             if (FieldMap.TryGetValue(key, out var restKey)) body[restKey] = value.DeepClone();
+        }
+
+        // ★ Yol B'de time entry AÇIKLAMASI REST'te taşınamaz: PATCH /requests|/tasks
+        // update parametreleri time_spent + time_spent_effort_class + note içerir,
+        // time_entry_description diye bir parametre YOKTUR (developer.xurrent.com/v1/requests).
+        // Açıklama kaybolmasın diye note'a düşürülür; two_step 2. adımı (PATCH
+        // /time_entries/:id) description'ı gerçek alanına yazar, kalıcı kayıt doğru olur.
+        if (input["timeEntryDescription"]?.GetValue<string>() is { } desc
+            && !string.IsNullOrWhiteSpace(desc))
+        {
+            var tasinan = $"Zaman girişi açıklaması: {desc}";
+            body["note"] = body["note"]?.GetValue<string>() is { } mevcutNot
+                && !string.IsNullOrWhiteSpace(mevcutNot)
+                ? $"{mevcutNot}\n{tasinan}"
+                : tasinan;
+            warnings?.Add("REST Yol B'de açıklama time entry'ye taşınamaz " +
+                "(time_entry_description parametresi belgeli değil); note'a yazıldı — " +
+                "two_step 2. adım description'ı düzeltir.");
         }
 
         // ★ two_step'in REST'e özgü küçük kazanımı: PATCH /time_entries/:id gövdesi
@@ -586,15 +669,39 @@ public sealed class RestAdapter : IXurrentAdapter, IDisposable
         if (Obj("time_allocation") is { } alloc)
             normalized["timeAllocation"] = new JsonObject
             { ["id"] = MockAdapter.Str(alloc, "id"), ["name"] = MockAdapter.Str(alloc, "name") };
-        if (Obj("assignment") is { } assignment)
+        if (DeriveAssignment(rest) is { } assignment)
             normalized["assignment"] = new JsonObject
             {
-                // GraphQL şekliyle hizalama: type → __typename (Request | Task).
-                ["__typename"] = MockAdapter.Str(assignment, "type"),
-                ["id"] = MockAdapter.Str(assignment, "id"),
+                // GraphQL şekliyle hizalama: türetilen tür → __typename (Request | Task | ...).
+                ["__typename"] = assignment.Type,
+                ["id"] = assignment.Id,
             };
 
         return normalized;
+    }
+
+    // Koşullu referans alanı → GraphQL __typename karşılığı. Sıra önemsizdir:
+    // gerçek sunucu bir kayıtta bunlardan EN FAZLA birini döndürür.
+    private static readonly (string Field, string Type)[] ConditionalAssignmentFields =
+    [
+        ("request", "Request"),
+        ("task", "Task"),
+        ("problem", "Problem"),
+        ("project_task", "ProjectTask"),
+    ];
+
+    /// <summary>
+    /// ★ REST time entry yanıtında "assignment" diye bir alan YOKTUR: bağlı kayıt,
+    /// KOŞULLU request / task / problem / project_task referans nesneleri ({id, ...})
+    /// olarak gelir (developer.xurrent.com/v1/time_entries). Hangisi mevcutsa iç
+    /// {type,id} şekline türetilir; hiçbiri yoksa null (Yol A kaydı — bağ yok).
+    /// </summary>
+    internal static (string Type, string? Id)? DeriveAssignment(JsonObject rest)
+    {
+        foreach (var (field, type) in ConditionalAssignmentFields)
+            if (rest[field] is JsonObject r)
+                return (type, MockAdapter.Str(r, "id"));
+        return null;
     }
 
     public async Task<MutationOutcome> ExecuteAsync(PlannedMutation step, CancellationToken ct)
@@ -609,12 +716,16 @@ public sealed class RestAdapter : IXurrentAdapter, IDisposable
 
             var input = step.Input["input"]?.AsObject() ?? new JsonObject();
             var (method, path) = EndpointFor(step.Path, input);
-            var body = ToRestBody(step.Path, input, _cfg.XurrentSource);
+            var bodyWarnings = new List<string>();
+            var body = ToRestBody(step.Path, input, _cfg.XurrentSource, bodyWarnings);
 
             var data = await _retry.ExecuteAsync(cls, step.Path,
                 c => SendOnceAsync(method, path, body, c), ct);
 
-            return await ParseWriteResponseAsync(step, data, ct);
+            var outcome = await ParseWriteResponseAsync(step, data, ct);
+            // Çeviri sırasında üretilen uyarılar (ör. description → note düşmesi)
+            // tool çıktısındaki warnings'e outcome üzerinden taşınır.
+            return bodyWarnings.Count == 0 ? outcome : outcome with { Warnings = bodyWarnings };
         }
         catch (RestValidationException ex)
         {
@@ -730,8 +841,10 @@ public sealed class RestAdapter : IXurrentAdapter, IDisposable
 
             foreach (var n in rows)
             {
+                // Bağ, koşullu request/task/... referanslarından türetilir — REST'te
+                // "assignment" alanı yoktur (bkz. DeriveAssignment).
                 var o = n!.AsObject();
-                if (o["assignment"]?["id"]?.GetValue<string>() == parentId)
+                if (DeriveAssignment(o)?.Id == parentId)
                     return NormalizeTimeEntry(o);
             }
         }

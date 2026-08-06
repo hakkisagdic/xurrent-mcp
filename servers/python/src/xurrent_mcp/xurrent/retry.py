@@ -84,8 +84,31 @@ class XurrentRestValidationError(XurrentHttpError):
 
     def __init__(self, message: str, *, errors: list[dict] | None = None) -> None:
         super().__init__(message, status=422, retry_after=None)
-        # Sahte/gercek REST govdesi: [{"message": ..., "attribute": ...}]
+        # IC sekil: [{"attribute": ..., "message": ...}]. Wire sekli ise
+        # IKILI DIZILERDIR — bkz. normalize_errors.
         self.errors = errors or []
+
+    @staticmethod
+    def normalize_errors(raw: object) -> list[dict]:
+        """422 govdesindeki errors'u ic sekle cevirir.
+
+        Wire bicimi (developer.xurrent.com/v1/#http-status-codes, 2026-08-06'da
+        dogrulandi): {"message": "Validation Failed",
+        "errors": [["alan", "yerellesmis mesaj"], ...]} — her oge IKI elemanli
+        bir DIZIDIR, nesne degil. tuple[0] alan adi (-> path), tuple[1] mesaj.
+        Nesne bicimli ogeler de kabul edilir (savunmaci: ara katman cevirileri).
+        """
+        if not isinstance(raw, list):
+            return []
+        normalized: list[dict] = []
+        for item in raw:
+            if isinstance(item, (list, tuple)) and len(item) == 2:
+                normalized.append({"attribute": str(item[0]), "message": str(item[1])})
+            elif isinstance(item, dict) and item.get("message"):
+                normalized.append(
+                    {"attribute": item.get("attribute"), "message": str(item["message"])}
+                )
+        return normalized
 
 
 # ---------------------------------------------------------------- siniflar

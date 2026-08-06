@@ -4,13 +4,19 @@
  * NE KANITLIYOR (live-reliability.test.mjs'in REST ikizi):
  *   - endpoint/param eşlemesi: /me + /account, /people?primary_email=,
  *     /requests?member= + /tasks?assignee=, üçlü context, /time_entries filtreleri
- *   - snake_case → içsel şekil normalizasyonu (started_at → startedAt, sourceID camel)
- *   - 422 → errors[] normalizasyonu: İSTİSNA DEĞİL, RETRY EDİLMEZ
+ *     (operatör DEĞERİN içinde: ?date=>=X<=Y — developer.xurrent.com/v1/general/filtering)
+ *   - snake_case → içsel şekil normalizasyonu (started_at → startedAt, sourceID camel);
+ *     yazarken referans alanları İD'SİZ (person, effort_class, time_allocation)
+ *   - bağlı kayıt KOŞULLU request/task/problem/project_task referanslarından türetilir
+ *     ("assignment" diye bir REST alanı yoktur)
+ *   - 422 = {"message":"Validation Failed","errors":[["alan","mesaj"],...]} İKİLİLERİ →
+ *     errors[] normalizasyonu: İSTİSNA DEĞİL, RETRY EDİLMEZ
  *   - operasyon sınıfları: GET=query, POST /time_entries=guarded_create,
  *     PATCH /time_entries/:id=idempotent_update, PATCH /requests|tasks/:id=no_retry
  *   - dedup geri-okuması GET /time_entries?sourceID= üzerinden
  *   - whoami'nin İKİ istekli akışı (GraphQL'in 1 sorgusuna öğretilen kontrast)
  *   - two_step: PATCH parent → GET en yeni kayıt → PATCH /time_entries/:id
+ *   - Yol B'de time_entry_description parametresi YOKTUR: açıklama note'a düşer + uyarı
  *
  * fetch globalThis üzerinden stub'lanır (repo DI kullanmıyor) ve her testin
  * sonunda GERİ KOYULUR — mevcut güvenilirlik testlerinin deseniyle aynı.
@@ -96,7 +102,8 @@ const TE_REST = {
   person: { id: "P-ME", name: "Ayşe Demir" },
   effort_class: { id: "EC-1", name: "Normal mesai" },
   time_allocation: null,
-  assignment: { type: "Request", id: "REQ-1" },
+  // ★ REST'te "assignment" alanı YOKTUR — bağlı kayıt koşullu referans nesnesidir.
+  request: { id: "REQ-1" },
 };
 
 const createStep = (sourceID = "xmcp-abc123") => ({
@@ -259,7 +266,7 @@ test("getTimeTrackingContext: ÜÇ GET (timesheet_settings + effort_classes + ti
   }
 });
 
-test("listTimeEntries: person/date_from/date_to/sourceID paramları + kayıt normalizasyonu", async () => {
+test("★ listTimeEntries: TEK date paramı, operatör değerin İÇİNDE (?date=>=X<=Y) + kayıt normalizasyonu", async () => {
   const fx = stubFetch([json([TE_REST])]);
   try {
     const adapter = new RestXurrentAdapter(cfg());
@@ -272,15 +279,53 @@ test("listTimeEntries: person/date_from/date_to/sourceID paramları + kayıt nor
     const u = new URL(fx.calls[0].url);
     assert.equal(u.pathname, "/v1/time_entries");
     assert.equal(u.searchParams.get("person"), "P-2");
-    assert.equal(u.searchParams.get("date_from"), "2026-08-01");
-    assert.equal(u.searchParams.get("date_to"), "2026-08-04");
+    // ★ date_from/date_to diye parametreler YOKTUR (v1/general/filtering) —
+    // kapalı aralık tek "date" değerinin içinde taşınır (URL kodlaması normal).
+    assert.equal(u.searchParams.get("date_from"), null, "date_from GERÇEKTE YOK — gönderilmemeli");
+    assert.equal(u.searchParams.get("date_to"), null, "date_to GERÇEKTE YOK — gönderilmemeli");
+    assert.equal(u.searchParams.get("date"), ">=2026-08-01<=2026-08-04");
     assert.equal(u.searchParams.get("sourceID"), "xmcp-abc123", "sourceID camel KALIR — tek istisna");
     const rec = page.timeEntries[0];
     assert.equal(rec.startedAt, "2026-08-04T14:00:00+03:00", "started_at → startedAt");
     assert.equal(rec.timeSpent, 60, "time_spent → timeSpent");
     assert.equal(rec.sourceID, "xmcp-abc123");
+    // ★ request:{id} referansından türetilir — REST'te "assignment" alanı yoktur.
     assert.deepEqual(rec.assignment, { type: "Request", id: "REQ-1", displayId: null });
     assert.deepEqual(rec.effortClass, { id: "EC-1", name: "Normal mesai" });
+  } finally {
+    fx.restore();
+  }
+});
+
+test("listTimeEntries: tek uçlu aralıklar — yalnız from '>=X', yalnız to '<=X', from=to eşitlik", async () => {
+  const fx = stubFetch([json([]), json([]), json([])]);
+  try {
+    const adapter = new RestXurrentAdapter(cfg());
+    await adapter.listTimeEntries({ personId: "P-2", dateFrom: "2026-08-01" });
+    await adapter.listTimeEntries({ personId: "P-2", dateTo: "2026-08-04" });
+    await adapter.listTimeEntries({ personId: "P-2", dateFrom: "2026-08-04", dateTo: "2026-08-04" });
+    assert.equal(new URL(fx.calls[0].url).searchParams.get("date"), ">=2026-08-01");
+    assert.equal(new URL(fx.calls[1].url).searchParams.get("date"), "<=2026-08-04");
+    assert.equal(new URL(fx.calls[2].url).searchParams.get("date"), "2026-08-04", "from=to → düz eşitlik");
+  } finally {
+    fx.restore();
+  }
+});
+
+test("★ timeEntry normalizasyonu: task/problem/project_task referansları da assignment'a çevrilir", async () => {
+  const fx = stubFetch([
+    json([{ ...TE_REST, request: undefined, task: { id: "TASK-1" } }]),
+    json([{ ...TE_REST, request: undefined, project_task: { id: "PT-1" } }]),
+    json([{ ...TE_REST, request: undefined }]), // hiçbiri yok → assignment null
+  ]);
+  try {
+    const adapter = new RestXurrentAdapter(cfg());
+    const t1 = (await adapter.listTimeEntries({ personId: "P-2" })).timeEntries[0];
+    assert.deepEqual(t1.assignment, { type: "Task", id: "TASK-1", displayId: null });
+    const t2 = (await adapter.listTimeEntries({ personId: "P-2" })).timeEntries[0];
+    assert.deepEqual(t2.assignment, { type: "ProjectTask", id: "PT-1", displayId: null });
+    const t3 = (await adapter.listTimeEntries({ personId: "P-2" })).timeEntries[0];
+    assert.equal(t3.assignment, null, "bağlı kayıt referansı yoksa assignment null");
   } finally {
     fx.restore();
   }
@@ -290,7 +335,7 @@ test("listTimeEntries: person/date_from/date_to/sourceID paramları + kayıt nor
 // Yazma — 422 modeli, retry sınıfları, dedup, two_step
 // ─────────────────────────────────────────────────────────────────────────────
 
-test("★ Yol A: POST /time_entries snake_case gövdeyle, 201 → başarı; clientMutationId gövdeye SIZMAZ", async () => {
+test("★ Yol A: POST /time_entries snake_case + İD'SİZ referans adlarıyla; clientMutationId gövdeye SIZMAZ", async () => {
   const fx = stubFetch([json(TE_REST, 201)]);
   try {
     const adapter = new RestXurrentAdapter(cfg());
@@ -300,12 +345,14 @@ test("★ Yol A: POST /time_entries snake_case gövdeyle, 201 → başarı; clie
     const call = fx.calls[0];
     assert.equal(call.method, "POST");
     assert.match(call.url, /\/v1\/time_entries$/);
+    // ★ Referanslar İD'SİZ ad + düz id: time_allocation, effort_class
+    // (developer.xurrent.com/v1/time_entries — time_allocation_id DEĞİL).
     assert.deepEqual(call.body, {
       time_spent: 60,
       date: "2026-08-04",
       started_at: "2026-08-04T14:00:00+03:00",
-      time_allocation_id: "TA-1",
-      effort_class_id: "EC-1",
+      time_allocation: "TA-1",
+      effort_class: "EC-1",
       description: "rest testi",
       source: "xurrent-mcp",
       sourceID: "xmcp-abc123",
@@ -318,9 +365,14 @@ test("★ Yol A: POST /time_entries snake_case gövdeyle, 201 → başarı; clie
   }
 });
 
-test("★ 422 = iş kuralı reddi: errors[] DEĞERİYLE döner, İSTİSNA DEĞİL, RETRY YOK", async () => {
+test("★ 422 = iş kuralı reddi: [alan, mesaj] İKİLİLERİ errors[]'a normalize edilir, İSTİSNA DEĞİL, RETRY YOK", async () => {
   const fx = stubFetch([
-    json({ errors: [{ message: "timeSpent (45) timeIncrement'in (30) katı değil.", attribute: "time_spent" }] }, 422),
+    // ★ Belgelenen gövde biçimi: message + İKİLİ DİZİLER (nesne değil)
+    // (developer.xurrent.com/v1/#http-status-codes).
+    json({
+      message: "Validation Failed",
+      errors: [["time_spent", "timeSpent (45) timeIncrement'in (30) katı değil."]],
+    }, 422),
     // script bitti: retry edilirse stub assert düşürür.
   ]);
   const cap = captureStderr();
@@ -335,14 +387,14 @@ test("★ 422 = iş kuralı reddi: errors[] DEĞERİYLE döner, İSTİSNA DEĞİ
   assert.equal(fx.calls.length, 1, "422 kesin-reddedildi'dir — tekrar aynı reddi üretir");
   assert.equal(out.executed, 0);
   assert.equal(out.errors.length, 1);
-  assert.match(out.errors[0].message, /katı değil/);
-  assert.deepEqual(out.errors[0].path, ["time_spent"], "attribute → path normalizasyonu");
+  assert.match(out.errors[0].message, /katı değil/, "mesaj = ikilinin 2. elemanı");
+  assert.deepEqual(out.errors[0].path, ["time_spent"], "path = [ikilinin 1. elemanı]");
   assert.equal(cap.lines.filter((l) => l.startsWith("[retry]")).length, 0);
 });
 
 test("★ guarded_create + 500: dedup geri-okuması (GET ?sourceID=) kaydı bulur → İKİNCİ POST YOK", async () => {
   const fx = stubFetch([
-    json({ errors: [{ message: "patladı" }] }, 500), // POST → 500 (belirsiz)
+    json({ message: "patladı" }, 500), // POST → 500 (belirsiz)
     json([TE_REST]), // GET /time_entries?sourceID= → kayıt VAR
     // ★ script burada biter: üçüncü istek (çift POST) atılırsa test düşer.
   ]);
@@ -368,7 +420,7 @@ test("★ guarded_create + 500: dedup geri-okuması (GET ?sourceID=) kaydı bulu
 
 test("guarded_create + 500: geri-okuma BOŞ dönerse retry devam eder ve yeni kayıt oluşur", async () => {
   const fx = stubFetch([
-    json({ errors: [{ message: "patladı" }] }, 500), // POST #1 → 500
+    json({ message: "patladı" }, 500), // POST #1 → 500
     json([]), // geri-okuma → yok
     json(TE_REST, 201), // POST #2 → tamam
   ]);
@@ -388,7 +440,7 @@ test("guarded_create + 500: geri-okuma BOŞ dönerse retry devam eder ve yeni ka
 
 test("★ PATCH /requests/:id + 500: ASLA retry (no_retry) — hata 'ulaşmış olabilir' uyarısı taşır", async () => {
   const fx = stubFetch([
-    json({ errors: [{ message: "iç hata" }] }, 500),
+    json({ message: "iç hata" }, 500),
     // script bitti: ikinci istek atılırsa (yasak retry) stub assert düşürür.
   ]);
   const cap = captureStderr();
@@ -410,7 +462,8 @@ test("★ PATCH /requests/:id + 500: ASLA retry (no_retry) — hata 'ulaşmış 
 
 test("PATCH /requests/:id + 429: retry EDİLİR (kesin-işlenmedi) ve Retry-After'a uyulur", async () => {
   const fx = stubFetch([
-    json({ errors: [{ message: "rate limit" }] }, 429, { "retry-after": "0" }),
+    // Transport hataları gövdeyi {"message": "..."} biçiminde taşır (dokümandaki 429 örneği).
+    json({ message: "Too Many Requests" }, 429, { "retry-after": "0" }),
     json({ id: "REQ-1", subject: "VPN", status: "in_progress", time_spent: 90 }),
   ]);
   const cap = captureStderr();
@@ -428,9 +481,35 @@ test("PATCH /requests/:id + 429: retry EDİLİR (kesin-işlenmedi) ve Retry-Afte
   assert.match(cap.lines.join(""), /\[retry\] op=requestUpdate attempt=1\/5 reason=429 waitMs=0\n/);
 });
 
+test("★ Yol B gövdesi: time_spent + time_spent_effort_class (İD'SİZ) + note — time_entry_description YOK, açıklama note'a düşer + uyarı", async () => {
+  const fx = stubFetch([json({ id: "REQ-1", subject: "VPN", status: "in_progress", time_spent: 90 })]);
+  const cap = captureStderr();
+  try {
+    const adapter = new RestXurrentAdapter(cfg());
+    const out = await adapter.execute([parentStep()]);
+    assert.equal(out.errors.length, 0);
+  } finally {
+    cap.restore();
+    fx.restore();
+  }
+  // ★ Parametre adları developer.xurrent.com/v1/requests'teki update parametreleri:
+  // time_spent_effort_class_id DEĞİL, time_entry_description diye bir parametre HİÇ YOK.
+  assert.deepEqual(fx.calls[0].body, {
+    time_spent: 60,
+    time_spent_effort_class: "EC-1",
+    note: "Zaman girişi açıklaması: rest testi",
+  });
+  // Kayıp bilgi SESSİZ geçilmez: adaptör stderr'e uyarı düşer.
+  assert.match(
+    cap.lines.join(""),
+    /Yol B'de açıklama time entry'ye taşınamaz; note'a yazıldı/,
+    "açıklamanın note'a düştüğü uyarıyla söylenmeli",
+  );
+});
+
 test("PATCH /time_entries/:id (idempotent_update) + 500: retry EDİLİR — mutlak SET tekrarı zararsız", async () => {
   const fx = stubFetch([
-    json({ errors: [{ message: "iç hata" }] }, 500),
+    json({ message: "iç hata" }, 500),
     json({ ...TE_REST, id: "TE-3", date: "2026-08-03" }),
   ]);
   const step = {
@@ -471,6 +550,7 @@ test("★ two_step REST'te: PATCH parent → GET ?person&date=bugün (en yeni) �
     // 2/2: düzeltme PATCH'i
     json({ ...TE_REST, id: "TE-YENI", date: "2026-08-03" }),
   ]);
+  const cap = captureStderr(); // 1/2'nin "açıklama note'a düştü" uyarısı stderr'e gider
   try {
     const adapter = new RestXurrentAdapter(cfg());
     const step2 = {
@@ -482,6 +562,7 @@ test("★ two_step REST'te: PATCH parent → GET ?person&date=bugün (en yeni) �
           id: PENDING,
           date: "2026-08-03",
           startedAt: "2026-08-03T14:00:00+03:00",
+          description: "rest testi", // ★ 2. adım description'ı DÜZELTİR (Yol B taşıyamamıştı)
           source: "xurrent-mcp",
           sourceID: "xmcp-abc123",
           clientMutationId: "xmcp-abc123-2",
@@ -493,19 +574,25 @@ test("★ two_step REST'te: PATCH parent → GET ?person&date=bugün (en yeni) �
     const out = await adapter.execute([parentStep(), step2]);
     assert.equal(out.errors.length, 0);
     assert.equal(out.executed, 2);
-    // Ara sorgu: date= paramı BUGÜN olmalı (tam eşleşme; date_from değil)
+    // 1/2: Yol B gövdesi — açıklama note içinde gider (time_entry_description YOK)
+    assert.equal(fx.calls[0].body.note, "Zaman girişi açıklaması: rest testi");
+    assert.equal(fx.calls[0].body.time_entry_description, undefined);
+    // Ara sorgu: date= paramı BUGÜN olmalı (tam eşleşme; aralık operatörü değil)
     const ara = fx.calls.find((c) => c.url.includes("/time_entries?"));
     const sp = new URL(ara.url).searchParams;
     assert.equal(sp.get("person"), "P-ME");
-    assert.ok(sp.get("date"), "iki adım arasında bugünün kayıtları date= ile sorgulanır");
-    // Son çağrı: çözülen id'ye PATCH + source/sourceID gövdede
+    const gun = sp.get("date");
+    assert.match(gun ?? "", /^\d{4}-\d{2}-\d{2}$/, "bugünün kayıtları düz eşitlikle sorgulanır");
+    // Son çağrı: çözülen id'ye PATCH + source/sourceID/description gövdede
     const last = fx.calls[fx.calls.length - 1];
     assert.equal(last.method, "PATCH");
     assert.match(last.url, /\/v1\/time_entries\/TE-YENI$/, "en yeni kayıt (ilk eleman) seçilmeli");
     assert.equal(last.body.sourceID, "xmcp-abc123", "dedup kimliği 2. adımda yazılır");
     assert.equal(last.body.source, "xurrent-mcp");
     assert.equal(last.body.date, "2026-08-03");
+    assert.equal(last.body.description, "rest testi", "nihai kayıtta description DOĞRU yerde biter");
   } finally {
+    cap.restore();
     fx.restore();
   }
 });
@@ -514,7 +601,7 @@ test("findTimeEntryBySourceId: bulunan ilk kayıt normalize döner; boşta null;
   const fx = stubFetch([
     json([TE_REST]),
     json([]),
-    json({ errors: [{ message: "kapı yok" }] }, 404),
+    json({ message: "kapı yok" }, 404),
   ]);
   const cap = captureStderr();
   try {
@@ -532,7 +619,7 @@ test("findTimeEntryBySourceId: bulunan ilk kayıt normalize döner; boşta null;
   }
 });
 
-test("usage: GET /time_entries?person&date_from=haftabaşı — gün ve hafta toplamları", async () => {
+test("usage: GET /time_entries?person&date=>=haftabaşı<=haftasonu — gün ve hafta toplamları", async () => {
   const fx = stubFetch([
     json([
       { date: "2026-08-04", time_spent: 60 },
@@ -545,7 +632,9 @@ test("usage: GET /time_entries?person&date_from=haftabaşı — gün ve hafta to
     const u = await adapter.usage("P-2", "2026-08-04");
     const sp = new URL(fx.calls[0].url).searchParams;
     assert.equal(sp.get("person"), "P-2");
-    assert.ok(sp.get("date_from"), "haftabaşından itibaren sorgulanır");
+    // ★ Kapalı hafta aralığı TEK date değerinin içinde: Pzt 08-03 .. Paz 08-09.
+    assert.equal(sp.get("date"), ">=2026-08-03<=2026-08-09");
+    assert.equal(sp.get("date_from"), null, "date_from GERÇEKTE YOK — gönderilmemeli");
     assert.equal(u.dayMinutes, 90);
     assert.equal(u.weekMinutes, 210);
   } finally {
@@ -555,9 +644,9 @@ test("usage: GET /time_entries?person&date_from=haftabaşı — gün ve hafta to
 
 test("retryMaxAttempts=2 (senaryo g ayarı): kalıcı 500'lü POST toplam 2 deneme + 2 geri-okuma yapar", async () => {
   const fx = stubFetch([
-    json({ errors: [{ message: "kalıcı kırık" }] }, 500), // POST #1
+    json({ message: "kalıcı kırık" }, 500), // POST #1
     json([]), // geri-okuma #1 → yok
-    json({ errors: [{ message: "kalıcı kırık" }] }, 500), // POST #2 (son deneme)
+    json({ message: "kalıcı kırık" }, 500), // POST #2 (son deneme)
     json([]), // geri-okuma #2 → yok
   ]);
   const cap = captureStderr();

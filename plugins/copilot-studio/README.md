@@ -15,8 +15,10 @@ ise oturumları KALDIRDI (bkz. [docs/09](../../docs/09-protokol-gecisi.md)).
 çağı, `/mcp/v2`'de stateless yeni çağı servis eder. Copilot Studio `/mcp/v1`'e
 bağlanır; Claude Code `/mcp/v2` ya da stdio kullanır. **Sözleşme değişmez.**
 
-> ⚠️ Copilot Studio'nun `initialize`'da hangi protokol sürümünü önerdiği gerçek
-> tenant'ta ölçülmeden bilinemez — bkz. docs/08 `DOĞRULANMALI` listesi.
+> ✅ Copilot Studio'nun `initialize`'da hangi sürümü önerdiği tenant'ta görülür —
+> ama **etkisizdir**: `/mcp/v1` ucu dört aday öneriyle ölçüldü (`2024-11-05` →
+> `2025-11-25`) ve dördünde de `200 + Mcp-Session-Id` döndü (D18, docs/08).
+> Müzakere standart MCP istemci davranışıdır.
 
 ## Güvenlik modeli
 

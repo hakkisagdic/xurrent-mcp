@@ -35,9 +35,12 @@ GraphQL geçişi ve `[rest]` geçişi **aynı sayıları** üretmek zorundadır.
 | whoami | **1 istek** (`me` + `account` tek sorguda) | **2 istek** (`GET /me` + `GET /account`) |
 | Zaman bağlamı | 1 istek | **3 istek** (`/timesheet_settings`, `/effort_classes`, `/time_allocations`) |
 | Alan adları | camelCase (`startedAt`) | snake_case (`started_at`) — **`sourceID` hariç** (REST'te de camel!) |
-| İş kuralı hatası | **HTTP 200** + `payload.errors` | **HTTP 422** + `errors[]` gövdesi |
-| Görünen numara | `requestId` / `taskId` alanı | ayrı kavram (`source_display_id` olarak modellendi) |
-| Sayfalama | Relay cursor | (sahte yüzeyde yok — gerçek REST'te `X-Pagination-*`, DOĞRULANMALI) |
+| Referans yazımı | `effortClassId` gibi `…Id` alanları | **İD'SİZ ad + düz id değeri**: `effort_class`, `person`, `time_allocation` |
+| Tarih filtresi | `DateFilter` nesnesi | operatör **değerin içinde**: `?date=>=2026-01-01<=2026-01-31` |
+| İş kuralı hatası | **HTTP 200** + `payload.errors` | **HTTP 422** + `"Validation Failed"` + `[alan, mesaj]` **ikilileri** |
+| Bağlı kayıt | `assignment` (interface) | koşullu `request` / `task` / `problem` / `project_task` alanları |
+| Yol B parametreleri | `timeSpent` + `timeSpentEffortClassId` + `timeEntryDescription` | `time_spent` + `time_spent_effort_class` + `note` — **description taşınamaz** |
+| Sayfalama | Relay cursor | `per_page` (maks 100) + `x-pagination-*` başlıkları + `link` header |
 
 İki hata modeli, docs/01'deki dersin ikizi olarak birleşir: **istemci ne yalnız
 HTTP koduna ne yalnız gövdeye bakabilir; transport'un lehçesini bilmek
@@ -54,9 +57,13 @@ Yol A/B çatalı REST'te de aynıdır: `POST /time_entries` ticket'a bağlayamaz
 `PATCH /requests/:id` artımlı `time_spent` alır (tarih/kişi kontrol edilemez).
 **Kısıt API modelindedir, sorgu dilinde değil** — bölümün ikinci ana cümlesi.
 
-> ⚠️ REST yanıt şekilleri resmî dokümantasyondan ÇIKARIMDIR; sahte yüzeyin
-> `DOĞRULANMALI` işaretleri (hata gövdesi biçimi, sayfalama, `project_tasks`
-> yolları) gerçek tenant'ta sınanmadan kapanmaz — docs/08 listesine eklidir.
+> ✅ **Bu tablo 2026-08-06'da resmî dokümantasyona karşı DOĞRULANDI** (D17,
+> docs/08). İlk taslağımızdaki ALTI varsayım yanlış çıktı — `person_id` gibi
+> id'li adlar, `date_from/date_to` parametreleri, nesne biçimli 422 gövdesi,
+> `assignment` alanı, `time_entry_description`, sayfalamasızlık — ve hepsi
+> hem sahte yüzeyde hem üç adaptörde düzeltildi. Ders: *"dokümantasyondan
+> çıkardım" ile "dokümantasyona karşı doğruladım" aynı şey değildir.* İlkini
+> yazan biz, ikincisini yapınca altı hatasını bulan da biziz.
 
 ## Resmî `Xurrent.GraphQL` .NET SDK'sı: ölçülmüş bir deneme
 

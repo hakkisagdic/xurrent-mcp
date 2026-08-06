@@ -9,9 +9,18 @@ yalnizca wire bicimidir. GraphQL ile bilincli farklar — dersin konusu:
 
   · Alan adlari snake_case'tir (started_at, time_spent) — sourceID HARIC
     (Xurrent REST dokumantasyonu da sourceID yazar).
-  · Validation hatasi HTTP 422 + {errors:[...]} doner — GraphQL'in
-    "HTTP 200 + payload.errors" modelinin tam tersi. Istemci HTTP koduna
-    BAKMAK zorundadir; 422 is kurali reddidir, exception DEGIL, retry DEGIL.
+  · Referans alanlari yazarken ID'SIZ addir ve degeri duz id'dir:
+    person, effort_class, time_allocation, service, customer
+    (developer.xurrent.com/v1/time_entries — person_id DEGIL).
+  · Validation hatasi HTTP 422 + {"message": "Validation Failed",
+    "errors": [["alan", "mesaj"], ...]} doner — IKILI DIZILER, nesne degil
+    (developer.xurrent.com/v1/#http-status-codes). GraphQL'in "HTTP 200 +
+    payload.errors" modelinin tam tersi. Istemci HTTP koduna BAKMAK
+    zorundadir; 422 is kurali reddidir, exception DEGIL, retry DEGIL.
+  · Filtrelerde operator DEGERIN ICINDEDIR: ?date=>=2026-01-01<=2026-01-31
+    (developer.xurrent.com/v1/general/filtering — date_from/date_to YOKTUR).
+  · Diger transport hatalari (429 dahil) govdeyi {"message": "..."} tasir;
+    koleksiyon yanitlari x-pagination-* basliklari getirir.
   · whoami/context tek istekte alinamaz: /me + /account, /timesheet_settings +
     /effort_classes + /time_allocations ayri ayridir (1 sorgu vs N istek).
 
@@ -23,10 +32,11 @@ retry.py'deki AYNI katman kullanilir; REST operasyonlari soyle siniflanir:
   PATCH /requests|tasks/:id-> no_retry          (time_spent ARTIMLI, tekrar =
                                                  cift sayim; ASLA otomatik)
 
-DIKKAT: Bu kod gercek bir Xurrent hesabina karsi CALISTIRILMAMISTIR. Yanit
-sekilleri dokumantasyondan CIKARIMDIR; alan adlari ve hata govdesi bicimi
-DOGRULANMALI'dir (docs/08). Sahte sunucu (tools/fake-xurrent) ayni cikarimi
-taklit eder — wire seviyesinde kanit odur, sema dogrulamasi DEGILDIR.
+Bu lehcenin sekli 2026-08-06'da developer.xurrent.com'a karsi DOGRULANMISTIR
+(alan adlari, hata govdesi, filtre sozdizimi, sayfalama); sahte sunucu
+(tools/fake-xurrent) ayni sekli taklit eder. Kod yine de gercek bir Xurrent
+hesabina karsi CALISTIRILMAMISTIR — canlida kalan belirsizlik sunucunun
+urettigi DEGERLERIN icerigidir, sekli degil (docs/08).
 """
 
 from __future__ import annotations
@@ -165,20 +175,33 @@ class RestXurrentAdapter(XurrentAdapter):
         422 AYRI tiptir: is kurali reddi govdesini tasir ve run_mutation onu
         exception olarak yukari SIZDIRMAZ — sozlesmedeki errors[] sekline
         cevirir. 429/5xx retry politikasinin gordugu tiplerle AYNIDIR.
+
+        Govde bicimleri (2026-08-06'da developer.xurrent.com'a karsi dogrulandi):
+          422   -> {"message": "Validation Failed", "errors": [["alan","mesaj"],...]}
+                   (v1/#http-status-codes — IKILI DIZILER, nesne degil)
+          diger -> {"message": "Too Many Requests"} gibi duz mesaj govdesi
         """
-        body_errors: list[dict[str, Any]] = []
+        parsed: Any = None
         try:
             parsed = response.json()
-            if isinstance(parsed, dict) and isinstance(parsed.get("errors"), list):
-                body_errors = [e for e in parsed["errors"] if isinstance(e, dict)]
         except ValueError:
-            pass
-        first_message = str((body_errors[0].get("message") if body_errors else None) or "")
+            parsed = None
+        body = parsed if isinstance(parsed, dict) else {}
+        # 429/5xx govdesi {"message": ...}; bazi ara katmanlar (ve sahtenin
+        # auth reddi) errors[{message}] sekli dondurebilir — ikisine de bak.
+        top_message = str(body.get("message") or "")
+        if not top_message and isinstance(body.get("errors"), list):
+            for e in body["errors"]:
+                if isinstance(e, dict) and e.get("message"):
+                    top_message = str(e["message"])
+                    break
 
         if response.status_code == 422:
+            normalized = XurrentRestValidationError.normalize_errors(body.get("errors"))
+            first_message = str(normalized[0]["message"]) if normalized else ""
             raise XurrentRestValidationError(
-                f"Xurrent REST 422: {first_message or 'is kurali reddi'}",
-                errors=body_errors,
+                f"Xurrent REST 422: {first_message or top_message or 'is kurali reddi'}",
+                errors=normalized,
             )
 
         retry_after: float | None = None
@@ -190,7 +213,7 @@ class RestXurrentAdapter(XurrentAdapter):
                 retry_after = None  # tarih bicimi vb. — D15, saniye varsayildi
         raise XurrentHttpError(
             f"Xurrent REST HTTP {response.status_code}."
-            + (f" Sunucu mesaji: {first_message}" if first_message else "")
+            + (f" Sunucu mesaji: {top_message}" if top_message else "")
             + " Token/hesap slug'ini kontrol edin.",
             status=response.status_code,
             retry_after=retry_after,
@@ -498,10 +521,11 @@ class RestXurrentAdapter(XurrentAdapter):
             # doner, olusan TimeEntry'yi DEGIL — two_step'in 2. adimi bu yuzden
             # kaydi ayrica bulmak zorundadir (find_latest_time_entry_id).
             parent_id = str(input_payload.get("id") or "")
+            body, body_warnings = self._parent_body(input_payload)
             data = self.execute(
                 "PATCH",
                 f"/{resource}/{parent_id}",
-                json_body=self._parent_body(input_payload),
+                json_body=body,
                 op_class=op_class,
                 op_label=path,
             )
@@ -510,7 +534,14 @@ class RestXurrentAdapter(XurrentAdapter):
                 if isinstance(data, dict)
                 else None
             )
-            return {"timeEntry": None, "errors": [], "parent": parent}
+            return {
+                "timeEntry": None,
+                "errors": [],
+                "parent": parent,
+                # Aciklamanin note'a dusurulmesi SESSIZ kalamaz — write_tools
+                # bu uyarilari sonuc warnings'ine tasir.
+                "warnings": body_warnings,
+            }
 
         except XurrentRestValidationError as exc:
             # ★ 422 = is kurali reddi. Exceptional DEGILDIR ve retry EDILMEMISTIR
@@ -530,8 +561,10 @@ class RestXurrentAdapter(XurrentAdapter):
     def _rest_errors(exc: XurrentRestValidationError) -> list[dict[str, Any]]:
         """REST 422 govdesi -> sozlesme errors[] sekli.
 
-        {message, attribute} -> {message, path:[attribute]}. attribute yoksa
-        path null kalir — GraphQL payload.errors'un path alaniyla ayni anlam.
+        Wire'daki ["alan","mesaj"] ikilileri _raise_http_error'da
+        {attribute, message} ic sekline normallesmisti; burada sozlesmeye
+        cevrilir: mesaj = ikili[1], path = [ikili[0]]. attribute yoksa path
+        null kalir — GraphQL payload.errors'un path alaniyla ayni anlam.
         """
         rows = exc.errors or [{"message": str(exc), "attribute": None}]
         return [
@@ -549,22 +582,28 @@ class RestXurrentAdapter(XurrentAdapter):
         snake_case cevirisi ALAN ALAN ve ACIKTIR — jenerik bir camel->snake
         donusturucu sourceID'yi "source_i_d" yapar ve sessizce yanlis olurdu.
         clientMutationId GraphQL'e ozgudur; REST'e GONDERILMEZ.
+
+        ★ Referans alanlari ID'SIZ addir ve degeri duz id'dir: person,
+        effort_class, time_allocation, service, customer
+        (developer.xurrent.com/v1/time_entries POST parametreleri,
+        2026-08-06'da dogrulandi — person_id/effort_class_id UYDURMAYDI).
+        organization/team ayni belgeli kalibi izler.
         """
         mapping = (
             ("timeSpent", "time_spent"),
             ("date", "date"),
             ("startedAt", "started_at"),
-            ("personId", "person_id"),
+            ("personId", "person"),
             ("description", "description"),
-            ("effortClassId", "effort_class_id"),
-            ("timeAllocationId", "time_allocation_id"),
+            ("effortClassId", "effort_class"),
+            ("timeAllocationId", "time_allocation"),
             ("correction", "correction"),
             ("source", "source"),
             ("sourceID", "sourceID"),  # ★ ISTISNA: REST'te de sourceID yazilir
-            ("customerId", "customer_id"),
-            ("serviceId", "service_id"),
-            ("organizationId", "organization_id"),
-            ("teamId", "team_id"),
+            ("customerId", "customer"),
+            ("serviceId", "service"),
+            ("organizationId", "organization"),
+            ("teamId", "team"),
         )
         return {
             rest_key: input_payload[camel]
@@ -579,15 +618,17 @@ class RestXurrentAdapter(XurrentAdapter):
         two_step'in dayanagi REST'te de aynidir: govdede assignment YOKTUR,
         dolayisiyla bu adim ticket bagini BOZAMAZ. Fark: REST PATCH source ve
         sourceID alanlarini da kabul eder (GraphQL TimeEntryUpdateInput ETMEZ);
-        planlayici gonderirse aynen gecirilir.
+        planlayici gonderirse aynen gecirilir. Referans alanlari POST'taki
+        gibi ID'SIZdir: person, effort_class (developer.xurrent.com/v1/
+        time_entries update parametreleri, 2026-08-06'da dogrulandi).
         """
         mapping = (
             ("timeSpent", "time_spent"),
             ("date", "date"),
             ("startedAt", "started_at"),
-            ("personId", "person_id"),
+            ("personId", "person"),
             ("description", "description"),
-            ("effortClassId", "effort_class_id"),
+            ("effortClassId", "effort_class"),
             ("correction", "correction"),
             ("source", "source"),
             ("sourceID", "sourceID"),
@@ -599,24 +640,39 @@ class RestXurrentAdapter(XurrentAdapter):
         }
 
     @staticmethod
-    def _parent_body(input_payload: dict[str, Any]) -> dict[str, Any]:
+    def _parent_body(
+        input_payload: dict[str, Any],
+    ) -> tuple[dict[str, Any], list[str]]:
         """RequestUpdateInput/TaskUpdateInput -> PATCH /requests|tasks/:id govdesi.
 
-        ⚠️ Gercek REST'te time_spent parametresinin adi/varligi DOGRULANMAMISTIR
-        (docs/08) — davranis GraphQL requestUpdate/taskUpdate ile bilinçli
-        olarak AYNI tutuldu (sahte sunucu da oyle taklit eder).
+        Parametre adlari 2026-08-06'da dogrulandi (developer.xurrent.com/v1/
+        requests, .../v1/tasks): time_spent + time_spent_effort_class (ID'SIZ)
+        + note. time_entry_description diye bir REST parametresi YOKTUR —
+        time entry'nin aciklamasi Yol B'de tasinAMAZ. Kisit saklanmaz, bahane
+        edilmez (CLAUDE.md §8): aciklama note'a dusurulur ve uyari uretilir;
+        two_step'te 2. adimin PATCH /time_entries/:id'i description'i zaten
+        duzeltir, kalici kayit dogru biter.
         """
-        mapping = (
+        body: dict[str, Any] = {}
+        for camel, rest_key in (
             ("timeSpent", "time_spent"),
-            ("timeSpentEffortClassId", "time_spent_effort_class_id"),
-            ("timeEntryDescription", "time_entry_description"),
+            ("timeSpentEffortClassId", "time_spent_effort_class"),
             ("note", "note"),
-        )
-        return {
-            rest_key: input_payload[camel]
-            for camel, rest_key in mapping
-            if input_payload.get(camel) is not None
-        }
+        ):
+            if input_payload.get(camel) is not None:
+                body[rest_key] = input_payload[camel]
+
+        warnings: list[str] = []
+        description = input_payload.get("timeEntryDescription")
+        if description is not None:
+            eklenen = f"Aciklama: {description}"
+            body["note"] = f"{body['note']}\n{eklenen}" if body.get("note") else eklenen
+            warnings.append(
+                "REST Yol B'de aciklama time entry'ye tasinamaz "
+                "(time_entry_description parametresi yok); note'a yazildi — "
+                "two_step 2. adim description'i duzeltir."
+            )
+        return body, warnings
 
     # ------------------------------------------------------------ okumalar
 
@@ -647,14 +703,22 @@ class RestXurrentAdapter(XurrentAdapter):
     ) -> list[dict[str, Any]]:
         """xurrent_list_time_entries — GET /time_entries.
 
-        Parametre adlari sahte sunucuyla BIREBIR ayni olmak zorundadir:
-        person / date_from / date_to / sourceID (snake_case; sourceID istisna).
+        ★ Tarih filtresinde date_from/date_to diye parametreler YOKTUR (ilk
+        taslagimiz oyle uydurmustu). Gercek sozdiziminde operator DEGERIN
+        ICINDEDIR ve hepsi tek "date" parametresinde tasinir
+        (developer.xurrent.com/v1/general/filtering, 2026-08-06'da dogrulandi):
+            ?date=2026-01-15                  esitlik
+            ?date=>=2026-01-01<=2026-01-31    kapali aralik
+        URL kodlamasini httpx yapar; biz ham dizgiyi kurariz.
         """
         params: dict[str, Any] = {"person": person_id}
-        if date_from:
-            params["date_from"] = date_from
-        if date_to:
-            params["date_to"] = date_to
+        date_ops = "".join(
+            op + value
+            for op, value in ((">=", date_from), ("<=", date_to))
+            if value
+        )
+        if date_ops:
+            params["date"] = date_ops
         if source_id:
             params["sourceID"] = source_id
         rows = self.execute("GET", "/time_entries", params=params, op_label="query")
@@ -688,15 +752,27 @@ class RestXurrentAdapter(XurrentAdapter):
         node = raw if isinstance(raw, dict) else {}
         person = node.get("person") or None
         effort = node.get("effort_class") or None
-        assignment_raw = node.get("assignment") or None
+        # ★ REST'te "assignment" diye bir alan YOKTUR: bagli kayit KOSULLU
+        # request / task / problem / project_task referans nesneleri olarak
+        # gelir (developer.xurrent.com/v1/time_entries, 2026-08-06'da
+        # dogrulandi). Ic sozlesmenin {type, id} sekli hangisi varsa ondan
+        # turetilir.
         assignment = None
-        if assignment_raw and assignment_raw.get("id"):
-            assignment = {
-                "type": assignment_raw.get("type"),
-                "id": str(assignment_raw["id"]),
-                # REST assignment referansi UI numarasi tasimaz.
-                "displayId": None,
-            }
+        for rest_key, type_name in (
+            ("request", "Request"),
+            ("task", "Task"),
+            ("problem", "Problem"),
+            ("project_task", "ProjectTask"),
+        ):
+            ref = node.get(rest_key)
+            if isinstance(ref, dict) and ref.get("id"):
+                assignment = {
+                    "type": type_name,
+                    "id": str(ref["id"]),
+                    # REST referans nesnesi UI numarasi tasimaz.
+                    "displayId": None,
+                }
+                break
         return {
             "id": str(node.get("id")),
             "date": node.get("date"),

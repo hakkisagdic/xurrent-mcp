@@ -108,6 +108,22 @@ def test_two_step_tarihi_ve_baslangic_anini_ikinci_adimda_duzeltir(yapilandirma,
     assert "date" not in plan.planned[0].input
 
 
+def test_two_step_ikinci_adim_aciklamayi_da_tasir(yapilandirma, zaman_baglami):
+    """REST Yol B'de time_entry_description parametresi YOKTUR
+    (developer.xurrent.com/v1/requests) — 1. adim aciklamayi ancak note'a
+    dusurebilir. Kalici kaydin dogru bitmesi 2. adimin description'i
+    duzeltmesine baglidir; GraphQL'de ayni deger yeniden yazilir (zararsiz)."""
+    plan = _plan(yapilandirma, zaman_baglami, backdateStrategy="two_step")
+    assert plan.planned[1].input["description"] == "Index calismasi"
+
+
+def test_two_step_aciklama_yoksa_ikinci_adima_description_koymaz(
+    yapilandirma, zaman_baglami
+):
+    plan = _plan(yapilandirma, zaman_baglami, backdateStrategy="two_step", description=None)
+    assert "description" not in plan.planned[1].input
+
+
 def test_two_step_atomik_olmadigini_uyari_olarak_soyler(yapilandirma, zaman_baglami):
     """Kismi basari GERCEK bir risktir ve saklanmaz."""
     plan = _plan(yapilandirma, zaman_baglami, backdateStrategy="two_step")
