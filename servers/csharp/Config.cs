@@ -46,6 +46,20 @@ public sealed class AppConfig
     public string XurrentAccount { get; init; } = "";
     public string XurrentGraphqlUrl { get; init; } = "https://graphql.xurrent.com";
 
+    /// <summary>
+    /// XURRENT_API — live modda hangi transportun konuşulacağı (bkz. docs/16).
+    ///   "graphql"     → varsayılan; elle yazılmış GraphQL adaptörü (LiveAdapter).
+    ///   "rest"        → developer.xurrent.com/v1 REST adaptörü (RestAdapter).
+    ///   "graphql-sdk" → resmî Xurrent.GraphQL NuGet SDK'sı (SdkLiveAdapter).
+    /// ★ "graphql-sdk" YALNIZCA C#'ta vardır: TS/Python bilinçli olarak bu değeri
+    /// tanımaz — ders "vendor SDK vs elle yazılmış istemci, TEK sözleşme altında"
+    /// karşılaştırmasını C# üzerinden verir.
+    /// </summary>
+    public string XurrentApi { get; init; } = "graphql";
+
+    /// <summary>REST v1 taban adresi. Sahte sunucuya yönlendirme: http://127.0.0.1:4000/v1</summary>
+    public string XurrentRestUrl { get; init; } = "https://api.xurrent.com/v1";
+
     // ── 2) Güvenlik anahtarları ──────────────────────────────────────────────
     public bool XurrentDryRun { get; init; }
 
@@ -66,8 +80,34 @@ public sealed class AppConfig
     /// <summary>requestState yaşam süresi (saniye). Spec'in önerdiği pencere 5 dakikadır.</summary>
     public int StateTtlSeconds { get; init; } = 300;
 
+    /// <summary>
+    /// timesheet_wizard sessionState yaşam süresi (saniye). Varsayılan 1800 —
+    /// çok adımlı sohbet, requestState'in 300'ünden bilinçli olarak uzundur
+    /// (contract/wizard.md §4).
+    /// </summary>
+    public int WizardTtlSeconds { get; init; } = 1800;
+
     /// <summary>MCP_PROTOCOL ortam değişkeninin çözülmüş hâli (K1).</summary>
     public ProtocolChoice McpProtocol { get; init; } = ProtocolChoice.V2;
+
+    // ── 2b) Güvenilirlik düğmeleri (contract/reliability.md §3, §4, §7) ──────
+    // Üç dil de aynı dört env anahtarını okur; politika TEK yerde tanımlıdır.
+
+    /// <summary>Toplam deneme sayısı, İLK istek DAHİL. 1 = retry tamamen kapalı.</summary>
+    public int RetryMaxAttempts { get; init; } = 5;
+
+    /// <summary>Üstel geri çekilmenin tabanı (ms): bekleme = rastgele(0, min(CAP, BASE·2^(k-1))).</summary>
+    public int RetryBaseMs { get; init; } = 500;
+
+    /// <summary>Tek bir beklemenin tavanı (ms).</summary>
+    public int RetryCapMs { get; init; } = 8000;
+
+    /// <summary>
+    /// Adaptör gazı: iki HTTP isteği arasındaki minimum boşluk (ms). Xurrent sınırı
+    /// 20 istek / 2 sn → varsayılan 110. Retry tekrarları DAHİL her istek bu kapıdan geçer;
+    /// bulk döngülerinde ayrıca bekleme YOKTUR — gaz tek yerde yaşar (reliability.md §4).
+    /// </summary>
+    public int MinRequestGapMs { get; init; } = 110;
 
     // ── 3) Backdating stratejisi ─────────────────────────────────────────────
     public string BackdateStrategy { get; init; } = "two_step";
@@ -119,6 +159,17 @@ public sealed class AppConfig
     public int WebPort { get; init; } = 8787;
     public int McpHttpPort { get; init; } = 8788;
 
+    // ── 8) HTTP yüzeyi — dış istemciler (.env.example §8) ────────────────────
+
+    /// <summary>
+    /// MCP_API_KEY — HTTP transport kapısı. BOŞSA sunucu yalnız loopback'e bağlanır
+    /// (mevcut güvenlik duruşu). DOLUYSA 0.0.0.0'a bağlanır ve her /mcp* isteğinde
+    /// X-MCP-Api-Key başlığının bu değere eşit olması zorunludur (sabit-zamanlı
+    /// karşılaştırma — Agent/HttpKapi.AnahtarUygun). Xurrent PAT'i ile KARIŞTIRMAYIN:
+    /// bu anahtar MCP sunucusunun kendisini korur, Xurrent kimliği sunucuda kalır.
+    /// </summary>
+    public string McpApiKey { get; init; } = "";
+
     // ── Türetilmiş yollar ────────────────────────────────────────────────────
     public string RepoRoot { get; init; } = "";
     public string FixturesDir { get; init; } = "";
@@ -166,6 +217,8 @@ public sealed class AppConfig
             XurrentToken = Env("XURRENT_TOKEN"),
             XurrentAccount = Env("XURRENT_ACCOUNT"),
             XurrentGraphqlUrl = Env("XURRENT_GRAPHQL_URL", "https://graphql.xurrent.com"),
+            XurrentApi = ParseApi(Env("XURRENT_API", "graphql")),
+            XurrentRestUrl = Env("XURRENT_REST_URL", "https://api.xurrent.com/v1"),
 
             XurrentDryRun = EnvBool("XURRENT_DRY_RUN"),
             XurrentConfirmPolicy = Env("XURRENT_CONFIRM_POLICY", "closed"),
@@ -176,7 +229,13 @@ public sealed class AppConfig
                 ? s
                 : Convert.ToHexString(RandomNumberGenerator.GetBytes(32)),
             StateTtlSeconds = EnvInt("XURRENT_STATE_TTL", 300),
+            WizardTtlSeconds = EnvInt("XURRENT_WIZARD_TTL", 1800),
             McpProtocol = ParseProtocol(Env("MCP_PROTOCOL", "2026-07-28")),
+
+            RetryMaxAttempts = EnvInt("XURRENT_RETRY_MAX_ATTEMPTS", 5),
+            RetryBaseMs = EnvInt("XURRENT_RETRY_BASE_MS", 500),
+            RetryCapMs = EnvInt("XURRENT_RETRY_CAP_MS", 8000),
+            MinRequestGapMs = EnvInt("XURRENT_MIN_REQUEST_GAP_MS", 110),
 
             BackdateStrategy = Env("XURRENT_BACKDATE_STRATEGY", "two_step"),
             MaxBackdateDays = EnvInt("XURRENT_MAX_BACKDATE_DAYS", 1),
@@ -207,8 +266,24 @@ public sealed class AppConfig
             GeminiBaseUrl = Env("GEMINI_BASE_URL", Llm.GeminiClient.DefaultBaseUrl),
             WebPort = EnvInt("WEB_PORT", 8787),
             McpHttpPort = EnvInt("MCP_HTTP_PORT", 8788),
+            McpApiKey = Env("MCP_API_KEY"),
         };
     }
+
+    /// <summary>
+    /// XURRENT_API çözümlemesi. MCP_PROTOCOL ile aynı ilke: bilinmeyen değer
+    /// SESSİZCE varsayılana düşmez — yapılandırma hatası çalışma anında görünmelidir.
+    /// </summary>
+    private static string ParseApi(string raw) => raw.Trim().ToLowerInvariant() switch
+    {
+        "graphql" => "graphql",
+        "rest" => "rest",
+        // ★ C#'a özgü üçüncü değer (resmî Xurrent.GraphQL SDK'sı) — TS/Python bilerek tanımaz.
+        "graphql-sdk" => "graphql-sdk",
+        var other => throw new InvalidOperationException(
+            $"XURRENT_API değeri geçersiz: '{other}'. " +
+            "İzinli değerler: graphql (varsayılan) | rest | graphql-sdk (yalnız C#)."),
+    };
 
     // Repo kökü: contract/tools.json'ın bulunduğu dizin. Hem `dotnet run` (cwd = proje)
     // hem de derlenmiş apphost (bin/Debug/net10.0) senaryosunda çalışsın diye

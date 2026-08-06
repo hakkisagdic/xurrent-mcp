@@ -10,6 +10,14 @@ public sealed record ListOpenWorkArgs(
     string? AfterTasks,
     string View);
 
+/// <summary>xurrent_list_time_entries girdisi. Tarih aralığı DAHİLDİR (from ≤ date ≤ to).</summary>
+public sealed record ListTimeEntriesArgs(
+    string PersonId,
+    string? DateFrom,
+    string? DateTo,
+    string? SourceId,
+    int First);
+
 /// <summary>Bir mutation'ın sonucu. Xurrent doğrulama hatalarını HTTP 200 + errors[] ile döner.</summary>
 public sealed record MutationOutcome(JsonObject? TimeEntry, IReadOnlyList<ValidationError> Errors)
 {
@@ -46,6 +54,21 @@ public interface IXurrentAdapter
 
     /// <summary>allowWorkdayOvertime=false kontrolü için: kişinin o gün YAZILMIŞ toplam dakikası.</summary>
     Task<int> GetLoggedMinutesAsync(string personId, DateOnly date, CancellationToken ct);
+
+    /// <summary>
+    /// Dedup geri-okuması (contract/reliability.md §5): deterministik sourceID ile
+    /// mevcut TimeEntry'yi arar; yoksa null. İKİ yerde kullanılır:
+    ///   1) yazma ÖNCESİ dedup (Strategies.RunAsync — mock'ta da live'da da çalışır),
+    ///   2) guarded_create'in belirsiz-hata geri-okuması (LiveAdapter).
+    /// </summary>
+    Task<JsonObject?> FindTimeEntryBySourceIdAsync(string sourceId, CancellationToken ct);
+
+    /// <summary>
+    /// Yazılmış zaman girişlerini okur (xurrent_list_time_entries). Geri-okuma
+    /// doğrulamasının ve dedup'ın resmî gözü: "gerçekten yazıldı mı, kaç kez yazıldı?"
+    /// Mock'ta bellek içi store filtrelenir; live'da TEK timeEntries sorgusu gider.
+    /// </summary>
+    Task<TimeEntryPage> ListTimeEntriesAsync(ListTimeEntriesArgs args, CancellationToken ct);
 
     /// <summary>Planlanmış TEK bir mutation'ı çalıştırır. Bulk = N kez sıralı çağrı.</summary>
     Task<MutationOutcome> ExecuteAsync(PlannedMutation step, CancellationToken ct);

@@ -151,12 +151,41 @@ public static class Narrate
         return sb.ToString();
     }
 
+    public static string TimeEntries(TimeEntryPage r)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine($"Hesap: {r.AccountId} · {r.TimeEntries.Count} zaman girişi · toplam {HumanMinutes(r.TotalMinutes)}");
+        if (r.TimeEntries.Count == 0)
+        {
+            sb.Append("Filtreye uyan kayıt yok. Yazma raporuna güvenmek yerine geri-okuma yapan taraf " +
+                      "için bu da bir CEVAPTIR: 'yazılmamış'.");
+            return sb.ToString();
+        }
+        sb.AppendLine();
+        foreach (var e in r.TimeEntries)
+        {
+            var hedef = e.Assignment is null
+                // Yol A kaydı: assignment NULL — ticket'a bağlı DEĞİL (dersin kalbi).
+                ? "bağlı ticket YOK (Yol A)"
+                : $"{e.Assignment.Type} #{e.Assignment.DisplayId ?? e.Assignment.Id}";
+            sb.AppendLine($"  • {e.Date} · {HumanMinutes(e.TimeSpent)} · {e.Description ?? "(açıklamasız)"}");
+            sb.AppendLine($"    {hedef}" +
+                          (e.Correction == true ? " · DÜZELTME kaydı" : "") +
+                          (e.SourceId is null ? "" : $" · sourceID: {e.SourceId}"));
+        }
+        sb.Append("Not: sourceID, idempotency anahtarıdır — kısmen başarısız bir bulk'tan sonra " +
+                  "'hangi kalemler yazılmış' sorusunu bu alan cevaplar (contract/reliability.md §5).");
+        return sb.ToString();
+    }
+
     public static string Write(WriteResult r)
     {
         var sb = new StringBuilder();
         sb.AppendLine(r.DryRun
             ? "DRY-RUN — hiçbir mutation gönderilmedi. Aşağıdaki plan YALNIZCA önizlemedir."
-            : "YAZILDI — mutation'lar Xurrent'a gönderildi.");
+            : r.Deduped == true
+                ? "DEDUP — yazma ATLANDI: aynı sourceID'li kayıt zaten vardı; mevcut kayıt döndürüldü."
+                : "YAZILDI — mutation'lar Xurrent'a gönderildi.");
         sb.AppendLine($"Strateji: {r.Strategy}");
         if (!string.IsNullOrWhiteSpace(r.StrategyExplanation)) sb.AppendLine($"  {r.StrategyExplanation}");
         sb.AppendLine();
@@ -182,7 +211,8 @@ public static class Narrate
         else if (!r.DryRun)
         {
             sb.AppendLine();
-            sb.Append($"Oluşan kayıt: {r.TimeEntry?["id"]?.GetValue<string>() ?? "(id dönmedi)"}");
+            sb.Append($"{(r.Deduped == true ? "Mevcut kayıt" : "Oluşan kayıt")}: " +
+                      $"{r.TimeEntry?["id"]?.GetValue<string>() ?? "(id dönmedi)"}");
         }
         return sb.ToString().TrimEnd();
     }
@@ -193,7 +223,7 @@ public static class Narrate
         sb.AppendLine(r.DryRun ? "DRY-RUN — hiçbir satır yazılmadı." : "TOPLU YAZMA tamamlandı.");
         sb.AppendLine($"İstenen {r.Summary.Requested} · oluşan {r.Summary.Created} · " +
                       $"başarısız {r.Summary.Failed} · atlanan {r.Summary.Skipped} · " +
-                      $"toplam {HumanMinutes(r.Summary.TotalMinutes)}");
+                      $"dedup {r.Summary.Deduped} · toplam {HumanMinutes(r.Summary.TotalMinutes)}");
         sb.AppendLine();
         foreach (var row in r.Results)
         {

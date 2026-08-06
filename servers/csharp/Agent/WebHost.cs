@@ -102,34 +102,162 @@ public static class WebHost
         return 0;
     }
 
-    /// <summary>mod: http — MCP Streamable HTTP transport. Uzak MCP client'lar buraya bağlanır.</summary>
+    /// <summary>
+    /// mod: http — MCP Streamable HTTP transport (WP6, uyumlaştırılmış yollar).
+    ///
+    /// YOL TABLOSU (HttpKapi.YolTablosu — üç dil aynı tabloyu servis eder):
+    ///   MCP_PROTOCOL tek dönem → /mcp (o dönemin session duruşuyla)
+    ///   MCP_PROTOCOL=both      → /mcp/v1 (2025-11-25, SESSIONFUL: initialize
+    ///                            Mcp-Session-Id üretir) + /mcp/v2 (2026-07-28,
+    ///                            STATELESS) + /mcp = v2 takma adı.
+    ///
+    /// ★ NEDEN 'both' modda İKİ Kestrel: SDK'da session duruşu
+    /// HttpServerTransportOptions.Stateless ile seçilir ve bu ayar DI konteyneri
+    /// başına TEKTİR (StreamableHttpHandler singleton'dır — sonda ile doğrulandı).
+    /// Stateful sunucu 2026-07-28 isteğini bilerek REDDEDER, stateless sunucu ise
+    /// Mcp-Session-Id üretmez — yani tek pipeline iki duruşu birden VEREMEZ.
+    /// Çözüm: v1 pipeline'ı iç loopback portta ayrı bir Kestrel'de yaşar; ana
+    /// uygulama /mcp/v1 isteklerini oraya AYNEN iletir. Dışarıdan tek port görünür.
+    ///
+    /// MCP_API_KEY kapısı (HttpKapi.AnahtarUygun — .env §8): anahtar BOŞ → yalnız
+    /// loopback dinlenir (mevcut duruş, kapı yok). DOLU → 0.0.0.0 dinlenir ve HER
+    /// /mcp* isteği X-MCP-Api-Key başlığını sabit-zamanlı karşılaştırmayla geçmek
+    /// zorundadır; aksi hâlde kısa Türkçe gövdeli 401. Tüm dönemlere uygulanır.
+    /// </summary>
     public static async Task<int> RunMcpHttpAsync(AppConfig cfg, CancellationToken ct)
+    {
+        // ── 'both': v1 (sessionful) pipeline iç loopback Kestrel'inde ──────────
+        WebApplication? v1App = null;
+        Uri? v1Hedef = null;
+        if (cfg.McpProtocol == ProtocolChoice.Both)
+        {
+            v1App = BuildMcpApp(cfg, ProtocolChoice.V1, stateless: false,
+                url: "http://127.0.0.1:0", mapPath: "/mcp/v1");
+            await v1App.StartAsync(ct);
+            v1Hedef = new Uri(v1App.Urls.First());
+        }
+
+        // ── ana uygulama: tek dönemin duruşu, ya da 'both' için v2 (stateless) ─
+        var anaProtokol = cfg.McpProtocol == ProtocolChoice.Both ? ProtocolChoice.V2 : cfg.McpProtocol;
+        var builder = WebApplication.CreateBuilder();
+        builder.Logging.ClearProviders();
+        builder.Logging.AddConsole();
+        builder.WebHost.UseUrls(HttpKapi.DinlemeAdresi(cfg.McpApiKey, cfg.McpHttpPort));
+
+        builder.Services.AddXurrentServices(cfg);
+        builder.Services.AddXurrentMcpServer(cfg, anaProtokol)
+            // Session duruşu sözleşmenin parçasıdır: v1 sessionful, v2 stateless.
+            .WithHttpTransport(o => o.Stateless = anaProtokol != ProtocolChoice.V1);
+
+        var app = builder.Build();
+
+        // API anahtarı kapısı — TÜM /mcp* yolları (proxy'lenen /mcp/v1 dahil).
+        app.Use(async (http, next) =>
+        {
+            if (http.Request.Path.StartsWithSegments("/mcp")
+                && !HttpKapi.AnahtarUygun(cfg.McpApiKey, http.Request.Headers["X-MCP-Api-Key"]))
+            {
+                http.Response.StatusCode = 401;
+                http.Response.ContentType = "application/json; charset=utf-8";
+                await http.Response.WriteAsync(
+                    """{"error":"Yetkisiz: X-MCP-Api-Key başlığı eksik veya hatalı."}""",
+                    http.RequestAborted);
+                return;
+            }
+            await next();
+        });
+
+        if (cfg.McpProtocol == ProtocolChoice.Both)
+        {
+            // /mcp/v1 → iç sessionful Kestrel'e vekâlet (yol aynen korunur).
+            var proxyClient = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
+            app.Use(async (http, next) =>
+            {
+                if (http.Request.Path.StartsWithSegments("/mcp/v1"))
+                {
+                    await ProxyAsync(http, proxyClient, v1Hedef!);
+                    return;
+                }
+                await next();
+            });
+
+            app.MapMcp("/mcp/v2");
+            app.MapMcp("/mcp");     // v2 takma adı — güncel dönem varsayılan kapıdır
+        }
+        else
+        {
+            app.MapMcp("/mcp");
+        }
+
+        foreach (var yol in HttpKapi.YolTablosu(cfg.McpProtocol))
+            Console.WriteLine($"MCP Streamable HTTP: http://localhost:{cfg.McpHttpPort}{yol.Yol}  " +
+                              $"({yol.ProtokolSurumu}, {(yol.Sessionful ? "sessionful" : "stateless")})");
+        if (!string.IsNullOrEmpty(cfg.McpApiKey))
+            Console.WriteLine("MCP_API_KEY etkin: 0.0.0.0 dinleniyor, /mcp* için X-MCP-Api-Key zorunlu.");
+
+        await app.RunAsync(ct);
+        if (v1App is not null) await v1App.StopAsync(CancellationToken.None);
+        return 0;
+    }
+
+    /// <summary>Tek duruşlu bir MCP pipeline'ı kurar ('both' modunun iç v1 sunucusu).</summary>
+    private static WebApplication BuildMcpApp(
+        AppConfig cfg, ProtocolChoice protokol, bool stateless, string url, string mapPath)
     {
         var builder = WebApplication.CreateBuilder();
         builder.Logging.ClearProviders();
         builder.Logging.AddConsole();
-        builder.WebHost.UseUrls($"http://localhost:{cfg.McpHttpPort}");
-
+        builder.WebHost.UseUrls(url);
         builder.Services.AddXurrentServices(cfg);
-        builder.Services.AddXurrentMcpServer(cfg).WithHttpTransport();
-
+        builder.Services.AddXurrentMcpServer(cfg, protokol)
+            .WithHttpTransport(o => o.Stateless = stateless);
         var app = builder.Build();
-        app.MapMcp();   // POST/GET /  (Streamable HTTP)
+        app.MapMcp(mapPath);
+        return app;
+    }
 
-        if (cfg.McpProtocol == ProtocolChoice.Both)
+    /// <summary>
+    /// Minimal ters vekil: yöntem + yol + başlıklar + gövde aynen iletilir, yanıt
+    /// AKTARILIRKEN parça parça flush edilir (SSE akışı tamponlanırsa ÖLÜR).
+    /// Mcp-Session-Id başlığı iki yönde de dokunulmadan geçer — v1'in session
+    /// sözleşmesi vekilin arkasında da aynen görünür.
+    /// </summary>
+    private static async Task ProxyAsync(HttpContext http, HttpClient client, Uri hedefKok)
+    {
+        var hedef = new UriBuilder(hedefKok)
         {
-            // K1 — 'both' yalnızca HTTP'de anlamlıdır: iki revizyon iki ayrı YOLDA yayınlanır.
-            // NEDEN tek sunucu örneği yetiyor: ModelContextProtocol 2.0.0 aynı örnekte hem
-            // initialize el sıkışmasını hem server/discover + per-request _meta akışını konuşur.
-            // Yollar client tarafında ayrımı kolaylaştırmak içindir, ayrı süreç/proje GEREKMEZ.
-            app.MapMcp("/mcp/v1");
-            app.MapMcp("/mcp/v2");
-            Console.WriteLine($"MCP Streamable HTTP (both): http://localhost:{cfg.McpHttpPort}/mcp/v1 · /mcp/v2");
+            Path = http.Request.Path.Value,
+            Query = http.Request.QueryString.Value ?? "",
+        }.Uri;
+
+        using var istek = new HttpRequestMessage(new HttpMethod(http.Request.Method), hedef);
+        if (http.Request.ContentLength is > 0 || http.Request.Headers.ContainsKey("Transfer-Encoding"))
+            istek.Content = new StreamContent(http.Request.Body);
+
+        foreach (var h in http.Request.Headers)
+        {
+            if (h.Key.Equals("Host", StringComparison.OrdinalIgnoreCase)) continue;
+            if (!istek.Headers.TryAddWithoutValidation(h.Key, (IEnumerable<string?>)h.Value))
+                istek.Content?.Headers.TryAddWithoutValidation(h.Key, (IEnumerable<string?>)h.Value);
         }
 
-        Console.WriteLine($"MCP Streamable HTTP: http://localhost:{cfg.McpHttpPort}");
-        await app.RunAsync(ct);
-        return 0;
+        using var yanit = await client.SendAsync(
+            istek, HttpCompletionOption.ResponseHeadersRead, http.RequestAborted);
+
+        http.Response.StatusCode = (int)yanit.StatusCode;
+        foreach (var h in yanit.Headers) http.Response.Headers[h.Key] = h.Value.ToArray();
+        foreach (var h in yanit.Content.Headers) http.Response.Headers[h.Key] = h.Value.ToArray();
+        // Kestrel gövdeyi kendisi çerçeveler; iç sunucunun chunk başlığı taşınmaz.
+        http.Response.Headers.Remove("transfer-encoding");
+
+        await using var kaynak = await yanit.Content.ReadAsStreamAsync(http.RequestAborted);
+        var tampon = new byte[8192];
+        int okunan;
+        while ((okunan = await kaynak.ReadAsync(tampon, http.RequestAborted)) > 0)
+        {
+            await http.Response.Body.WriteAsync(tampon.AsMemory(0, okunan), http.RequestAborted);
+            await http.Response.Body.FlushAsync(http.RequestAborted);   // SSE için şart
+        }
     }
 
     // ── SSE alıcısı ──────────────────────────────────────────────────────────

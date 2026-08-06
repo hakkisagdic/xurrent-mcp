@@ -209,7 +209,7 @@ public class GecersizParamsTests
         // Oturum gerçekten ayakta mı? Üçüncü bir istek daha.
         var liste = await o.IstekAsync(4, "tools/list", """{"_meta":META}""");
         Assert.Null(liste["error"]);
-        Assert.Equal(8, liste["result"]!["tools"]!.AsArray().Count);
+        Assert.Equal(10, liste["result"]!["tools"]!.AsArray().Count);
     }
 
     [Fact]

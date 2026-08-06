@@ -152,6 +152,60 @@ public static class Queries
         }
         """;
 
+    // ── Zaman girişi geri-okuması (xurrent_list_time_entries) ────────────────
+    // TEK sorgu; filtre parçaları yalnızca VERİLEN argümanlar için üretilir.
+    // NEDEN: values: [null] göndermek "null'a eşit olanları getir" demektir —
+    // boş filtreyi hiç yazmamak tek doğru davranıştır. Değişken adları sabittir:
+    // personId / dateFrom / dateTo / sourceID (sahte sunucu bu adlarla eşleşir;
+    // D14 — gerçek TimeEntryFilter'da sourceID filtresinin varlığı DOĞRULANMALI).
+    public static string ListTimeEntries(bool hasDateFrom, bool hasDateTo, bool hasSourceId)
+    {
+        var decls = "$personId: String!, $first: Int!";
+        var filter = "person: { values: [$personId] }";
+
+        if (hasDateFrom && hasDateTo)
+        {
+            decls += ", $dateFrom: ISO8601Date!, $dateTo: ISO8601Date!";
+            filter += "\n              date: { greaterThanOrEqualTo: $dateFrom, lessThanOrEqualTo: $dateTo }";
+        }
+        else if (hasDateFrom)
+        {
+            decls += ", $dateFrom: ISO8601Date!";
+            filter += "\n              date: { greaterThanOrEqualTo: $dateFrom }";
+        }
+        else if (hasDateTo)
+        {
+            decls += ", $dateTo: ISO8601Date!";
+            filter += "\n              date: { lessThanOrEqualTo: $dateTo }";
+        }
+
+        if (hasSourceId)
+        {
+            decls += ", $sourceID: String!";
+            filter += "\n              sourceID: { values: [$sourceID] }";
+        }
+
+        return $$"""
+            query ListTimeEntries({{decls}}) {
+              timeEntries(first: $first, view: all, filter: {
+              {{filter}}
+              }) {
+                nodes {
+                  id date startedAt timeSpent description correction
+                  source sourceID
+                  person { id name }
+                  effortClass { id name }
+                  assignment {
+                    __typename
+                    ... on Request { id requestId }
+                    ... on Task { id taskId }
+                  }
+                }
+              }
+            }
+            """;
+    }
+
     // ── YOL A: timeEntryCreate ───────────────────────────────────────────────
     // DİKKAT: TimeEntryCreateInput içinde requestId / taskId / assignmentId ALANI YOKTUR.
     // Bu mutation ile oluşan kaydın assignment değeri NULL'dır — ticket'a bağlanmaz.

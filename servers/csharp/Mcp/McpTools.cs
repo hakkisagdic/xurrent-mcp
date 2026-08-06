@@ -53,7 +53,7 @@ public static class McpTools
     private const string ConfirmField = "onay";
 
     /// <summary>
-    /// 8 tool'u contract/tools.json SIRASIYLA kaydeder.
+    /// 10 tool'u contract/tools.json SIRASIYLA kaydeder.
     /// Sıra önemlidir: tools/list deterministik dönmeli (LLM prompt cache isabeti).
     /// </summary>
     public static IMcpServerBuilder AddXurrentTools(this IMcpServerBuilder builder)
@@ -116,6 +116,22 @@ public static class McpTools
                 "(2) normalize edilmiş metin benzerliği, (3) hiçbiri tutmazsa needsUserDecision=true. " +
                 "roundedMinutes her zaman timeIncrement katına yuvarlanır ve yuvarlama HER ZAMAN warnings'e yazılır.",
                 ToolFlags.Read),
+
+            [ToolNames.ListTimeEntries] = (ListTimeEntries, "Zaman girişlerini geri oku",
+                "Yazılmış zaman girişlerini okur — geri-okuma doğrulaması ve dedup'ın resmî gözü: " +
+                "'gerçekten yazıldı mı, kaç kez yazıldı?' sorusunun cevabı. " +
+                "sourceId filtresi idempotency anahtarıyla NOKTA arama yapar: kısmen başarısız bir " +
+                "bulk'tan sonra hangi kalemlerin yazıldığı bu tool ile görülür (contract/reliability.md §5). " +
+                "Tarih aralığı dahildir (dateFrom ≤ date ≤ dateTo).",
+                ToolFlags.Read),
+
+            [ToolNames.TimesheetWizard] = (RunTimesheetWizard, "Zaman girişi sohbet sihirbazı",
+                "Sunucu-güdümlü sohbet: LLM'siz host'ta bile (Copilot Studio, terminal REPL) zaman girişi " +
+                "akışını uçtan uca yürüten deterministik durum makinesi. Host yalnızca kullanıcı cümlesini " +
+                "utterance olarak iletir, dönen nextQuestion'ı gösterir ve sessionState'i AYNEN geri gönderir. " +
+                "Tam sözleşme: contract/wizard.md. Bu tool LLM sağlayıcılarına ÇEVRİLMEZ " +
+                "(Gemini functionDeclarations listesine girmez — kendi kendini çağırma döngüsü kapalıdır).",
+                ToolFlags.Write),
         };
 
         foreach (var name in ToolContracts.Order)
@@ -245,6 +261,44 @@ public static class McpTools
             cfg, adapter, calendar, personId, date, timeZone, provider,
             defaultTargetType, defaultTargetId, roundingMode, ct);
         return Ok(Narrate.Plan(r), r);
+    }
+
+    private static async Task<CallToolResult> ListTimeEntries(
+        IXurrentAdapter adapter,
+        [Description("Person node ID veya '$me'. Varsayılan '$me'.")]
+        string personId = "$me",
+        [Description("Bu tarihten itibaren, DAHİL (YYYY-MM-DD).")]
+        string? dateFrom = null,
+        [Description("Bu tarihe kadar, DAHİL (YYYY-MM-DD).")]
+        string? dateTo = null,
+        [Description("İdempotency anahtarıyla nokta arama (dedup geri-okuması, xmcp-… biçimli).")]
+        string? sourceId = null,
+        [Description("Sayfa boyutu (1-100). Varsayılan 25.")]
+        int first = 25,
+        CancellationToken ct = default)
+    {
+        var r = await ToolImpl.ListTimeEntriesAsync(adapter, personId, dateFrom, dateTo, sourceId, first, ct);
+        return Ok(Narrate.TimeEntries(r), r);
+    }
+
+    /// <summary>
+    /// timesheet_wizard — kind "chat". Onay MCP elicitation'ından DEĞİL, sihirbazın kendi
+    /// confirm adımından gelir; write geçişi plannedFingerprint ile korunur (wizard.md §4).
+    /// Bu yüzden RequestContext'e ihtiyaç duymaz — her yanıt complete bir sonuçtur (ince host).
+    /// </summary>
+    private static async Task<CallToolResult> RunTimesheetWizard(
+        AppConfig cfg,
+        IXurrentAdapter adapter,
+        CalendarFactory calendar,
+        [Description("Kullanıcının son cümlesi (ilk çağrıda boş olabilir).")]
+        string? utterance = null,
+        [Description("Önceki yanıttan AYNEN geri gönderilen imzalı opak durum.")]
+        string? sessionState = null,
+        CancellationToken ct = default)
+    {
+        var r = await TimesheetWizard.RunAsync(cfg, adapter, calendar, utterance, sessionState, ct);
+        // reply zaten kullanıcıya gösterilecek Türkçe metindir — text bloğu odur.
+        return Ok(r.Reply, r);
     }
 
     // ── Yazma tool'ları (onay akışı burada protokole çevrilir) ───────────────

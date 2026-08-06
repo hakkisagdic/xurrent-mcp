@@ -25,8 +25,10 @@ public static class Strategies
     /// <summary>two_step'in 2. adımında 1. adımın çıktısı yerine geçen yer tutucu.</summary>
     public const string PreviousEntryIdPlaceholder = "{{step1.timeEntryId}}";
 
-    /// <summary>Rate limit 20 istek / 2 saniye -> istekler arası en az 110 ms.</summary>
-    public const int RateLimitDelayMs = 110;
+    // NOT: Eskiden burada RateLimitDelayMs=110 sabiti vardı ve adımlar/bulk satırları
+    // arasında elle Task.Delay yapılıyordu. Gaz artık ADAPTÖR seviyesinde yaşıyor
+    // (LiveAdapter.ThrottleAsync + XURRENT_MIN_REQUEST_GAP_MS): retry tekrarları dahil
+    // HER isteği kapsar; iki ayrı yerde yaşayan gazın biri eninde sonunda unutulurdu.
 
     private static readonly Dictionary<string, string> Explanations = new()
     {
@@ -140,14 +142,36 @@ public static class Strategies
         if (globalDryRun)
             return new WriteResult(true, strategy, Explanations[strategy], planned, warnings, null, errors);
 
+        // ── Yazma ÖNCESİ dedup (yalnız Yol A — reliability.md §5) ───────────
+        // Plan timeEntryCreate ile başlıyorsa deterministik sourceID önce GERİ OKUNUR:
+        // kayıt varsa bu komut daha önce çalışmış demektir — yazma ATLANIR, mevcut
+        // kayıt deduped=true ile döndürülür. Bulk'ın "aynı komutla tekrar çalıştır"
+        // kurtarma yolu tamamen bu kontrole dayanır.
+        //
+        // ★ ASİMETRİ BİLİNÇLİ: two_step/link_first planları bir parent update ile
+        // başlar; orada sourceID TAŞINAMAZ (input kabul etmez) → dedup YOKTUR.
+        // Yol B'nin koruması dedup değil, belirsiz hatada retry YASAĞIDIR (§2).
+        if (planned[0].Path == "timeEntryCreate")
+        {
+            var existing = await adapter.FindTimeEntryBySourceIdAsync(sourceId, ct);
+            ReliabilityTrace.Dedup(sourceId, existing is not null);
+            if (existing is not null)
+            {
+                warnings.Add($"Aynı sourceID'li kayıt zaten var — yazma atlandı (dedup). sourceID={sourceId}. " +
+                             "Bu, aynı girdiyle daha önce yazıldığı anlamına gelir; mevcut kayıt döndürüldü.");
+                return new WriteResult(false, strategy, Explanations[strategy], planned, warnings,
+                    existing, errors, Deduped: true);
+            }
+        }
+
         // ── Gerçek çalıştırma ───────────────────────────────────────────────
+        // Gaz (istekler arası ≥110 ms) adaptörün işidir; burada bekleme YOKTUR.
         JsonObject? timeEntry = null;
         string? createdId = null;
 
         for (var i = 0; i < planned.Count; i++)
         {
             var step = planned[i];
-            if (i > 0) await Task.Delay(RateLimitDelayMs, ct); // rate limit: 20 istek / 2 sn
 
             // two_step 2. adımı 1. adımın ürettiği id'ye ihtiyaç duyar.
             var toRun = step;

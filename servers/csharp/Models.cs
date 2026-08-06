@@ -122,7 +122,13 @@ public sealed record WriteResult(
     [property: JsonPropertyName("planned")] IReadOnlyList<PlannedMutation> Planned,
     [property: JsonPropertyName("warnings")] IReadOnlyList<string> Warnings,
     [property: JsonPropertyName("timeEntry")] JsonObject? TimeEntry,
-    [property: JsonPropertyName("errors")] IReadOnlyList<ValidationError> Errors);
+    [property: JsonPropertyName("errors")] IReadOnlyList<ValidationError> Errors,
+    // Sözleşmede OPSİYONEL boolean (WriteResult.deduped): true = aynı sourceID'li kayıt
+    // zaten vardı, yazma atlandı, timeEntry MEVCUT kaydı gösterir (reliability.md §5).
+    // null iken JSON'a hiç yazılmaz — şema "boolean" der, "null" kabul etmez.
+    [property: JsonPropertyName("deduped")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    bool? Deduped = null);
 
 public sealed record BulkRowResult(
     [property: JsonPropertyName("index")] int Index,
@@ -135,7 +141,10 @@ public sealed record BulkSummary(
     [property: JsonPropertyName("created")] int Created,
     [property: JsonPropertyName("failed")] int Failed,
     [property: JsonPropertyName("skipped")] int Skipped,
-    [property: JsonPropertyName("totalMinutes")] int TotalMinutes);
+    [property: JsonPropertyName("totalMinutes")] int TotalMinutes,
+    // sourceID geri-okumasıyla "zaten yazılmış" bulunup atlanan kalem sayısı
+    // (reliability.md §5). Sözleşmede opsiyonel; 0 iken de yazılır — sayaç sayaçtır.
+    [property: JsonPropertyName("deduped")] int Deduped = 0);
 
 public sealed record BulkResult(
     [property: JsonPropertyName("dryRun")] bool DryRun,
@@ -181,6 +190,74 @@ public sealed record PlanResult(
     [property: JsonPropertyName("proposals")] IReadOnlyList<Proposal> Proposals,
     [property: JsonPropertyName("unmatchedMeetings")] IReadOnlyList<string> UnmatchedMeetings,
     [property: JsonPropertyName("totals")] PlanTotals Totals);
+
+// ── xurrent_list_time_entries ($defs/TimeEntryRecord + TimeEntryPage) ────────
+
+public sealed record TimeEntryPersonRef(
+    [property: JsonPropertyName("id")] string Id,
+    [property: JsonPropertyName("name")] string? Name);
+
+/// <summary>Bağlı ticket — Yol A kayıtlarında null (dersin kalbi, bkz. docs/02).</summary>
+public sealed record TimeEntryAssignmentRef(
+    [property: JsonPropertyName("type")] string? Type,
+    [property: JsonPropertyName("id")] string? Id,
+    [property: JsonPropertyName("displayId")] string? DisplayId);
+
+public sealed record TimeEntryEffortClassRef(
+    [property: JsonPropertyName("id")] string Id,
+    [property: JsonPropertyName("name")] string? Name);
+
+public sealed record TimeEntryRecord(
+    [property: JsonPropertyName("id")] string Id,
+    [property: JsonPropertyName("date")] string Date,
+    [property: JsonPropertyName("startedAt")] string? StartedAt,
+    // DAKİKA — sözleşmenin tek süre birimi.
+    [property: JsonPropertyName("timeSpent")] int TimeSpent,
+    [property: JsonPropertyName("description")] string? Description,
+    [property: JsonPropertyName("correction")] bool? Correction,
+    [property: JsonPropertyName("source")] string? Source,
+    // İdempotency anahtarı (xmcp-…) — dedup geri-okuması bu alanla çalışır.
+    [property: JsonPropertyName("sourceID")] string? SourceId,
+    [property: JsonPropertyName("person")] TimeEntryPersonRef? Person,
+    [property: JsonPropertyName("assignment")] TimeEntryAssignmentRef? Assignment,
+    [property: JsonPropertyName("effortClass")] TimeEntryEffortClassRef? EffortClass);
+
+public sealed record TimeEntryPage(
+    [property: JsonPropertyName("accountId")] string AccountId,
+    [property: JsonPropertyName("timeEntries")] IReadOnlyList<TimeEntryRecord> TimeEntries,
+    // Dönen kayıtların toplam dakikası (correction'lar işaretli dahil).
+    [property: JsonPropertyName("totalMinutes")] int TotalMinutes);
+
+// ── timesheet_wizard ($defs/WizardResult) ────────────────────────────────────
+
+public sealed record WizardChoice(
+    [property: JsonPropertyName("id")] string Id,
+    [property: JsonPropertyName("label")] string Label,
+    // Seçeneğin bedeli/gerekçesi (ör. backdateStrategies.costs). null iken de yazılır —
+    // şema ["string","null"] kabul eder.
+    [property: JsonPropertyName("detail")] string? Detail = null);
+
+/// <summary>İnce host'un tek yapması gereken: prompt'u göster, cevabı utterance olarak geri gönder.</summary>
+public sealed record WizardQuestion(
+    [property: JsonPropertyName("prompt")] string Prompt,
+    // Şemada choices'ın tipi "array" (null DEĞİL) — bu yüzden yokken hiç yazılmaz.
+    [property: JsonPropertyName("choices")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    IReadOnlyList<WizardChoice>? Choices = null,
+    [property: JsonPropertyName("expectsFreeText")] bool ExpectsFreeText = false);
+
+public sealed record WizardResult(
+    // Durum makinesinin bu yanıt SONRASI adımı (contract/wizard.md §2). Bekleme
+    // adımları çıktıda görünür (start/duration/detail/strategy/confirm/calendar_*);
+    // pick_work ve write GEÇİŞ adımlarıdır — akış bittiğinde step="done".
+    [property: JsonPropertyName("step")] string Step,
+    [property: JsonPropertyName("reply")] string Reply,
+    [property: JsonPropertyName("nextQuestion")] WizardQuestion? NextQuestion,
+    // YENİ imzalı durum — host bir sonraki çağrıda AYNEN geri gönderir; done=true iken null.
+    [property: JsonPropertyName("sessionState")] string? SessionState,
+    [property: JsonPropertyName("done")] bool Done,
+    [property: JsonPropertyName("writeResult")] WriteResult? WriteResult,
+    [property: JsonPropertyName("errors")] IReadOnlyList<ValidationError> Errors);
 
 /// <summary>Bir zaman girişi isteğinin dil-bağımsız girdi şekli (tool parametrelerinin taşıyıcısı).</summary>
 public sealed class TimeEntryRequest

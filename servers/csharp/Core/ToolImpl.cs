@@ -4,7 +4,7 @@ using XurrentMcp.Xurrent;
 namespace XurrentMcp.Core;
 
 /// <summary>
-/// ★ 8 tool'un SAF hâli: argüman girer, sonuç çıkar.
+/// ★ Tool'ların SAF hâli: argüman girer, sonuç çıkar.
 ///
 /// Bu dosyada MCP'ye ait TEK BİR TİP YOKTUR — ne CallToolResult, ne McpServer,
 /// ne elicitation. Sebep protokol sözleşmesinin ana tezi:
@@ -44,6 +44,17 @@ public static class ToolImpl
     public static Task<TimeTrackingContext> TimeTrackingContextAsync(
         IXurrentAdapter adapter, string personId, CancellationToken ct)
         => adapter.GetTimeTrackingContextAsync(personId, ct);
+
+    /// <summary>
+    /// Geri-okuma gözü (xurrent_list_time_entries): yazma raporuna güvenmek yerine
+    /// kayıt GERİ OKUNUR (contract/reliability.md §5). sourceId ile nokta arama,
+    /// kısmen başarısız bir bulk'tan sonra "hangi kalemler yazılmış" sorusunu cevaplar.
+    /// </summary>
+    public static Task<TimeEntryPage> ListTimeEntriesAsync(
+        IXurrentAdapter adapter, string personId, string? dateFrom, string? dateTo,
+        string? sourceId, int first, CancellationToken ct)
+        => adapter.ListTimeEntriesAsync(
+            new ListTimeEntriesArgs(personId, dateFrom, dateTo, sourceId, Math.Clamp(first, 1, 100)), ct);
 
     public static Task<CalendarResult> CalendarListTodayAsync(
         CalendarFactory calendar, string provider, string? userEmail, string? date, string timeZone,
@@ -260,7 +271,7 @@ public static class ToolImpl
 
         var planned = new List<PlannedMutation>();
         var results = new List<BulkRowResult>();
-        int created = 0, failed = 0, skipped = 0, totalMinutes = 0;
+        int created = 0, failed = 0, skipped = 0, deduped = 0, totalMinutes = 0;
         var stopped = false;
 
         for (var i = 0; i < entries.Length; i++)
@@ -304,6 +315,14 @@ public static class ToolImpl
                 results.Add(new BulkRowResult(i, "skipped", null, []));
                 skipped++;
             }
+            else if (one.Deduped == true)
+            {
+                // Yazma öncesi sourceID geri-okuması "zaten yazılmış" dedi (reliability.md §5).
+                // Bu satır ne created ne failed'dir — AYRI durumdur: kısmen başarısız bir
+                // bulk'ın aynı komutla tekrarında yazılmışlar buraya düşer, çift kayıt oluşmaz.
+                results.Add(new BulkRowResult(i, "deduped", one.TimeEntry?["id"]?.GetValue<string>(), []));
+                deduped++;
+            }
             else
             {
                 results.Add(new BulkRowResult(i, "created", one.TimeEntry?["id"]?.GetValue<string>(), []));
@@ -311,13 +330,12 @@ public static class ToolImpl
             }
             totalMinutes += e.Minutes;
 
-            // Rate limit: 20 istek / 2 saniye. Satırlar arasında da bekliyoruz.
-            if (!dryRun && i < entries.Length - 1)
-                await Task.Delay(Strategies.RateLimitDelayMs, ct);
+            // Satırlar arasında elle bekleme YOK: gaz (istekler arası ≥110 ms) artık
+            // adaptör seviyesinde yaşıyor ve retry tekrarları dahil her isteği kapsıyor.
         }
 
         return ToolOutcome<BulkResult>.Completed(new BulkResult(dryRun, planned, results,
-            new BulkSummary(entries.Length, created, failed, skipped, totalMinutes)));
+            new BulkSummary(entries.Length, created, failed, skipped, totalMinutes, deduped)));
     }
 
     public static bool IsKnownTarget(string targetType)

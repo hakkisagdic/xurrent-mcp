@@ -15,7 +15,9 @@ namespace XurrentMcp.Llm;
 /// İkisi birlikte kalır: burası anlatır, `dotnet test` denetler.
 ///
 /// Kapsam:
-///   • contract/tools.json'daki 8 tool'un input şeması çevrilir
+///   • contract/tools.json'daki 10 tool'un input şeması çevrilir
+///     (timesheet_wizard BURADA da çevrilir — bu mod sözleşmeyi anlatır; chatbot'un
+///      functionDeclarations listesinden dışlama AgentCore'daki LLM filtresinin işidir)
 ///   • atılan / açıklamaya taşınan / dönüştürülen her anahtar listelenir
 ///   • $ref + $defs yeniden yazımı gerçek sözleşme $defs'i ile denenir
 ///   • derinlik sınırı (32) sentetik bir şema ile zorlanır
@@ -85,7 +87,7 @@ public static class SchemaSelfTest
         VerifyDepthLimit(checks);
         VerifyDefaultDedup(checks);
 
-        checks.Expect("sözleşmede tam 8 tool var", tools.Count == 8, $"{tools.Count} tool bulundu");
+        checks.Expect("sözleşmede tam 10 tool var", tools.Count == 10, $"{tools.Count} tool bulundu");
 
         return checks.Report();
     }

@@ -34,9 +34,9 @@ public class SemaTests
     }
 
     [Fact]
-    public void sozlesmede_tam_8_tool_vardir()
+    public void sozlesmede_tam_10_tool_vardir()
     {
-        Assert.Equal(8, Toollar.Count);
+        Assert.Equal(10, Toollar.Count);
     }
 
     // ── Tool başına çeviri iddiaları ─────────────────────────────────────────
@@ -375,7 +375,7 @@ public class SemaTests
 
         var satirlar = SchemaTranslator.Summarize(notlar, Toollar.Count);
 
-        Assert.Contains(satirlar, s => s.Contains("8 tool"));
+        Assert.Contains(satirlar, s => s.Contains("10 tool"));
         Assert.Contains(satirlar, s => s.Contains("atılan"));
     }
 

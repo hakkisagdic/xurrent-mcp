@@ -162,7 +162,9 @@ public static class RequestStateCodec
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant();
     }
 
-    private static string Canonicalize(JsonNode? node) => node switch
+    // internal: WizardStateCodec ve plannedFingerprint aynı kanonikleştirmeyi kullanır —
+    // JSON anahtar sırası dile/istemciye göre değişebilir, sıraya duyarlı özet yanlıştır.
+    internal static string Canonicalize(JsonNode? node) => node switch
     {
         null => "null",
         JsonObject o => "{" + string.Join(",", o
@@ -172,7 +174,10 @@ public static class RequestStateCodec
         _ => node.ToJsonString(Json.Options),
     };
 
-    private static byte[] Hmac(AppConfig cfg, byte[] payload)
+    // internal: wizard sessionState codec'i AYNI wire ailesini kullanır
+    // (base64url(payload) "." base64url(HMAC-SHA256(secret, payloadBytes))) —
+    // yalnızca payload alanları farklıdır (bkz. Core/WizardState.cs).
+    internal static byte[] Hmac(AppConfig cfg, byte[] payload)
         => HMACSHA256.HashData(Encoding.UTF8.GetBytes(cfg.StateSecret), payload);
 
     /// <summary>Süresi dolmuş nonce'lar sette birikmesin — uzun süren sunucuda sessiz sızıntı olurdu.</summary>
@@ -184,10 +189,10 @@ public static class RequestStateCodec
                 _usedNonces.TryRemove(k, out _);
     }
 
-    private static string Base64Url(byte[] bytes)
+    internal static string Base64Url(byte[] bytes)
         => Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
 
-    private static byte[] FromBase64Url(string text)
+    internal static byte[] FromBase64Url(string text)
     {
         var s = text.Replace('-', '+').Replace('_', '/');
         return Convert.FromBase64String(s.PadRight(s.Length + (4 - s.Length % 4) % 4, '='));

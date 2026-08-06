@@ -115,6 +115,12 @@ public sealed class AgentCore : IAsyncDisposable
         // Aynı sözleşme, iki farklı tool-calling lehçesi — çevirinin bedeli aşağıda raporlanır.
         foreach (var t in await session.Client.ListToolsAsync(cancellationToken: ct))
         {
+            // ★ LLM FİLTRESİ: timesheet_wizard Gemini'ye ÇEVRİLMEZ (contract/wizard.md §1).
+            // Wizard'ın kendisi bir chatbot'tur; functionDeclarations listesine girseydi
+            // LLM'li chatbot içinden LLM'siz chatbot çağrılır ve kendi kendini çağırma
+            // döngüsü doğardı. Wire-denetimi bu listenin wizard içermediğini ölçer.
+            if (!Core.ToolNames.ExposedToLlm(t.Name)) continue;
+
             var schema = JsonNode.Parse(t.JsonSchema.GetRawText());
             var (declaration, translation) = SchemaTranslator.Declare(t.Name, t.Description, schema);
 

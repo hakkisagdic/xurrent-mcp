@@ -283,6 +283,82 @@ public sealed class MockAdapter : IXurrentAdapter
         => _timeAllocations["timeAllocations"]!.AsArray().Select(n => n!.AsObject())
             .FirstOrDefault(a => Str(a, "id") == id);
 
+    /// <summary>
+    /// Dedup geri-okuması (reliability.md §5) — mock karşılığı: bellek içi store'da
+    /// sourceID araması. Live adapter aynı soruyu timeEntries(filter: sourceID)
+    /// sorgusuyla sorar; tool katmanı hangisiyle konuştuğunu BİLMEZ, dedup bu sayede
+    /// mock modda da birebir test edilebilir.
+    /// </summary>
+    public Task<JsonObject?> FindTimeEntryBySourceIdAsync(string sourceId, CancellationToken ct)
+    {
+        lock (_gate)
+        {
+            var entry = _timeEntries.LastOrDefault(e => e.SourceId == sourceId);
+            return Task.FromResult(entry?.ToJson());
+        }
+    }
+
+    /// <summary>
+    /// xurrent_list_time_entries — mock karşılığı: bellek içi store filtrelenir.
+    /// Sıralama fake sunucuyla aynı: EN YENİ kayıt başta (ekleme sırasının tersi).
+    /// totalMinutes DÖNEN kayıtların toplamıdır (correction'lar işaretli dahil).
+    /// </summary>
+    public async Task<TimeEntryPage> ListTimeEntriesAsync(ListTimeEntriesArgs args, CancellationToken ct)
+    {
+        var personId = await ResolvePersonIdAsync(args.PersonId, ct);
+        var from = string.IsNullOrWhiteSpace(args.DateFrom) ? (DateOnly?)null : TimeUtil.ParseDate(args.DateFrom, _tz, _cfg.Clock);
+        var to = string.IsNullOrWhiteSpace(args.DateTo) ? (DateOnly?)null : TimeUtil.ParseDate(args.DateTo, _tz, _cfg.Clock);
+        var first = Math.Clamp(args.First, 1, 100);
+
+        List<TimeEntryRecord> rows;
+        lock (_gate)
+        {
+            rows = _timeEntries
+                .Where(e => e.PersonId == personId
+                            && (from is null || e.Date >= from)
+                            && (to is null || e.Date <= to)
+                            && (string.IsNullOrWhiteSpace(args.SourceId) || e.SourceId == args.SourceId))
+                .Reverse()          // en yeni başta — fake sunucu da store'u ters çevirir
+                .Take(first)
+                .Select(ToRecord)
+                .ToList();
+        }
+
+        var accountId = Str(_people["account"]!.AsObject(), "id") ?? "";
+        return new TimeEntryPage(accountId, rows, rows.Sum(r => r.TimeSpent));
+    }
+
+    private TimeEntryRecord ToRecord(MockTimeEntry e) => new(
+        Id: e.Id,
+        Date: e.Date.ToString("yyyy-MM-dd"),
+        StartedAt: e.StartedAt is null ? null : TimeUtil.ToIso(e.StartedAt.Value),
+        TimeSpent: e.TimeSpent,
+        Description: e.Description,
+        Correction: e.Correction,
+        Source: e.Source,
+        SourceId: e.SourceId,
+        Person: new TimeEntryPersonRef(e.PersonId, PersonName(e.PersonId)),
+        // ★ Yol A kayıtlarında assignment NULL'dur — ticket bağı yoktur (dersin kalbi).
+        Assignment: e.AssignmentId is null
+            ? null
+            : new TimeEntryAssignmentRef(e.AssignmentType, e.AssignmentId, DisplayIdOf(e.AssignmentType, e.AssignmentId)),
+        EffortClass: e.EffortClassId is null
+            ? null
+            : new TimeEntryEffortClassRef(e.EffortClassId, EffortClassName(e.EffortClassId)));
+
+    private string? DisplayIdOf(string? assignmentType, string assignmentId) => assignmentType switch
+    {
+        "Request" => _requests["requests"]!.AsArray().Select(n => n!.AsObject())
+            .Where(r => Str(r, "id") == assignmentId).Select(r => Str(r, "requestId")).FirstOrDefault(),
+        "Task" => _tasks["tasks"]!.AsArray().Select(n => n!.AsObject())
+            .Where(t => Str(t, "id") == assignmentId).Select(t => Str(t, "taskId")).FirstOrDefault(),
+        _ => null,
+    };
+
+    private string? EffortClassName(string id)
+        => _effortClasses["effortClasses"]!.AsArray().Select(n => n!.AsObject())
+            .Where(e => Str(e, "id") == id).Select(e => Str(e, "name")).FirstOrDefault();
+
     // ── Mutasyonlar ──────────────────────────────────────────────────────────
 
     public Task<MutationOutcome> ExecuteAsync(PlannedMutation step, CancellationToken ct)

@@ -37,9 +37,18 @@ public static class ServerSetup
         services.AddSingleton<HttpClient>(_ => new HttpClient { Timeout = TimeSpan.FromSeconds(30) });
 
         // Mod seçimi TEK YERDE yapılır; tool katmanı hangi adapter'la konuştuğunu bilmez.
+        // live modda transport da BURADA seçilir (XURRENT_API — docs/16):
+        //   graphql     → elle yazılmış GraphQL istemcisi (varsayılan; senaryo kapısının ölçtüğü yol)
+        //   rest        → REST v1 adaptörü (aynı sözleşme, ikinci wire biçimi)
+        //   graphql-sdk → resmî Xurrent.GraphQL SDK'sı (YALNIZ C# — vendor SDK dersi)
         services.AddSingleton<IXurrentAdapter>(sp => cfg.IsMock
             ? new MockAdapter(cfg)
-            : new LiveAdapter(cfg, sp.GetRequiredService<HttpClient>()));
+            : cfg.XurrentApi switch
+            {
+                "rest" => new RestAdapter(cfg, sp.GetRequiredService<HttpClient>()),
+                "graphql-sdk" => new SdkLiveAdapter(cfg),
+                _ => new LiveAdapter(cfg, sp.GetRequiredService<HttpClient>()),
+            });
 
         services.AddSingleton(sp => new CalendarFactory(cfg, sp.GetRequiredService<HttpClient>()));
         return services;
@@ -52,10 +61,15 @@ public static class ServerSetup
     public const string ProtocolV1 = "2025-11-25";
     public const string ProtocolV2 = "2026-07-28";
 
-    public static IMcpServerBuilder AddXurrentMcpServer(this IServiceCollection services, AppConfig cfg)
+    public static IMcpServerBuilder AddXurrentMcpServer(
+        this IServiceCollection services, AppConfig cfg, ProtocolChoice? protokolEzme = null)
     {
         // outputSchema'nın kaynağı sözleşmedir; sunucu ayağa kalkmadan yüklenmelidir.
         ToolContracts.Load(cfg.RepoRoot);
+
+        // protokolEzme: 'both' HTTP modunda aynı süreçte İKİ pipeline yaşar (WebHost) —
+        // /mcp/v1 pipeline'ı burada V1 olarak pinlenir, ana pipeline V2 kalır.
+        var protokol = protokolEzme ?? cfg.McpProtocol;
 
         var builder = services.AddMcpServer(options =>
         {
@@ -65,7 +79,7 @@ public static class ServerSetup
             // K1: yalnızca v1 istendiğinde sürüm PİNLENİR — bu durumda SDK server/discover'ı
             // reddeder ve tek yol initialize el sıkışması olur. Varsayılan (v2) pinlenmez;
             // geriye dönük uyumluluk sondasının canlı gösterilebilmesi buna bağlıdır.
-            if (cfg.McpProtocol == ProtocolChoice.V1)
+            if (protokol == ProtocolChoice.V1)
                 options.ProtocolVersion = ProtocolV1;
         });
 

@@ -4,7 +4,7 @@ using System.Text.Json.Nodes;
 namespace XurrentMcp.Core;
 
 /// <summary>
-/// 8 tool'un adı TEK yerde. Hem MCP kayıt katmanı hem chatbot bu sabitleri kullanır;
+/// 10 tool'un adı TEK yerde. Hem MCP kayıt katmanı hem chatbot bu sabitleri kullanır;
 /// bir tool adı elle iki yerde yazılırsa sessizce ayrışır.
 /// </summary>
 public static class ToolNames
@@ -17,6 +17,17 @@ public static class ToolNames
     public const string CreateTimeEntriesBulk = "xurrent_create_time_entries_bulk";
     public const string CalendarListToday = "calendar_list_today";
     public const string PlanFromCalendar = "plan_time_entries_from_calendar";
+    public const string ListTimeEntries = "xurrent_list_time_entries";
+    public const string TimesheetWizard = "timesheet_wizard";
+
+    /// <summary>
+    /// ★ LLM FİLTRESİ: bu tool Gemini functionDeclarations listesine ÇEVRİLİR Mİ?
+    ///
+    /// timesheet_wizard çevrilmez (contract/wizard.md §1): wizard'ın kendisi bir
+    /// chatbot'tur; LLM'e verilirse chatbot kendi kendini çağırır döngüsü doğar.
+    /// Wire-denetimi bu listeyi tam olarak bunun için ölçer.
+    /// </summary>
+    public static bool ExposedToLlm(string toolName) => toolName != TimesheetWizard;
 }
 
 /// <summary>

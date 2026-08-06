@@ -21,7 +21,16 @@ public sealed class LiveAdapter : IXurrentAdapter, IDisposable
 {
     private readonly AppConfig _cfg;
     private readonly HttpClient _http;
+    private readonly RetryPolicy _retry;
     private readonly SemaphoreSlim _contextGate = new(1, 1);
+
+    // ── Gaz (istemci tarafı throttle, reliability.md §4) ─────────────────────
+    // İki HTTP isteği arasında en az MinRequestGapMs (varsayılan 110 ms) boşluk.
+    // ADAPTÖR seviyesinde: retry tekrarları ve dedup geri-okumaları DAHİL her
+    // istek bu kapıdan geçer. Bulk döngülerindeki eski Task.Delay'ler kaldırıldı —
+    // gaz TEK yerde yaşar, iki yerde yaşarsa biri unutulur.
+    private readonly SemaphoreSlim _gapGate = new(1, 1);
+    private long _nextRequestAtMs;
 
     private TimeTrackingContext? _contextCache;
     private string? _meCache;
@@ -32,7 +41,12 @@ public sealed class LiveAdapter : IXurrentAdapter, IDisposable
     public LiveAdapter(AppConfig cfg, HttpClient? http = null)
     {
         _cfg = cfg;
+        _retry = new RetryPolicy(cfg);
         _http = http ?? new HttpClient();
+        // İstek toplamı ≤ 30 sn (reliability.md §3). DI'dan gelen client zaten 30 sn
+        // (ServerSetup); kendi ürettiğimizde burada eşitliyoruz. Kullanılmış bir client'ta
+        // Timeout set etmek fırlatır — o yüzden yalnız kendi client'ımızda.
+        if (http is null) _http.Timeout = TimeSpan.FromSeconds(30);
         _http.BaseAddress ??= new Uri(cfg.XurrentGraphqlUrl.TrimEnd('/') + "/");
         _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", cfg.XurrentToken);
         if (!string.IsNullOrWhiteSpace(cfg.XurrentAccount))
@@ -41,28 +55,140 @@ public sealed class LiveAdapter : IXurrentAdapter, IDisposable
 
     // ── GraphQL taşıma katmanı ───────────────────────────────────────────────
 
-    private async Task<JsonObject> PostAsync(string query, JsonObject? variables, CancellationToken ct)
+    /// <summary>Okuma sorguları: query sınıfı (429 da belirsiz de tekrarlanır).</summary>
+    private Task<JsonObject> PostAsync(string query, JsonObject? variables, CancellationToken ct)
+        => PostAsync(query, variables, OperationClass.Query, "query", ct);
+
+    /// <summary>
+    /// Sınıflandırılmış gönderim: istek, operasyon sınıfının Polly pipeline'ı içinde
+    /// çalışır (RetryPolicy). guarded_create BURADAN GEÇMEZ — o sınıfın döngüsü
+    /// ExecuteGuardedCreateAsync'te elle yazılıdır (gerekçe RetryPolicy başlığında).
+    /// </summary>
+    private Task<JsonObject> PostAsync(
+        string query, JsonObject? variables, OperationClass cls, string op, CancellationToken ct)
+    {
+        // Gövde BİR KEZ kurulur ve tüm tekrarlarda aynen kullanılır. variables'ı
+        // DeepClone'luyoruz çünkü PlannedMutation.Input aynı zamanda tool ÇIKTISINDA
+        // yaşıyor — JsonNode bir ebeveyne bağlanınca ikinci bağlama fırlatır.
+        var body = BuildBody(query, variables);
+        return _retry.ExecuteAsync(cls, op, c => SendOnceAsync(body, c), ct);
+    }
+
+    private static JsonObject BuildBody(string query, JsonObject? variables)
     {
         var body = new JsonObject { ["query"] = query };
-        if (variables is not null) body["variables"] = variables;
+        if (variables is not null) body["variables"] = variables.DeepClone();
+        return body;
+    }
 
-        // NEDEN her zaman POST: Xurrent GraphQL endpoint'i GET kabul etmez.
-        using var res = await _http.PostAsJsonAsync("", body, Json.Options, ct);
+    /// <summary>
+    /// TEK istek — retry YOK, sınıflandırma VAR (contract/reliability.md §1):
+    ///   429        → XurrentHttpException(429, Retry-After)   [kesin-işlenmedi]
+    ///   5xx        → XurrentHttpException(5xx)                 [belirsiz]
+    ///   ağ/timeout → XurrentHttpException(0)                   [belirsiz — bilinçli sadeleştirme]
+    ///   4xx (≠429) → InvalidOperationException                 [kesin-reddedildi, ASLA retry]
+    ///   200 + top-level errors → InvalidOperationException     [kesin-reddedildi]
+    /// Payload errors (iş kuralı) burada İSTİSNA DEĞİLDİR — HTTP 200 + errors[] olarak
+    /// data içinde akmaya devam eder; onları ExecuteAsync'in payload katmanı okur.
+    /// </summary>
+    private async Task<JsonObject> SendOnceAsync(JsonObject body, CancellationToken ct)
+    {
+        await ThrottleAsync(ct);
 
-        CaptureRateLimit(res);
-
-        var text = await res.Content.ReadAsStringAsync(ct);
-        var node = JsonNode.Parse(text)?.AsObject()
-                   ?? throw new InvalidOperationException("Xurrent boş yanıt döndü.");
-
-        // Şema/auth hataları burada gelir. İş kuralı hataları ise HTTP 200 + payload.errors ile gelir.
-        if (node["errors"] is JsonArray topLevel && topLevel.Count > 0)
+        HttpResponseMessage res;
+        try
         {
-            var msg = string.Join("; ", topLevel.Select(e => e?["message"]?.GetValue<string>() ?? "?"));
-            throw new InvalidOperationException($"Xurrent GraphQL hatası: {msg}");
+            // NEDEN her zaman POST: Xurrent GraphQL endpoint'i GET kabul etmez.
+            res = await _http.PostAsJsonAsync("", body, Json.Options, ct);
+        }
+        catch (HttpRequestException ex)
+        {
+            throw new XurrentHttpException(0, null,
+                $"Xurrent'a ulaşılamadı (ağ hatası): {ex.Message}", ex);
+        }
+        catch (TaskCanceledException ex) when (!ct.IsCancellationRequested)
+        {
+            // HttpClient.Timeout dolunca TaskCanceledException gelir — bu kullanıcı
+            // iptali DEĞİL, zaman aşımıdır ve sınıfı "belirsiz"dir (yanıtı görmedik).
+            throw new XurrentHttpException(0, null,
+                "Xurrent isteği zaman aşımına uğradı (30 sn) — istek işlenmiş OLABİLİR.", ex);
         }
 
-        return node["data"]?.AsObject() ?? new JsonObject();
+        using (res)
+        {
+            CaptureRateLimit(res);
+            var status = (int)res.StatusCode;
+
+            if (status == 429)
+            {
+                // Rate limiter isteği İŞLEMEDEN reddetti → her operasyon sınıfı için
+                // güvenle tekrarlanabilir. Retry-After (saniye) beklemenin alt sınırıdır.
+                var retryAfter = res.Headers.RetryAfter?.Delta;
+                if (retryAfter is null
+                    && res.Headers.TryGetValues("Retry-After", out var vals)
+                    && double.TryParse(vals.FirstOrDefault(), out var sec))
+                    retryAfter = TimeSpan.FromSeconds(sec);
+                throw new XurrentHttpException(429, retryAfter,
+                    "Xurrent rate limit (HTTP 429): istek işlenmeden reddedildi.");
+            }
+
+            if (status >= 500)
+                throw new XurrentHttpException(status, null,
+                    $"Xurrent sunucu hatası (HTTP {status}) — istek işlenmiş OLABİLİR (sınıf: belirsiz).");
+
+            var text = await res.Content.ReadAsStringAsync(ct);
+
+            if (status >= 400)
+            {
+                // Kesin-reddedildi: sunucu isteği ANLADI ve reddetti. Tekrarlamak
+                // aynı reddi üretir → düz InvalidOperationException (retry filtresi tutmaz).
+                var detail = FirstErrorMessage(text) ?? text[..Math.Min(text.Length, 200)];
+                throw new InvalidOperationException(
+                    $"Xurrent isteği reddetti (HTTP {status}): {detail} " +
+                    "Bu hata sınıfı otomatik TEKRARLANMAZ (kesin-reddedildi).");
+            }
+
+            var node = JsonNode.Parse(text)?.AsObject()
+                       ?? throw new InvalidOperationException("Xurrent boş yanıt döndü.");
+
+            // Şema/auth hataları burada gelir. İş kuralı hataları ise HTTP 200 + payload.errors ile gelir.
+            if (node["errors"] is JsonArray topLevel && topLevel.Count > 0)
+            {
+                var msg = string.Join("; ", topLevel.Select(e => e?["message"]?.GetValue<string>() ?? "?"));
+                throw new InvalidOperationException($"Xurrent GraphQL hatası: {msg}");
+            }
+
+            return node["data"]?.AsObject() ?? new JsonObject();
+        }
+    }
+
+    private static string? FirstErrorMessage(string text)
+    {
+        try
+        {
+            return (JsonNode.Parse(text)?["errors"] as JsonArray)?
+                .Select(e => e?["message"]?.GetValue<string>())
+                .FirstOrDefault(m => !string.IsNullOrWhiteSpace(m));
+        }
+        catch (System.Text.Json.JsonException) { return null; }
+    }
+
+    /// <summary>
+    /// Gaz kapısı: bir önceki isteğin ÜZERİNDEN MinRequestGapMs geçmeden yeni istek çıkmaz.
+    /// SemaphoreSlim + zaman damgası: eşzamanlı çağrılar sıraya girer, bekleme
+    /// kapının İÇİNDE yapılır ki iki istek aynı boşluğu paylaşamasın.
+    /// </summary>
+    private async Task ThrottleAsync(CancellationToken ct)
+    {
+        if (_cfg.MinRequestGapMs <= 0) return;
+        await _gapGate.WaitAsync(ct);
+        try
+        {
+            var wait = _nextRequestAtMs - Environment.TickCount64;
+            if (wait > 0) await Task.Delay((int)wait, ct);
+            _nextRequestAtMs = Environment.TickCount64 + _cfg.MinRequestGapMs;
+        }
+        finally { _gapGate.Release(); }
     }
 
     private void CaptureRateLimit(HttpResponseMessage res)
@@ -338,9 +464,137 @@ public sealed class LiveAdapter : IXurrentAdapter, IDisposable
 
     // ── Yazma ────────────────────────────────────────────────────────────────
 
+    /// <summary>
+    /// step.Path → operasyon sınıfı (contract/reliability.md §2). Sınıf, hatanın
+    /// tekrar edilip edilmeyeceğini belirler — transport değil, OPERASYON karar verir.
+    /// </summary>
+    internal static OperationClass ClassifyPath(string path) => path switch
+    {
+        "timeEntryCreate" => OperationClass.GuardedCreate,
+        "timeEntryUpdate" => OperationClass.IdempotentUpdate,
+        // requestUpdate/taskUpdate/projectTaskUpdate/problemUpdate: timeSpent ARTIMLI,
+        // idempotency anahtarı yok → belirsiz hatada tekrar = çift sayım.
+        _ => OperationClass.NoRetry,
+    };
+
     public async Task<MutationOutcome> ExecuteAsync(PlannedMutation step, CancellationToken ct)
     {
-        var data = await PostAsync(step.Mutation, step.Input, ct);
+        var cls = ClassifyPath(step.Path);
+        try
+        {
+            if (cls == OperationClass.GuardedCreate)
+                return await ExecuteGuardedCreateAsync(step, ct);
+
+            var data = await PostAsync(step.Mutation, step.Input, cls, step.Path, ct);
+            return await ParseMutationPayloadAsync(data, step, ct);
+        }
+        catch (XurrentHttpException ex)
+        {
+            // Retry bütçesi bitti (ya da sınıf hiç izin vermedi). İstisna değil,
+            // YAPILANDIRILMIŞ hata döndürüyoruz: bulk'ta stopOnError=false diğer
+            // satırlarla devam edebilmeli, tek yazmada da errors[] dolu dönmeli.
+            return MutationOutcome.Fail(WriteFailureMessage(step.Path, cls, ex));
+        }
+        catch (InvalidOperationException ex)
+        {
+            // Kesin-reddedildi (4xx / GraphQL top-level errors): retry zaten denenmedi.
+            return MutationOutcome.Fail(ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// ★ guarded_create (timeEntryCreate) — ELLE YAZILI döngü.
+    ///
+    /// NEDEN Polly değil: belirsiz hatada (5xx/ağ) körlemesine tekrar etmek çift kayıt
+    /// yazabilir — istek sunucuda İŞLENMİŞ olabilir. Politika (reliability.md §2):
+    /// belirsiz hatada ÖNCE sourceID geri-okuması; kayıt VARSA yazma zaten olmuş demektir
+    /// ve mevcut kayıt BAŞARI olarak döndürülür (retry'a hiç gidilmez); YOKSA tekrar
+    /// denenir. "Başarısız denemeyi başarıya çevirme" kararı Polly'nin OnRetry/predicate
+    /// kancalarına sığmıyor; döngüyü elle yazmak hem daha kısa hem okunur çıktı.
+    /// Bekleme matematiği yine RetryPolicy.ComputeWait — politika TEK yerde.
+    /// </summary>
+    private async Task<MutationOutcome> ExecuteGuardedCreateAsync(PlannedMutation step, CancellationToken ct)
+    {
+        var body = BuildBody(step.Mutation, step.Input);
+        var sourceId = step.Input["input"]?["sourceID"]?.GetValue<string>();
+        var max = _retry.MaxAttempts;
+
+        for (var attempt = 1; ; attempt++)
+        {
+            XurrentHttpException failure;
+            try
+            {
+                var data = await SendOnceAsync(body, ct);
+                return await ParseMutationPayloadAsync(data, step, ct);
+            }
+            catch (XurrentHttpException ex)
+            {
+                failure = ex;
+            }
+
+            // 429 = kesin-işlenmedi: kayıt yazılmış OLAMAZ, geri-okuma İSRAFTIR → doğrudan tekrar.
+            // Belirsiz (5xx/ağ): istek işlenmiş olabilir → önce "yazılmış mı?" sorusu.
+            if (failure.Uncertain && sourceId is not null)
+            {
+                JsonObject? existing = null;
+                try
+                {
+                    existing = await FindTimeEntryBySourceIdAsync(sourceId, ct);
+                }
+                catch (InvalidOperationException)
+                {
+                    // Geri-okuma da düştü (query sınıfının kendi retry'ları dahil).
+                    // Miss sayıp normal retry'a devam ediyoruz: sunucu bu kadar hastaysa
+                    // create tekrarı da düşecek; kısır döngüden hata raporuyla çıkılır.
+                }
+                ReliabilityTrace.Dedup(sourceId, existing is not null);
+                if (existing is not null)
+                    return new MutationOutcome(existing, []); // yazılmış: mevcut kayıt = BAŞARI
+            }
+
+            if (attempt >= max)
+                return MutationOutcome.Fail(WriteFailureMessage(step.Path, OperationClass.GuardedCreate, failure));
+
+            var wait = _retry.ComputeWait(attempt, failure.RetryAfter);
+            ReliabilityTrace.Retry(step.Path, attempt, max, failure.Reason, (int)wait.TotalMilliseconds);
+            await Task.Delay(wait, ct);
+        }
+    }
+
+    /// <summary>
+    /// Transport hatasını KULLANICIYA dürüst anlatan Türkçe mesaj. Özellikle no_retry
+    /// sınıfında "yazılmış olabilir" belirsizliği SAKLANMAZ — sözleşmenin şartı bu.
+    /// </summary>
+    private string WriteFailureMessage(string path, OperationClass cls, XurrentHttpException ex)
+    {
+        if (ex.StatusCode == 429)
+            return $"{path} rate limit yüzünden başarısız: {_retry.MaxAttempts} deneme boyunca HTTP 429 " +
+                   "alındı. Kayıt OLUŞMADI (429 istek işlenmeden reddedilir). Biraz sonra tekrar deneyin.";
+
+        return cls switch
+        {
+            // no_retry: tek deneme yapıldı ve sonucu BİLMİYORUZ. Dürüstlük zorunlu.
+            OperationClass.NoRetry =>
+                $"{path} belirsiz bir hatayla düştü ({ex.Message}) ve otomatik TEKRARLANMADI: " +
+                "bu operasyonda timeSpent ARTIMLIDIR, tekrar çift sayım üretebilirdi. " +
+                "DİKKAT: yazma Xurrent'a ulaşmış ve İŞLENMİŞ OLABİLİR — ticket'ın zaman " +
+                "girişlerini kontrol edin ve gerekirse elle karar verin.",
+
+            // guarded_create: geri-okuma(lar) kayıt bulamadı → oluşmamış görünüyor.
+            OperationClass.GuardedCreate =>
+                $"{path} {_retry.MaxAttempts} denemede başarısız (son hata: {ex.Message}). " +
+                "sourceID geri-okuması kayıt bulamadı — kayıt oluşmamış görünüyor. " +
+                "Aynı komut güvenle TEKRAR çalıştırılabilir; dedup çift kaydı önler.",
+
+            _ =>
+                $"{path} {_retry.MaxAttempts} denemede başarısız (son hata: {ex.Message}).",
+        };
+    }
+
+    /// <summary>Mutation payload'ının ortak okunması (eski ExecuteAsync gövdesi).</summary>
+    private async Task<MutationOutcome> ParseMutationPayloadAsync(
+        JsonObject data, PlannedMutation step, CancellationToken ct)
+    {
         var payload = data[step.Path]?.AsObject();
         if (payload is null)
             return MutationOutcome.Fail($"'{step.Path}' payload'ı boş döndü.");
@@ -372,6 +626,92 @@ public sealed class LiveAdapter : IXurrentAdapter, IDisposable
         // two_step'in 2. adımı için oluşan kaydın id'sine ihtiyacımız var -> takip sorgusu.
         var found = await FindJustCreatedTimeEntryAsync(step, ct);
         return new MutationOutcome(found, []);
+    }
+
+    /// <summary>
+    /// Dedup geri-okuması (reliability.md §5): sourceID ile mevcut TimeEntry aranır.
+    /// D14 — gerçek TimeEntryFilter'da sourceID filtresinin varlığı DOĞRULANMALI;
+    /// yoksa kişi+tarih sorgusu + istemci tarafı eşleşmeye düşülür.
+    /// Query sınıfında koşar: geri-okumanın kendisi yan etkisizdir, retry'ı serbesttir.
+    /// </summary>
+    public async Task<JsonObject?> FindTimeEntryBySourceIdAsync(string sourceId, CancellationToken ct)
+    {
+        const string q = """
+            query FindBySourceId($sourceID: String!) {
+              timeEntries(first: 5, view: all, filter: { sourceID: { values: [$sourceID] } }) {
+                nodes {
+                  id date startedAt timeSpent description correction
+                  source sourceID
+                  person { id name }
+                  effortClass { id name }
+                  timeAllocation { id name }
+                }
+              }
+            }
+            """;
+        var data = await PostAsync(q, new JsonObject { ["sourceID"] = sourceId }, ct);
+        var node = (data["timeEntries"]?["nodes"] as JsonArray)?.FirstOrDefault()?.AsObject();
+        // DeepClone: düğüm yanıt ağacına bağlı; WriteResult.timeEntry olarak yeniden
+        // ebeveynlenirse JsonNode "already has a parent" fırlatır.
+        return node?.DeepClone().AsObject();
+    }
+
+    /// <summary>
+    /// xurrent_list_time_entries — TEK timeEntries sorgusu, query sınıfında
+    /// (yan etkisiz, retry serbest). Değişken adları sözleşme gereği sabittir:
+    /// personId / dateFrom / dateTo / sourceID.
+    /// </summary>
+    public async Task<TimeEntryPage> ListTimeEntriesAsync(ListTimeEntriesArgs args, CancellationToken ct)
+    {
+        var personId = await ResolvePersonIdAsync(args.PersonId, ct);
+        var first = Math.Clamp(args.First, 1, 100);
+
+        var hasFrom = !string.IsNullOrWhiteSpace(args.DateFrom);
+        var hasTo = !string.IsNullOrWhiteSpace(args.DateTo);
+        var hasSource = !string.IsNullOrWhiteSpace(args.SourceId);
+
+        var vars = new JsonObject { ["personId"] = personId, ["first"] = first };
+        if (hasFrom) vars["dateFrom"] = args.DateFrom;
+        if (hasTo) vars["dateTo"] = args.DateTo;
+        if (hasSource) vars["sourceID"] = args.SourceId;
+
+        var data = await PostAsync(Queries.ListTimeEntries(hasFrom, hasTo, hasSource), vars, ct);
+
+        var rows = (data["timeEntries"]?["nodes"] as JsonArray ?? [])
+            .Select(n => ToTimeEntryRecord(n!.AsObject()))
+            .ToList();
+
+        return new TimeEntryPage(_cfg.XurrentAccount, rows, rows.Sum(r => r.TimeSpent));
+    }
+
+    private static TimeEntryRecord ToTimeEntryRecord(JsonObject o)
+    {
+        var person = o["person"]?.AsObject();
+        var effort = o["effortClass"]?.AsObject();
+        var assignment = o["assignment"]?.AsObject();
+
+        return new TimeEntryRecord(
+            Id: MockAdapter.Str(o, "id") ?? "",
+            Date: MockAdapter.Str(o, "date") ?? "",
+            StartedAt: MockAdapter.Str(o, "startedAt"),
+            TimeSpent: MockAdapter.Int(o, "timeSpent") ?? 0,
+            Description: MockAdapter.Str(o, "description"),
+            Correction: MockAdapter.Bool(o, "correction"),
+            Source: MockAdapter.Str(o, "source"),
+            SourceId: MockAdapter.Str(o, "sourceID"),
+            Person: person is null
+                ? null
+                : new TimeEntryPersonRef(MockAdapter.Str(person, "id") ?? "", MockAdapter.Str(person, "name")),
+            // Yol A kayıtlarında assignment NULL gelir — ticket'a bağlanmamıştır.
+            Assignment: assignment is null
+                ? null
+                : new TimeEntryAssignmentRef(
+                    MockAdapter.Str(assignment, "__typename"),
+                    MockAdapter.Str(assignment, "id"),
+                    MockAdapter.Str(assignment, "requestId") ?? MockAdapter.Str(assignment, "taskId")),
+            EffortClass: effort is null
+                ? null
+                : new TimeEntryEffortClassRef(MockAdapter.Str(effort, "id") ?? "", MockAdapter.Str(effort, "name")));
     }
 
     /// <summary>
@@ -424,7 +764,9 @@ public sealed class LiveAdapter : IXurrentAdapter, IDisposable
             org is null ? null : new OrganizationRef(MockAdapter.Str(org, "id") ?? "", MockAdapter.Str(org, "name")));
     }
 
-    private static string? StatusLabel(string? status) => status switch
+    // internal: RestAdapter aynı Türkçe durum etiketlerini kullanır — etiket
+    // transportun değil, SÖZLEŞMENİN parçasıdır (üç dil aynı statusLabel üretir).
+    internal static string? StatusLabel(string? status) => status switch
     {
         "declined" => "Reddedildi",
         "on_backlog" => "Backlog'da",
@@ -450,5 +792,6 @@ public sealed class LiveAdapter : IXurrentAdapter, IDisposable
     {
         _http.Dispose();
         _contextGate.Dispose();
+        _gapGate.Dispose();
     }
 }
