@@ -34,7 +34,7 @@
     <!-- Güvenilirlik katmanı (contract/reliability.md §8): TS p-retry, Python tenacity,
          C# Polly kullanır — politika TEK, kütüphane ÜÇ. Polly.Core v8'in DelayGenerator'ı
          tam-jitter + Retry-After alt sınırını bize bırakır (Xurrent/RetryPolicy.cs). -->
-    <PackageReference Include="Polly.Core" Version="8.5.2" />
+    <PackageReference Include="Polly.Core" Version="8.7.0" />
 
     <!-- ★ WP4 — resmî Xurrent GraphQL SDK'sı (YALNIZ C#; TS/Python bilinçli olarak
          elle yazılmış istemcide kalır — ders "vendor SDK vs elle yazılmış, tek sözleşme").
