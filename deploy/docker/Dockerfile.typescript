@@ -1,0 +1,102 @@
+# syntax=docker/dockerfile:1.7
+#
+# xurrent-mcp — TypeScript sunucusu
+#
+#   docker build -f deploy/docker/Dockerfile.typescript -t xurrent-mcp-ts .
+#                                                                        ▲
+#   İNŞA BAĞLAMI REPO KÖKÜDÜR ────────────────────────────────────────────┘
+#
+# Neden kök: üç dil de `contract/`, `fixtures/`, `docs/wizard/` ve `clients/web/`
+# dizinlerini PAYLAŞIR. Bağlamı servers/typescript'e daraltmak, sözleşmeyi imaja
+# kopyalamayı imkânsız kılardı — ve bu repoda sözleşme uygulamanın kendisidir.
+#
+# ── Varsayılan komut neden `http`? ───────────────────────────────────────────
+# stdio transport KONTEYNERDE ANLAMSIZDIR. stdio'da MCP client sunucuyu bir ALT
+# SÜREÇ olarak başlatır ve onun stdin/stdout'una yazar. Konteyner ise client'ın
+# alt süreci değildir; `docker run -i` ile taklit edilebilir ama o zaman her
+# oturum için bir konteyner doğar-ölür ve uzun ömürlü imajın anlamı kalmaz.
+# Streamable HTTP, "bir porta bakan uzun ömürlü süreç" tanımına uyan TEK
+# transport'tur. stdio'yu denemek isteyen repodan doğrudan çalıştırsın.
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 1) İnşa — TypeScript derlenir, sonra dev bağımlılıkları budanır
+# ═════════════════════════════════════════════════════════════════════════════
+# TODO(KARARLAR K-06): taban imajlar etikete göre çözülüyor, digest'e değil.
+# Ders çıktılarının deterministik olması isteniyorsa `node:24-alpine@sha256:…`.
+FROM node:24-alpine AS insa
+
+WORKDIR /insa
+
+# Önce yalnızca manifest'ler: kaynak değiştiğinde npm ci katmanı yeniden koşmasın.
+COPY servers/typescript/package.json servers/typescript/package-lock.json ./
+RUN npm ci
+
+COPY servers/typescript/tsconfig.json ./
+COPY servers/typescript/src ./src
+
+# Derle ve hemen ardından dev bağımlılıklarını buda — TEK katmanda.
+# Budama neden ikinci bir `npm ci --omit=dev` değil: hızlı olması bir yana,
+# lock dosyasının iki ayrı kurulumda farklı çözülme ihtimalini ortadan kaldırır.
+RUN npm run build \
+ && npm prune --omit=dev
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 2) Çalışma — yalnızca dist + üretim bağımlılıkları + paylaşılan veri
+# ═════════════════════════════════════════════════════════════════════════════
+FROM node:24-alpine AS calisma
+
+# curl YALNIZCA sağlık kontrolü içindir (bkz. bin/saglik-kontrol.sh).
+# TypeScript sunucusu socat İSTEMEZ: src/mcp/http.ts `http.listen(port)` çağırır,
+# yani Node tüm arayüzlere bağlanır. ÜÇ DİLDEN TEK DÜZGÜN BAĞLANANI BUDUR.
+RUN apk add --no-cache curl
+
+# Depo kökünün konteyner içindeki karşılığı. Üç dilin kök bulucusu da
+# `contract/tools.json`u arar; bu dizin o yüzden repo kökü GİBİ görünmelidir.
+WORKDIR /uygulama
+
+# ── Paylaşılan veri (mock modun çalışması için ZORUNLU) ──────────────────────
+# contract/  → tool sözleşmesi. Aynı zamanda repo kökü işaretçisi
+#              (src/config.ts → findRepoRoot: contract/tools.json + fixtures/).
+# fixtures/  → mock veri. Bu olmadan XURRENT_MODE=mock çalışmaz.
+COPY contract      ./contract
+COPY fixtures      ./fixtures
+COPY docs/wizard   ./docs/wizard
+COPY clients/web   ./clients/web
+
+# ── Uygulama ─────────────────────────────────────────────────────────────────
+COPY servers/typescript/package.json ./servers/typescript/package.json
+COPY --from=insa /insa/node_modules  ./servers/typescript/node_modules
+COPY --from=insa /insa/dist          ./servers/typescript/dist
+
+COPY deploy/docker/bin/saglik-kontrol.sh /usr/local/bin/saglik-kontrol.sh
+RUN chmod +x /usr/local/bin/saglik-kontrol.sh
+
+# ── Varsayılan yapılandırma ──────────────────────────────────────────────────
+# SIR YOK. XURRENT_TOKEN, GEMINI_API_KEY ve XURRENT_STATE_SECRET burada
+# BİLEREK tanımsızdır — bir sır ENV/ARG ile imaja girerse `docker history`
+# ile geri okunur ve imajı gören herkes sırrı görür.
+ENV NODE_ENV=production \
+    XURRENT_MODE=mock \
+    CALENDAR_PROVIDER=mock \
+    MCP_PROTOCOL=2026-07-28 \
+    MCP_HTTP_PORT=8788 \
+    WEB_PORT=8787 \
+    XURRENT_TIMEZONE=Europe/Istanbul \
+    TZ=Europe/Istanbul \
+    MCP_SAGLIK_YOLU=/mcp
+
+EXPOSE 8788 8787
+
+# node imajındaki hazır ayrıcalıksız kullanıcı `node`, uid 1000. Kök DEĞİL.
+# SAYIYLA yazıldı, adla değil: Kubernetes `runAsNonRoot` denetimi bir KULLANICI
+# ADINI çözemez ve "kök olmadığını doğrulayamadım" diyerek Pod'u başlatmaz.
+# Sayısal uid hem burada hem orada çalışır. (hadolint DL3066)
+USER 1000
+
+# start-period: derlenmiş Node hızlı ayağa kalkar, 5 sn fazlasıyla yeter.
+HEALTHCHECK --interval=15s --timeout=6s --start-period=5s --retries=3 \
+  CMD ["/usr/local/bin/saglik-kontrol.sh"]
+
+CMD ["node", "servers/typescript/dist/mcp/http.js"]

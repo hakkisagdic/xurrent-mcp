@@ -1,0 +1,115 @@
+# syntax=docker/dockerfile:1.7
+#
+# xurrent-mcp — C# / .NET sunucusu
+#
+#   docker build -f deploy/docker/Dockerfile.csharp -t xurrent-mcp-cs .
+#
+# İnşa bağlamı repo köküdür (gerekçe: Dockerfile.typescript başlığı).
+#
+# ── Bu imajın tuzakları ──────────────────────────────────────────────────────
+#
+# 1) localhost'A ÇAKILI DİNLEME — ve ortam değişkeni İŞE YARAMAZ.
+#    Agent/WebHost.cs:  builder.WebHost.UseUrls($"http://localhost:{cfg.McpHttpPort}")
+#
+#    ÖLÇÜLDÜ (varsayım değil): net10.0'da minimal bir sondayla denendi —
+#    ASPNETCORE_URLS=http://0.0.0.0:… ve DOTNET_URLS=… ayarlanmasına rağmen
+#    bağlanan adres `http://localhost:19999` kaldı. Kodda çağrılan UseUrls,
+#    yapılandırmaya ortam değişkenleri okunduktan SONRA yazdığı için kazanır.
+#    Yani C#'ta "ENV ile düzeltiriz" YOLU KAPALIDIR. loopback-kopru.sh + socat
+#    tek çıkış. Bkz. KARARLAR.md → K-01.
+#
+# 2) InvariantGlobalization=false — ICU ve tzdata ŞART.
+#    XurrentMcp.csproj bunu bilerek kapatır: TimeZoneInfo.FindSystemTimeZoneById
+#    ("Europe/Istanbul") ve Türkçe kültür karşılaştırmaları invariant modda
+#    çalışmaz. mcr.microsoft.com/dotnet/aspnet Debian imajı libicu + tzdata
+#    içerir; ALPINE varyantına geçilirse `icu-libs` ve `tzdata` ELLE eklenmelidir,
+#    yoksa saat dilimi sessizce UTC'ye düşer (Config.cs:136 catch → TimeZoneInfo.Utc)
+#    ve ders çıktılarındaki saatler kayar. "Sessizce yanlış" en kötü hata sınıfıdır.
+#
+# 3) MCP UÇ NOKTASI "/" — "/mcp" DEĞİL.
+#    WebHost.cs → app.MapMcp() argümansız çağrılır, yani kökten yayınlar.
+#    Diğer iki dil /mcp kullanır. Bkz. KARARLAR.md → K-04.
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 1) İnşa — restore ve publish ayrı katmanlarda
+# ═════════════════════════════════════════════════════════════════════════════
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS insa
+
+WORKDIR /kaynak
+
+# Önce yalnızca csproj: kaynak değiştiğinde NuGet restore katmanı yeniden koşmasın.
+COPY servers/csharp/XurrentMcp.csproj ./servers/csharp/
+RUN dotnet restore servers/csharp/XurrentMcp.csproj
+
+COPY servers/csharp/ ./servers/csharp/
+
+# --no-restore: yukarıdaki katmanı kullan, ağa tekrar çıkma.
+# Test projesi zaten .dockerignore ile bağlamdan atıldı; csproj'daki
+# DefaultItemExcludes de onu derlemeden hariç tutuyor (çift emniyet).
+RUN dotnet publish servers/csharp/XurrentMcp.csproj \
+      --configuration Release \
+      --no-restore \
+      --output /yayin
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 2) Çalışma — SDK değil, yalnızca ASP.NET Core runtime
+# ═════════════════════════════════════════════════════════════════════════════
+# aspnet imajı ~110 MB'lık runtime taşır; sdk imajı ~800 MB'dır. Fark tam da
+# çok aşamalı inşanın varlık sebebidir.
+FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS calisma
+
+# socat → loopback köprüsü (tuzak 1)
+# curl  → sağlık kontrolü
+RUN apt-get update \
+ && apt-get install --no-install-recommends -y socat curl \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /uygulama
+
+# ── Paylaşılan veri ──────────────────────────────────────────────────────────
+# contract/ aynı zamanda repo kökü işaretçisidir: Config.cs → FindRepoRoot,
+# AppContext.BaseDirectory'den (/uygulama/servers/csharp) yukarı doğru
+# contract/tools.json arar ve /uygulama'da bulur.
+COPY contract      ./contract
+COPY fixtures      ./fixtures
+COPY docs/wizard   ./docs/wizard
+COPY clients/web   ./clients/web
+
+# ── Uygulama ─────────────────────────────────────────────────────────────────
+COPY --from=insa /yayin ./servers/csharp
+
+COPY deploy/docker/bin/loopback-kopru.sh /usr/local/bin/loopback-kopru.sh
+COPY deploy/docker/bin/saglik-kontrol.sh /usr/local/bin/saglik-kontrol.sh
+RUN chmod +x /usr/local/bin/loopback-kopru.sh /usr/local/bin/saglik-kontrol.sh
+
+# ── Varsayılan yapılandırma ──────────────────────────────────────────────────
+# SIR YOK — gerekçe: Dockerfile.typescript.
+ENV DOTNET_RUNNING_IN_CONTAINER=true \
+    DOTNET_NOLOGO=1 \
+    DOTNET_EnableDiagnostics=0 \
+    XURRENT_MODE=mock \
+    CALENDAR_PROVIDER=mock \
+    MCP_PROTOCOL=2026-07-28 \
+    MCP_HTTP_PORT=8788 \
+    WEB_PORT=8787 \
+    XURRENT_TIMEZONE=Europe/Istanbul \
+    TZ=Europe/Istanbul \
+    MCP_SAGLIK_YOLU=/
+
+EXPOSE 8788 8787
+
+# .NET 8+ imajları hazır ayrıcalıksız kullanıcı taşır: `app`, uid $APP_UID (1654).
+# $APP_UID inşa anında SAYIYA çözülür — Kubernetes runAsNonRoot denetimi için
+# gereken de budur. hadolint DL3066 burada yanlış alarm verir: değişkenin
+# sayısal olduğunu göremez. Sabit 1654 yazmak taban imaj güncellenince
+# sessizce yanlış kullanıcıya işaret ederdi; değişken daha doğrudur.
+USER $APP_UID
+
+# start-period en uzun burada: JIT + ASP.NET Core boru hattı + MCP tool keşfi.
+HEALTHCHECK --interval=15s --timeout=6s --start-period=20s --retries=3 \
+  CMD ["/usr/local/bin/saglik-kontrol.sh"]
+
+ENTRYPOINT ["/usr/local/bin/loopback-kopru.sh"]
+CMD ["dotnet", "servers/csharp/XurrentMcp.dll", "http"]

@@ -1,0 +1,39 @@
+# Dockerfile.sahte'ye ÖZEL yoksayma listesi.
+# Mekanizmanın gerekçesi: Dockerfile.typescript.dockerignore başlığı.
+
+# ── Sırlar — İMAJA ASLA GİRMEZ ───────────────────────────────────────────────
+.env
+.env.*
+*.pem
+*-token.json
+**/google-token.json
+
+# ── Sürüm kontrolü ve editör ─────────────────────────────────────────────────
+.git
+.gitignore
+.github
+.claude
+.mcp.json
+**/.DS_Store
+
+# ── Üç sunucunun tamamı — sahteler onların HİÇBİRİNE ihtiyaç duymaz ──────────
+servers
+clients
+scripts
+docs
+contract
+
+# ── Yerel durum ──────────────────────────────────────────────────────────────
+# kuyruk/ "sor" modunun geçici istek kuyruğudur; imajda BOŞ başlamalı.
+# kayitlar/ ise COMMIT EDİLİR ve "kayit" modunda oynatılır → imaja GİRER.
+tools/fake-gemini/kuyruk
+fixtures/.time-entries.local.json
+
+# ── Bu imaja gerekmeyenler ───────────────────────────────────────────────────
+deploy
+!deploy/docker/bin
+**/node_modules
+
+# ── iCloud sync duplikatları ─────────────────────────────────────────────────
+**/* 2.*
+**/* 2

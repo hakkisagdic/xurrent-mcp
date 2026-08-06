@@ -1,0 +1,267 @@
+# xurrent-mcp — yerel tam yığın
+#
+#   docker compose -f deploy/docker/compose.yaml up --build
+#   ./deploy/docker/duman-testi.sh
+#   docker compose -f deploy/docker/compose.yaml down
+#
+# ANAHTARSIZ AYAĞA KALKAR. Hiçbir sır gerekmez: Xurrent mock moddadır
+# (fixtures/), LLM sahte Gemini'dir. `docker compose up` ile `.env` olmadan
+# çalışması bilinçli bir kabul kriteridir.
+#
+# İnşa bağlamı `../..` ile REPO KÖKÜNE çıkar — compose.yaml deploy/docker/ altında
+# olduğu için İKİ seviye gerekir. (`..` yalnızca deploy/'a çıkar ve COPY'ler kırılır.)
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# ★★★ XURRENT_STATE_SECRET NEDEN SABİT BİR DEĞER — IaC DERSİNİN ÇEKİRDEĞİ ★★★
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# MCP 2026-07-28 onay akışı (MRTR) şöyle işler:
+#
+#   1. İstemci  tools/call  (id:1) ──▶ sunucu
+#   2. Sunucu   InputRequiredResult  ──▶ istemci
+#                 { requestState: "<HMAC-SHA256 ile İMZALI blob>" }
+#      Sunucu bu noktada HİÇBİR STATE TUTMAZ. "Kullanıcı X, Request #70248'e
+#      120 dakika yazmayı onayladı" bilgisi imzalanıp İSTEMCİYE EMANET EDİLİR.
+#   3. Kullanıcıya sorulur.
+#   4. İstemci  tools/call  (id:2, + requestState) ──▶ sunucu
+#   5. Sunucu imzayı DOĞRULAR ve yazar.
+#
+# İmza anahtarı XURRENT_STATE_SECRET'tır. BOŞ BIRAKILIRSA her süreç kendi
+# rastgele anahtarını üretir (.env.example:73, Config.cs:175).
+#
+#   ⚠️  ÇOK REPLİKALI HTTP DAĞITIMINDA BU AKIŞI SESSİZCE KIRAR.
+#
+#   4. adımdaki istek 1. adımdan BAŞKA bir replikaya düşerse, o replikanın
+#   anahtarı imzayı doğrulayamaz. Kullanıcı "onayladım ama yazılmadı" der.
+#   Sunucu tarafında görünen şey yalnızca "geçersiz imza"dır — hangi replikanın
+#   imzaladığı, isteğin neden başka replikaya düştüğü HİÇBİR LOGDA YOKTUR.
+#   Yük dengeleyici doğru çalıştığı için altyapı tarafında da alarm çalmaz.
+#   Hata oranı replika sayısıyla artar: 2 replikada onayların ~%50'si,
+#   4 replikada ~%75'i kaybolur. "Bazen çalışıyor" en pahalı arıza türüdür.
+#
+#   SONUÇ: XURRENT_STATE_SECRET replikalar arası PAYLAŞILAN bir sır OLMAK
+#   ZORUNDADIR. Bu bir performans ayarı değil, DOĞRULUK KOŞULUDUR.
+#
+# ── Ve sticky session ile ilişkisi ───────────────────────────────────────────
+#
+#   2026-07-28 stateless'tır: oturum yoktur, Mcp-Session-Id yoktur, her istek
+#   kendi başına anlamlıdır. Bu yüzden STICKY SESSION GEREKMEZ — ama bu cümle
+#   YALNIZCA SIR PAYLAŞILDIĞINDA doğrudur.
+#
+#   Sır paylaşılmazsa protokol hâlâ stateless görünür, oysa sistem gizliden
+#   gizliye stateful davranır: "2. istek 1. isteğin gittiği replikaya gitmeli"
+#   diye yazılı olmayan bir kural doğar. O noktada sticky session bir ÇÖZÜM
+#   değil, YANLIŞ TASARIMI ÖRTEN BİR YAMADIR — üstelik replika ölünce yine kırılır.
+#
+#       sır paylaşılmış     → stateless GERÇEKTEN stateless. Sticky YOK,
+#                             ölçekleme serbest, replika ölse akış sürer.
+#       sır paylaşılmamış   → sticky ZORUNLU görünür ama yetmez. Yanlış yol.
+#
+#   İkisi tek cümlede: sırrı paylaşmak, protokolün stateless VAADİNİ ALTYAPIDA
+#   GERÇEĞE ÇEVİREN adımdır.
+#
+# ── Aşağıdaki değer neden literal ────────────────────────────────────────────
+#
+#   Compose'da tek bir sabit değer yazmak, TÜM servislerin AYNI anahtarı
+#   paylaşmasının en küçük gösterimidir — çok replikalı bir kümede bu bir
+#   Secret nesnesine karşılık gelir. Ayrıca konteyner yeniden başladığında
+#   bekleyen onaylar geçerli kalır; ders ortasında sunucu restart olunca
+#   demonun ölmemesi için bu gerekir.
+#
+#   ⚠️  BU DEĞER HERKESE AÇIK BİR REPODA DURUYOR. Yalnızca yerel demo içindir.
+#       Üretimde bir sır yöneticisinden gelmelidir. Bkz. KARARLAR.md → K-07.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: xurrent-mcp
+
+# ── Tekrarı kesen ortak bloklar ──────────────────────────────────────────────
+x-ortak-ortam: &ortak-ortam
+  XURRENT_MODE: mock
+  CALENDAR_PROVIDER: mock
+  MCP_PROTOCOL: "2026-07-28"
+  XURRENT_TIMEZONE: Europe/Istanbul
+  TZ: Europe/Istanbul
+  XURRENT_CONFIRM_POLICY: closed
+  XURRENT_DRY_RUN: "0"
+
+  # ★ ÜÇ SUNUCUDA DA AYNI DEĞER. Farklı olsalardı MRTR onayı sunucular
+  #   arasında taşınamazdı. Bkz. yukarıdaki uzun açıklama.
+  XURRENT_STATE_SECRET: "ders-demosu-icin-sabit-anahtar-uretimde-ASLA-kullanma"
+  XURRENT_STATE_TTL: "300"
+
+x-saglik: &saglik
+  interval: 15s
+  timeout: 6s
+  retries: 5
+
+services:
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Sahte dış servisler — önce bunlar, sunucular bunlara bağlı
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  sahte-xurrent:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.sahte
+    image: xurrent-mcp-sahte:draft
+    command: ["node", "tools/fake-xurrent/server.mjs"]
+    environment:
+      KOPRU_PORT_DEGISKENI: FAKE_XURRENT_PORT
+      KOPRU_VARSAYILAN_PORT: "4000"
+      FAKE_XURRENT_PORT: "4000"
+      XURRENT_TIMEZONE: Europe/Istanbul
+      TZ: Europe/Istanbul
+    ports:
+      - "4000:4000"
+    healthcheck:
+      # SAĞLIK UCU YOK — EKLENMEDİ. server.mjs:448 POST dışı her isteğe 405
+      # döner; canlılık ancak bu BELGELENMİŞ davranışla ölçülebilir.
+      # 405 almak "süreç ayakta ve HTTP konuşuyor" demektir; daha fazlasını
+      # iddia etmiyoruz ve etmemeliyiz.
+      test: ["CMD-SHELL", "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:4000/ | grep -q 405"]
+      <<: *saglik
+      start_period: 5s
+
+  sahte-gemini:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.sahte
+    image: xurrent-mcp-sahte:draft
+    # --mod otomatik: kural tabanlı, tekrarlanabilir. `zar` modunda --tohum ile
+    # rastgelelik sabitlenebilir; `sor` modu insan yanıtı bekler ve compose'da
+    # asılı kalır — bu yüzden varsayılan DEĞİL.
+    command: ["node", "tools/fake-gemini/server.mjs", "--mod", "otomatik"]
+    environment:
+      KOPRU_PORT_DEGISKENI: FAKE_GEMINI_PORT
+      KOPRU_VARSAYILAN_PORT: "5100"
+      FAKE_GEMINI_PORT: "5100"
+      TZ: Europe/Istanbul
+    ports:
+      - "5100:5100"
+    healthcheck:
+      # Burada GERÇEK bir sağlık ucu VAR (server.mjs:412).
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:5100/saglik > /dev/null"]
+      <<: *saglik
+      start_period: 5s
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Üç MCP sunucusu — aynı sözleşme, üç dil
+  # ═══════════════════════════════════════════════════════════════════════════
+  #
+  # Ana makine portları BİLEREK farklı, konteyner portu AYNI (8788):
+  # sözleşmenin dilden bağımsız olduğunu, farkın yalnızca yayınlama
+  # ayrıntısında kaldığını göstermek için.
+
+  mcp-ts:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.typescript
+    image: xurrent-mcp-typescript:draft
+    environment:
+      <<: *ortak-ortam
+      MCP_HTTP_PORT: "8788"
+      MCP_SAGLIK_YOLU: /mcp
+    ports:
+      - "8788:8788"
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/saglik-kontrol.sh"]
+      <<: *saglik
+      start_period: 5s
+    depends_on:
+      sahte-xurrent: { condition: service_healthy }
+
+  mcp-py:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.python
+    image: xurrent-mcp-python:draft
+    environment:
+      <<: *ortak-ortam
+      MCP_HTTP_PORT: "8788"
+      MCP_SAGLIK_YOLU: /mcp
+      # ★ DİĞER İKİSİNDEN FARKI. Python'un HTTP transport'u `server/discover`a
+      #   -32601 der (ölçüldü); sağlığı `initialize` ile yokluyoruz.
+      #   Sebep ve kalıcı düzeltme: KARARLAR.md → K-02.
+      MCP_SAGLIK_METODU: initialize
+    ports:
+      # ⚠️  Bu servise YALNIZCA ana makineden 127.0.0.1:8798 ile erişilir.
+      #     Konteynerden konteynere `http://mcp-py:8788` çağrısı HTTP 421
+      #     "Invalid Host header" alır — SDK'nın DNS rebinding koruması
+      #     localhost dışındaki Host'ları reddeder. KARARLAR.md → K-02.
+      - "8798:8788"
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/saglik-kontrol.sh"]
+      <<: *saglik
+      start_period: 15s
+    depends_on:
+      sahte-xurrent: { condition: service_healthy }
+
+  mcp-cs:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.csharp
+    image: xurrent-mcp-csharp:draft
+    environment:
+      <<: *ortak-ortam
+      MCP_HTTP_PORT: "8788"
+      # ★ C# MCP'yi KÖKTEN yayınlar (WebHost.cs → app.MapMcp()), /mcp'den DEĞİL.
+      MCP_SAGLIK_YOLU: /
+    ports:
+      - "8808:8788"
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/saglik-kontrol.sh"]
+      <<: *saglik
+      start_period: 20s
+    depends_on:
+      sahte-xurrent: { condition: service_healthy }
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Ortak web UI
+  # ═══════════════════════════════════════════════════════════════════════════
+  #
+  # clients/web statik dosyaları ÜÇ backend'de de aynıdır; arayüz hangi dilin
+  # arkasında çalıştığını bilmez. Burada TypeScript imajı servis ediyor —
+  # sebebi tercih değil ÖLÇÜM: `web` modunda 0.0.0.0'a bağlanan tek dil o.
+  # Python (web.py:178) ve C# (WebHost.cs) burada da localhost'a çakılıdır;
+  # onlarla koşmak için loopback köprüsü + KOPRU_PORT_DEGISKENI=WEB_PORT gerekir.
+  # Bkz. README § "Web arayüzünü başka bir dille koşmak".
+
+  web:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.typescript
+    image: xurrent-mcp-typescript:draft
+    command: ["node", "servers/typescript/dist/agent/web.js"]
+    environment:
+      <<: *ortak-ortam
+      WEB_PORT: "8787"
+      # Anahtarsız sohbet: istemci kodunda TEK SATIR değişmez, yalnızca taban
+      # adres sahte sunucuya çevrilir. GEMINI_API_KEY gerçek bir sır DEĞİL —
+      # sahte sunucu yalnızca header'ın VARLIĞINI şart koşar (server.mjs:419).
+      GEMINI_BASE_URL: http://sahte-gemini:5100
+      GEMINI_API_KEY: sahte
+      GEMINI_MODEL: gemini-3.6-flash
+    ports:
+      - "8787:8787"
+    healthcheck:
+      # Web modunda MCP sağlık sondası ANLAMSIZ (burada MCP ucu yok).
+      # TypeScript'te /api/health YOKTUR; /api/config vardır ve sır sızdırmaz
+      # (yalnızca hasApiKey boolean'ı döner). Sağlık ucu EKLENMEDİ, var olan
+      # uç kullanıldı. Bkz. KARARLAR.md → K-04.
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8787/api/config > /dev/null"]
+      <<: *saglik
+      start_period: 5s
+    depends_on:
+      sahte-gemini: { condition: service_healthy }
+
+# ── Ağ ───────────────────────────────────────────────────────────────────────
+# Açık ağ tanımı YOK: compose varsayılan bir bridge ağı kurar ve servisler
+# birbirini servis adıyla çözer. Bu yığında servisler arası çağrı zaten yok
+# (web → sahte-gemini hariç), o yüzden özelleştirmek boş karmaşıklık olurdu.
+#
+# ── Volume ───────────────────────────────────────────────────────────────────
+# Volume YOK: fixtures/ imaja gömülüdür ve mock modda yazmalar BELLEKTE tutulur
+# (XURRENT_MOCK_PERSIST=1 verilmedikçe). Konteyner ölünce durum sıfırlanır;
+# ders tekrarlanabilirliği için İSTENEN davranış budur.

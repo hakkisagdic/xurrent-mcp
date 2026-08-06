@@ -1,0 +1,401 @@
+# RELEASE — v* etiketiyle tetiklenir: doğrula → imaj üret → sürüm yayınla.
+#
+# SIRA PAZARLIĞA AÇIK DEĞİLDİR:
+#   1) doğrulama   test-all'ın TAMAMI. Kalan adım varsa buradan öteye geçilmez.
+#   2) imajlar     üç konteyner imajı GHCR'ye. Doğrulama geçmeden başlamaz.
+#   3) sürüm       GitHub Release: değişiklikler + test-all özeti + SBOM.
+#
+# Neden burada matrix VAR, ci.yml'de YOK: ci.yml'deki doğrulayıcılar üç sunucuyu
+# aynı anda ayağa kaldırıp KARŞILAŞTIRIR — bölünürlerse kör kalırlar. İmaj üretimi
+# ise üç BAĞIMSIZ iştir; hiçbiri diğerinin çıktısını okumaz. Matrix'in doğru
+# kullanımı tam olarak budur: bağımsız işler.
+#
+# ★ SIRLAR İMAJA GİRMEZ — bu bir slogan değil, aşağıda ÖLÇÜLEN bir iddiadır.
+#   XURRENT_TOKEN · GEMINI_API_KEY · XURRENT_STATE_SECRET imaja ne ARG ne ENV
+#   olarak geçer; "imaj sır taşımıyor" adımı imaj konfigürasyonunu registry'den
+#   okuyup bunu doğrular. Bu üçü ÇALIŞMA ZAMANINDA verilir.
+#
+# ★ ÇOK REPLİKALI DAĞITIM UYARISI (imajı kullanacak olan okusun):
+#   MCP 2026-07-28 onay akışı (MRTR) HMAC ile imzalı bir `requestState` üretip
+#   İSTEMCİYE emanet eder; istemci ikinci istekte geri getirir. İmza anahtarı
+#   XURRENT_STATE_SECRET'tır ve BOŞ BIRAKILIRSA süreç başında RASTGELE üretilir.
+#   Bu imajdan HTTP transport ile BİRDEN FAZLA replika koşturur ve sırrı
+#   paylaşmazsanız, ikinci istek başka bir replikaya düştüğünde imza doğrulanamaz
+#   ve ONAY AKIŞI SESSİZCE KIRILIR. Kullanıcı "onayladım ama yazılmadı" der;
+#   sebebi hiçbir logda görünmez.
+#   Yani XURRENT_STATE_SECRET replikalar arası PAYLAŞILAN bir sır OLMAK ZORUNDADIR.
+#   2026-07-28 stateless olduğu için sticky session GEREKMEZ — ama bu yalnızca
+#   sır paylaşıldığında doğrudur. İkisi birlikte geçerlidir.
+#   Ayrıntı: .github/KARARLAR-CICD.md § K-2
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  # Elle koşu: imaj üretimini ve sürüm notunu YAYINLAMADAN denemek için.
+  workflow_dispatch:
+    inputs:
+      etiket:
+        description: "Denenecek sürüm etiketi (örn. v0.1.0-deneme). Yayınlanmaz, yalnızca üretilir."
+        type: string
+        required: true
+      yayinla:
+        description: "GitHub Release GERÇEKTEN oluşturulsun mu"
+        type: boolean
+        default: false
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false # ★ yarıda kesilen bir yayın, yarım itilmiş imaj bırakır.
+
+permissions:
+  contents: read
+
+env:
+  XURRENT_MODE: mock
+  XURRENT_DRY_RUN: "1"
+  CALENDAR_PROVIDER: mock
+  TZ: Europe/Istanbul
+  DOTNET_NOLOGO: "1"
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+  KAYIT: ghcr.io
+  # Etiket adı: push ile geldiyse ref_name, elle koşuda girdi.
+  SURUM: ${{ github.event_name == 'workflow_dispatch' && inputs.etiket || github.ref_name }}
+
+jobs:
+  # ── 1) DOĞRULAMA — geçmeden hiçbir şey yayınlanmaz ──────────────────────
+  dogrulama:
+    name: doğrulama (test-all, tamamı)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Kaynak kodu al
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Ortam kur
+        uses: ./.github/actions/ortam-kur
+
+      # ★ --bilinen-ihlaller BURADA YOK ve olmayacak. CI'da bir MUST ihlalini
+      # elle maskelemek tartışılabilir; bir SÜRÜM YAYINLARKEN maskelemek,
+      # bilinen bir spec ihlalini imzalı bir imajın içine koymaktır.
+      - name: Bütün doğrulama katmanları
+        run: node scripts/test-all.mjs --json --no-color > test-all-raporu.json
+
+      - name: Raporu yükle
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-all-raporu
+          path: test-all-raporu.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Özeti iş akışı sayfasına yaz
+        if: always()
+        run: |
+          node .github/scripts/rapor-ozeti.mjs \
+            --baslik "test-all — ${SURUM}" test-all-raporu.json \
+            >> "$GITHUB_STEP_SUMMARY" || true
+
+  # ── 2) İMAJLAR — üç bağımsız konteyner ──────────────────────────────────
+  imajlar:
+    name: imaj (${{ matrix.kisa }})
+    needs: dogrulama
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    permissions:
+      contents: read
+      packages: write # GHCR'ye itme
+
+    strategy:
+      fail-fast: false # bir dilin imajı kırılınca diğer ikisinin kanıtı da kaybolmasın
+      matrix:
+        include:
+          - kisa: ts
+            dil: typescript
+            baslik: TypeScript
+          - kisa: py
+            dil: python
+            baslik: Python
+          - kisa: cs
+            dil: csharp
+            baslik: "C#"
+
+    steps:
+      - name: Kaynak kodu al
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Dockerfile'lar IaC tarafında `deploy/docker/Dockerfile.<dil>` yolunda
+      # duruyor (bkz. .github/KARARLAR-CICD.md § K-1). Yol bir SÖZLEŞMEDİR:
+      # IaC tarafı taşırsa burası sessizce başka bir şey üretmesin diye
+      # varlığını açıkça denetliyoruz. "İmaj üretilmedi ama sürüm yayınlandı"
+      # sessiz hatası, kırmızı bir koşudan çok daha pahalıdır.
+      - name: Ön koşul — Dockerfile var mı
+        run: |
+          hedef="deploy/docker/Dockerfile.${{ matrix.dil }}"
+          if [ ! -f "$hedef" ]; then
+            echo "::error file=$hedef::$hedef yok. release.yml bu yolu bekliyor (bkz. .github/KARARLAR-CICD.md § K-1)."
+            echo "Derleme bağlamı DEPO KÖKÜDÜR: üç sunucu da contract/ ve fixtures/ okur." >&2
+            exit 1
+          fi
+          echo "✔ $hedef bulundu"
+
+      - name: buildx kur
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: GHCR'ye giriş
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ${{ env.KAYIT }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Etiketleme: semver + sha. `latest` YALNIZCA ön-sürüm OLMAYAN etiketlerde.
+      #   v1.2.3        → 1.2.3 · 1.2 · 1 · sha-<7> · latest
+      #   v1.2.3-rc.1   → 1.2.3-rc.1 · sha-<7>            (latest YOK, major/minor YOK)
+      # Ön-sürümün `latest`i ya da `1`i kapması, "kararlıyı çektim" sanan birine
+      # release candidate vermek demektir.
+      - name: İmaj etiketleri ve etiket-üstü veri
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.KAYIT }}/${{ github.repository_owner }}/xurrent-mcp-${{ matrix.kisa }}
+          tags: |
+            type=semver,pattern={{version}},value=${{ env.SURUM }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ env.SURUM }}
+            type=semver,pattern={{major}},value=${{ env.SURUM }}
+            type=sha,format=short
+            type=raw,value=latest,enable=${{ !contains(env.SURUM, '-') }}
+          labels: |
+            org.opencontainers.image.title=xurrent-mcp (${{ matrix.baslik }})
+            org.opencontainers.image.description=Xurrent (ITSM) MCP sunucusu — ${{ matrix.baslik }} implementasyonu, tek sözleşme
+            org.opencontainers.image.licenses=MIT
+            org.opencontainers.image.version=${{ env.SURUM }}
+
+      # context: . → DEPO KÖKÜ, tercih değil ZORUNLULUK. Üç sunucu da
+      # `contract/tools.json` ve `fixtures/` okur; dahası TypeScript'in kök
+      # bulucusu repo kökünü tam olarak bu iki yolla tanır. Bağlamı
+      # servers/<dil>/ yapmak, imajı ilk `xurrent_list_open_work` çağrısında
+      # "fixtures yok" ile düşürürdü.
+      #
+      # Yoksayma listesi: BuildKit önce `<Dockerfile yolu>.dockerignore`a bakar.
+      # deploy/docker/Dockerfile.<dil>.dockerignore dosyaları bu yüzden
+      # otomatik devreye girer — burada ayrıca bir şey yapmamız gerekmiyor.
+      #
+      # provenance/sbom KAPALI: SBOM'u aşağıda AYRI üretip Release'e ekliyoruz;
+      # buildx'in ürettiği manifest listesi bazı registry istemcilerini şaşırtıyor
+      # ve bu derste imajın manifest'i sade kalsın istiyoruz. (bkz. K-8)
+      - name: İmajı üret ve it
+        id: uret
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: deploy/docker/Dockerfile.${{ matrix.dil }}
+          push: true
+          platforms: linux/amd64 # TODO(K-3): arm64 kararı
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: false
+          sbom: false
+          cache-from: type=gha,scope=${{ matrix.kisa }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.kisa }}
+          # ★ build-args YOK. Sır BUILD ARG ile geçilmez: build arg imaj
+          #   geçmişinde (docker history) DURUR ve imajı çeken herkes okur.
+
+      # ── Sır sızıntısı denetimi — iddiayı ÖLÇ ────────────────────────────
+      # İmaj konfigürasyonunu registry'den okuyup ENV/etiket içinde sır adı
+      # arıyoruz. Adın kendisi (XURRENT_TOKEN=) yeterli sinyaldir: bir sırrın
+      # imajda ENV olarak durması, değeri boş olsa bile yanlış bir alışkanlıktır.
+      - name: İmaj sır taşımıyor
+        env:
+          REF: ${{ env.KAYIT }}/${{ github.repository_owner }}/xurrent-mcp-${{ matrix.kisa }}@${{ steps.uret.outputs.digest }}
+        run: |
+          set -euo pipefail
+          yapi=$(docker buildx imagetools inspect "$REF" --format '{{json .Image}}')
+          echo "$yapi" > imaj-konfig-${{ matrix.kisa }}.json
+          kirli=0
+          for ad in XURRENT_TOKEN GEMINI_API_KEY XURRENT_STATE_SECRET; do
+            if printf '%s' "$yapi" | grep -qi "${ad}="; then
+              echo "::error::imajda $ad gömülü görünüyor — sır imaja GİRMEZ"
+              kirli=1
+            fi
+          done
+          if [ "$kirli" -eq 0 ]; then
+            echo "✔ üç sır da imaj konfigürasyonunda yok"
+          fi
+          exit "$kirli"
+
+      # SBOM: imajın İÇİNDEKİ paketlerin envanteri. Kaynak ağacının değil —
+      # bir CVE duyurulduğunda sorulan soru "hangi imajımda var" olur.
+      - name: SBOM üret (SPDX)
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: ${{ env.KAYIT }}/${{ github.repository_owner }}/xurrent-mcp-${{ matrix.kisa }}@${{ steps.uret.outputs.digest }}
+          format: spdx-json
+          output-file: sbom-xurrent-mcp-${{ matrix.kisa }}.spdx.json
+          upload-artifact: false
+
+      # Künye AYRIŞTIRILABİLİR olsun diye düz `anahtar=değer` satırları yazıyoruz;
+      # çok satırlı `tags` çıktısı kabuğa DOĞRUDAN gömülmez (enjeksiyon ve
+      # ayrıştırma tuzağı), env üzerinden geçirilir.
+      - name: İmaj künyesini yaz
+        env:
+          ETIKETLER: ${{ steps.meta.outputs.tags }}
+          DIGEST: ${{ steps.uret.outputs.digest }}
+          KISA: ${{ matrix.kisa }}
+          BASLIK: ${{ matrix.baslik }}
+        run: |
+          ilk=$(printf '%s\n' "$ETIKETLER" | head -n1)
+          {
+            echo "### imaj — $BASLIK"
+            echo ""
+            echo '```'
+            printf '%s\n' "$ETIKETLER"
+            echo '```'
+            echo ""
+            echo "digest: \`$DIGEST\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "kisa=$KISA"
+            echo "baslik=$BASLIK"
+            echo "digest=$DIGEST"
+            echo "ilktag=$ilk"
+          } > "imaj-${KISA}.txt"
+
+      - name: SBOM ve künyeyi yükle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: imaj-cikti-${{ matrix.kisa }}
+          path: |
+            sbom-xurrent-mcp-${{ matrix.kisa }}.spdx.json
+            imaj-${{ matrix.kisa }}.txt
+            imaj-konfig-${{ matrix.kisa }}.json
+          if-no-files-found: error
+          retention-days: 90
+
+  # ── 3) SÜRÜM — Release notu + SBOM ekleri ───────────────────────────────
+  surum:
+    name: sürüm notu ve yayın
+    needs: [dogrulama, imajlar]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    permissions:
+      contents: write # Release oluşturmak için TEK yükseltme
+
+    steps:
+      # fetch-depth: 0 → değişiklik listesi için TÜM geçmiş ve etiketler gerekli.
+      - name: Kaynak kodu al (tüm geçmiş)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      # Yalnızca rapor-ozeti.mjs koşulacak; üç dilin araç zinciri gerekmez.
+      - name: Ortam kur (yalnızca Node)
+        uses: ./.github/actions/ortam-kur
+        with:
+          python: "false"
+          dotnet: "false"
+          bagimliliklar: "false"
+
+      - name: Çıktıları indir
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: cikti
+
+      - name: Sürüm notunu derle
+        id: not
+        run: |
+          set -euo pipefail
+
+          # Önceki etiket: semver sırasına göre, kendisi hariç ilk sıradaki.
+          # İlk sürümde boş kalır ve tüm geçmiş listelenir.
+          onceki=$(git tag --sort=-v:refname | grep -vxF "$SURUM" | head -n1 || true)
+          if [ -n "$onceki" ]; then aralik="${onceki}..HEAD"; else aralik="HEAD"; fi
+
+          {
+            echo "## Değişiklikler"
+            echo ""
+            if [ -n "$onceki" ]; then
+              echo "\`${onceki}\` → \`${SURUM}\`"
+            else
+              echo "İlk sürüm — tüm geçmiş."
+            fi
+            echo ""
+            # --no-merges: birleştirme commit'leri değişiklik anlatmaz, gürültü yapar.
+            # --max-count: `| head` DEĞİL — pipefail açıkken head'in SIGPIPE'ı
+            # git'i düşürür ve adım sebepsiz kırılır.
+            git log --no-merges --max-count=200 --pretty=format:'- %s (%h)' "$aralik"
+            echo ""
+            echo ""
+          } > surum-notu.md
+
+          # test-all özeti — KISA biçim: 16 satırlık tablo sürüm notunda gürültüdür,
+          # tek satırlık verdikt ve kalanlar yeter. Tam tablo artifact'ta durur.
+          {
+            echo "## Doğrulama"
+            echo ""
+          } >> surum-notu.md
+          rapor=$(find cikti -name 'test-all-raporu.json' | head -n1 || true)
+          if [ -n "$rapor" ]; then
+            node .github/scripts/rapor-ozeti.mjs --kisa --baslik "test-all" "$rapor" >> surum-notu.md || true
+          else
+            echo "_test-all raporu bulunamadı._" >> surum-notu.md
+          fi
+
+          {
+            echo ""
+            echo "## Konteyner imajları"
+            echo ""
+            echo "| dil | imaj | digest |"
+            echo "|---|---|---|"
+          } >> surum-notu.md
+          shopt -s nullglob
+          for f in cikti/imaj-cikti-*/imaj-*.txt; do
+            baslik=$(sed -n 's/^baslik=//p' "$f")
+            digest=$(sed -n 's/^digest=//p' "$f")
+            ilk=$(sed -n 's/^ilktag=//p' "$f")
+            echo "| ${baslik} | \`${ilk}\` | \`${digest}\` |" >> surum-notu.md
+          done
+
+          {
+            echo ""
+            echo "### Sırlar"
+            echo ""
+            echo "İmajlar sır TAŞIMAZ. \`XURRENT_TOKEN\`, \`GEMINI_API_KEY\` ve \`XURRENT_STATE_SECRET\` çalışma anında verilir."
+            echo ""
+            echo "> ⚠️ **Çok replikalı HTTP dağıtımı:** \`XURRENT_STATE_SECRET\` replikalar arasında **PAYLAŞILAN** bir sır olmak zorundadır."
+            echo "> Boş bırakılırsa her süreç kendi rastgele anahtarını üretir; MRTR onayının ikinci isteği başka bir replikaya düştüğünde"
+            echo "> imza doğrulanamaz ve onay akışı **sessizce** kırılır. 2026-07-28 stateless olduğu için sticky session gerekmez —"
+            echo "> ama bu yalnızca sır paylaşıldığında doğrudur."
+            echo ""
+            echo "### SBOM"
+            echo ""
+            echo "Her imaj için SPDX JSON bu sürümün ekindedir."
+          } >> surum-notu.md
+
+          cat surum-notu.md >> "$GITHUB_STEP_SUMMARY"
+
+      # gh CLI koşucularda hazır gelir; üçüncü taraf bir release eylemi eklemek
+      # yerine onu kullanıyoruz — pinlenecek bir bağımlılık daha az.
+      - name: GitHub Release oluştur
+        if: github.event_name == 'push' || inputs.yayinla
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          onsurum=""
+          case "$SURUM" in *-*) onsurum="--prerelease" ;; esac
+          # shellcheck disable=SC2086
+          gh release create "$SURUM" \
+            --title "$SURUM" \
+            --notes-file surum-notu.md \
+            $onsurum \
+            cikti/imaj-cikti-*/sbom-*.spdx.json
+
+      - name: Yayınlanmadı (elle koşu)
+        if: github.event_name == 'workflow_dispatch' && !inputs.yayinla
+        run: |
+          echo "::notice::Sürüm notu üretildi ama YAYINLANMADI (yayinla=false). Not için iş akışı özetine bakın."

@@ -1,0 +1,40 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# STATE BACKEND — ★ BU BIR KARARDIR, VARSAYILAN VERILMEDI
+#
+# Dosya adi ".example" ile bitiyor; Terraform onu OKUMAZ. Bir karara varinca
+# `backend.tf` olarak kopyalayin ve degerleri doldurun.
+#
+# ★★★ NEDEN ONEMLI: Terraform state, `random_password` ile uretilen
+#     XURRENT_STATE_SECRET'i DUZ METIN tutar. `sensitive = true` yalnizca
+#     ekran ciktisini gizler, state'i SIFRELEMEZ.
+#
+#     Sonuc: state dosyasi da bir SIRDIR.
+#       · yerel state → laptop'ta duran, yedeklenmeyen, paylasilinca sizan bir sir
+#       · uzak state  → sifreli, surumlu, erisimi kisitli, kilitli
+#
+#     Bir dagitimda birden fazla kisi calisacaksa uzak state ZORUNLUDUR: iki
+#     kisinin ayni anda apply'i, kilit olmadan state'i bozar.
+#
+# Secenekler ve gerekceleri: docs/15-dagitim.md § K7.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# terraform {
+#   backend "gcs" {
+#     # TODO: kova adi. Bu repoda uydurma bir kova adi BULUNMAZ.
+#     bucket = ""
+#     prefix = "xurrent-mcp/dev"
+#   }
+# }
+
+# Kovanin kendisi de dogru kurulmalidir; aksi halde "uzak state" yanlis bir
+# guven duygusu verir:
+#
+#   · surumleme ACIK        → bozulan state geri alinabilsin
+#   · public erisim KAPALI  → sir icerir
+#   · saklama politikasi    → silinen surumler bir sure tutulsun
+#   · erisim: yalnizca dagitim yapan kimlikler
+#
+# TODO(karar): kovayi Terraform'un kendisi mi olustursun? Bu klasik bir
+# yumurta-tavuk sorusudur; ayri ve KUCUK bir "bootstrap" kok modulu yaygin
+# cozumdur. Bu iskelette bilerek YOK — kullanici karar vermeden yazilmis bir
+# bootstrap, yanlis yerde duran bir kova demektir.

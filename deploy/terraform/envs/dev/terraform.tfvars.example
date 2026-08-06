@@ -1,0 +1,61 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# cp terraform.tfvars.example terraform.tfvars
+#
+# ★★★ BU DOSYAYA SIR YAZILMAZ.
+#
+# Uc sirrin ucu de burada YOK ve olmayacak:
+#
+#   XURRENT_TOKEN        → sir deposunda. Buraya yalnizca KIMLIGI yazilabilir.
+#   GEMINI_API_KEY       → sir deposunda. Buraya yalnizca KIMLIGI yazilabilir.
+#   XURRENT_STATE_SECRET → hicbir yere yazilmaz. Terraform URETIR ve sir
+#                          deposuna kendisi koyar. Siz gormezsiniz.
+#
+# terraform.tfvars (ornek degil, gercegi) .gitignore'dadir.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+# ── ZORUNLU ─────────────────────────────────────────────────────────────────
+
+# TODO: kendi proje kimliginizi yazin. Bu repoda uydurma bir deger BULUNMAZ.
+gcp_project_id = ""
+
+# TODO: bolge secin.
+# ★ Bu ayni zamanda bir VERI IKAMETI kararidir: servis Xurrent'a baglanir ve
+#   zaman girisi verisi tasir. Xurrent bolgeniz (Global/au/uk/ch/us) ile birlikte
+#   dusunun. Bkz. docs/15-dagitim.md § K9.
+gcp_region = ""
+
+# TODO: imaj referansi. Bu repoda Dockerfile YOKTUR — once imaj hattina karar
+# verin (docs/15-dagitim.md § K8), ayrica HANGI DILI dagittiginiza
+# (§ K1) ve o dilin konteynere hazir olup olmadigina bakin (§ "Dagitim
+# onkosullari" — Python ve C# su an HAZIR DEGIL).
+image = ""
+
+
+# ── SIRLAR: DEGER DEGIL, KIMLIK ──────────────────────────────────────────────
+
+# null birakirsaniz Terraform bos bir sir kabi olusturur ve `secrets_to_fill`
+# ciktisinda size adini soyler; degeri apply'dan sonra siz yazarsiniz.
+# xurrent_token_secret_id  = null
+# gemini_api_key_secret_id = null
+
+
+# ── ISLETIM ──────────────────────────────────────────────────────────────────
+
+# xurrent_mode = "mock"   → token gerekmez, fixtures'tan okur (varsayilan)
+# xurrent_mode = "live"   → gercek Xurrent. Ilk denemede dry_run'i true birakin.
+xurrent_mode    = "mock"
+xurrent_dry_run = true
+
+# server_mode = "http" → MCP sunucusu. GEMINI_API_KEY GEREKMEZ.
+# server_mode = "web"  → sohbet arayuzu. GEMINI_API_KEY GEREKIR.
+server_mode = "http"
+
+min_replicas = 0
+max_replicas = 3
+
+# ★★★ true yapmadan once docs/15-dagitim.md § K4'u okuyun.
+#     Bu repodaki MCP HTTP tasiyicisinda KIMLIK DOGRULAMA YOKTUR.
+allow_unauthenticated = false
+
+labels = { ders = "xurrent-mcp", ortam = "dev" }

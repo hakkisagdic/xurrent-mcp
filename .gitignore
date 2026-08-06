@@ -1,10 +1,16 @@
 # sırlar
-.env
+.env*
+# ...ama şablon COMMIT EDİLİR. Negasyon olmadan '.env*' onu da kapsıyor;
+# bugün takipte olduğu için görünmüyor, ama silinip yeniden eklenirse
+# sessizce ignore edilir ve repo kurulamaz hale gelir.
+!.env.example
 *.pem
 *-token.json
 
 # kişisel Claude Code ayarları (proje ayarları .mcp.json'da, o commit edilir)
-.claude/settings.local.json
+# Claude Code yerel çalışma alanı: kişisel izinler ve geçici worktree'ler.
+# Repo materyali DEĞİLDİR — CLAUDE.md ise materyaldir ve commit'lidir.
+.claude/
 
 # node
 node_modules/

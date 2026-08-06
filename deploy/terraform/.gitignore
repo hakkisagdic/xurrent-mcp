@@ -1,0 +1,29 @@
+# ★ STATE BIR SIRDIR: uretilen XURRENT_STATE_SECRET'i DUZ METIN tutar.
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+crash.log
+crash.*.log
+
+# Gercek degerler. .example dosyalari COMMIT EDILIR, gerceklari EDILMEZ.
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+
+# Plan ciktisi da sir icerebilir (degisen ortam degiskenleri, state farklari).
+*.tfplan
+plan.out
+
+# Yerel calisma alani
+.terraform/
+.terraformrc
+terraform.rc
+
+# ★ .terraform.lock.hcl BILEREK LISTEDE YOK — o COMMIT EDILIR.
+#   Saglayici surumlerini ve kontrol toplamlarini sabitler; yok sayilirsa
+#   "benim makinemde calisiyordu" sinifi farklar geri gelir. Bu repoda henuz
+#   yok, cunku `terraform init` hic calistirilmadi (bkz. README).
+
+# Karara baglanmamis backend
+backend.tf
+!backend.tf.example

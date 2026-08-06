@@ -1,0 +1,56 @@
+# Dockerfile'a ÖZEL yoksayma listesi.
+#
+# NEDEN BURADA: BuildKit önce `<Dockerfile yolu>.dockerignore` dosyasına bakar,
+# yoksa bağlam kökündeki `.dockerignore`a düşer. İnşa bağlamı repo kökü olmak
+# ZORUNDA (contract/ + fixtures/ paylaşılıyor) ama repo kökü bu görevde
+# yazılabilir alan değildi. Dosya-başı liste tam olarak bunun içindir ve yan
+# faydası var: her imaj yalnızca kendi gereksiz dosyalarını eler.
+#
+# TODO(KARARLAR K-05): Üç liste büyük ölçüde aynı. Kök .dockerignore'a taşımak
+# tekrarı bitirir ama dosya-başı ayrımı kaybettirir. Kullanıcı seçmeli.
+
+# ── Sırlar — İMAJA ASLA GİRMEZ ───────────────────────────────────────────────
+.env
+.env.*
+*.pem
+*-token.json
+**/google-token.json
+
+# ── Sürüm kontrolü ve editör ─────────────────────────────────────────────────
+.git
+.gitignore
+.github
+.claude
+.mcp.json
+**/.DS_Store
+
+# ── Yerel derleme çıktıları ve bağımlılıklar ─────────────────────────────────
+# node_modules imajın İÇİNDE `npm ci` ile yeniden kurulur; ana makinenin
+# (burada: darwin/arm64) derlenmiş eklentileri linux imajına taşınmamalıdır.
+**/node_modules
+**/dist
+**/*.tsbuildinfo
+
+# Diğer dillerin ağırlıkları — bu imaja hiç girmez.
+servers/python
+servers/csharp
+
+# ── Yerel durum ──────────────────────────────────────────────────────────────
+fixtures/.time-entries.local.json
+tools/fake-gemini/kuyruk
+
+# ── Bu imaja gerekmeyenler ───────────────────────────────────────────────────
+# deploy/ hariç tutulur AMA bin/ geri alınır: sağlık kontrolü betiği imaja girer.
+deploy
+!deploy/docker/bin
+docs
+!docs/wizard
+clients/atolye
+clients/inspector
+clients/wizard
+scripts
+tools
+
+# ── iCloud sync duplikatları ─────────────────────────────────────────────────
+**/* 2.*
+**/* 2

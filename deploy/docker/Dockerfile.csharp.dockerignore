@@ -1,0 +1,48 @@
+# Dockerfile.csharp'a ÖZEL yoksayma listesi.
+# Mekanizmanın gerekçesi: Dockerfile.typescript.dockerignore başlığı.
+
+# ── Sırlar — İMAJA ASLA GİRMEZ ───────────────────────────────────────────────
+.env
+.env.*
+*.pem
+*-token.json
+**/google-token.json
+
+# ── Sürüm kontrolü ve editör ─────────────────────────────────────────────────
+.git
+.gitignore
+.github
+.claude
+.mcp.json
+**/.DS_Store
+
+# ── Yerel .NET çıktıları ─────────────────────────────────────────────────────
+# bin/ ve obj/ ana makinede (darwin/arm64) üretildi. Bağlama girerlerse
+# `dotnet restore` bayat obj/project.assets.json'u bulur ve linux-x64 hedefiyle
+# çakışır — klasik "yerelde derleniyor, imajda derlenmiyor" kaynağı.
+**/bin
+**/obj
+servers/csharp/XurrentMcp.Tests
+
+# Diğer dillerin ağırlıkları — bu imaja hiç girmez.
+servers/typescript
+servers/python
+
+# ── Yerel durum ──────────────────────────────────────────────────────────────
+fixtures/.time-entries.local.json
+tools/fake-gemini/kuyruk
+
+# ── Bu imaja gerekmeyenler ───────────────────────────────────────────────────
+deploy
+!deploy/docker/bin
+docs
+!docs/wizard
+clients/atolye
+clients/inspector
+clients/wizard
+scripts
+tools
+
+# ── iCloud sync duplikatları ─────────────────────────────────────────────────
+**/* 2.*
+**/* 2

@@ -1,0 +1,129 @@
+# DEPENDABOT — dört ekosistem, haftalık.
+#
+# ★ BU REPODA BİR GERİLİM VAR ve yapılandırma onu çözmek zorunda:
+#   MCP SDK sürümleri BİLEREK SABİTLENMİŞTİR (servers/typescript/package.json'daki
+#   `_dependencyNote`, python'da `mcp==2.0.0`, C#'ta `Version="2.0.0"`). Ders
+#   çıktılarının deterministik kalması buna bağlıdır — sihirbazın 14 adımı ve
+#   uyum denetleyicisinin 252 maddesi bu sürümlere karşı ÖLÇÜLMÜŞTÜR.
+#   Dependabot'un bunları haftalık zıplatması, dersi her hafta yeniden ölçmek
+#   demektir.
+#
+#   Çözüm KÖRLÜK DEĞİL: aşağıda MCP SDK'ları için yalnızca `version-update:*`
+#   türleri yok sayılır. Dependabot'un GÜVENLİK güncellemeleri bu yok saymadan
+#   ETKİLENMEZ — yani SDK'da bir açık duyurulursa PR yine açılır.
+#   Rutin sürüm zıplaması otomatik değildir; güvenlik açığı otomatiktir.
+#   Ayrıntı: .github/KARARLAR-CICD.md § K-10
+#
+# Commit mesajları İNGİLİZCE (depo kuralı); yorumlar ve arayüz metni Türkçe.
+version: 2
+
+updates:
+  # ── TypeScript ────────────────────────────────────────────────────────
+  - package-ecosystem: npm
+    directory: /servers/typescript
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Istanbul
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps(ts)"
+      include: scope
+    # Tek PR'de toplanan yama/minor güncellemeler: on ayrı PR'yi kimse okumaz,
+    # bir PR okunur.
+    groups:
+      ts-kucuk:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    ignore:
+      - dependency-name: "@modelcontextprotocol/*"
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
+          - version-update:semver-patch
+
+  # ── Python ────────────────────────────────────────────────────────────
+  # Ekosistem `uv`: bu proje uv.lock kullanıyor ve dependabot'un `pip`
+  # ekosistemi uv.lock'u OKUMAZ (yalnızca pyproject/requirements). Yanlış
+  # ekosistem seçmek, kilit dosyasını güncellemeyen ve dolayısıyla
+  # `uv sync --frozen` ile çelişen PR'ler üretir.
+  - package-ecosystem: uv
+    directory: /servers/python
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Istanbul
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps(py)"
+      include: scope
+    groups:
+      py-kucuk:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    ignore:
+      - dependency-name: mcp
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
+          - version-update:semver-patch
+
+  # ── C# ────────────────────────────────────────────────────────────────
+  # Dizin ana projeyi VE XurrentMcp.Tests/'i kapsar: dependabot nuget'te
+  # verilen dizinin altındaki tüm csproj'ları tarar.
+  - package-ecosystem: nuget
+    directory: /servers/csharp
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Istanbul
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps(cs)"
+      include: scope
+    groups:
+      cs-kucuk:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    ignore:
+      - dependency-name: ModelContextProtocol*
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
+          - version-update:semver-patch
+
+  # ── GitHub Actions (iş akışları) ──────────────────────────────────────
+  # Eylemler SHA ile pinlenmiştir; dependabot SHA'yı VE yanındaki sürüm
+  # yorumunu birlikte günceller — pin'lemek güncellemeyi engellemez, sadece
+  # "v4 etiketi altımdan değişti" saldırısını engeller.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Istanbul
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+    groups:
+      eylemler:
+        patterns: ["*"]
+
+  # ── GitHub Actions (bileşik eylem) ────────────────────────────────────
+  # AYRI GİRDİ ŞART: yukarıdaki `/` girdisi .github/workflows/*.yml dosyalarını
+  # tarar; .github/actions/*/action.yml içindeki `uses:` satırlarını GÖRMEZ.
+  # Bu girdi olmadan Node/uv/.NET kurulum eylemleri sessizce eskir.
+  - package-ecosystem: github-actions
+    directory: /.github/actions/ortam-kur
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Istanbul
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "ci"

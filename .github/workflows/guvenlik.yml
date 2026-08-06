@@ -1,0 +1,260 @@
+# GÜVENLİK — bağımlılık denetimi + gizli anahtar taraması.
+#
+# İKİ FARKLI SORU, İKİ FARKLI İŞ:
+#   bağımlılık   "kullandığım paketlerde bilinen açık var mı?"  → npm · pip · nuget
+#   sır          "depoya bir anahtar kaçtı mı?"                  → gitleaks (tüm geçmiş)
+#
+# ★ EŞİK — bulgu varsa kırar, AMA HER BULGU DEĞİL:
+#     kritik · yüksek   → KIRAR
+#     orta · düşük      → RAPOR EDER, koşu yeşil kalır
+#   Gerekçe: her düşük seviye danışma kaydında kırmızı yanan bir hat, bir hafta
+#   sonra kimsenin bakmadığı bir hat olur. Kırmızının anlamı korunmalıdır.
+#   Eşiği tek yerde uygulayan .github/scripts/guvenlik-esigi.mjs'dir; üç paket
+#   yöneticisinin üç ayrı şiddet sözlüğünü tek modele indirger.
+#
+# ★ pip-audit ŞİDDET ÜRETMEZ. Python bulguları "bilinmeyen" seviyededir ve
+#   VARSAYILAN OLARAK KIRAR. Sessizce geçmek, gürültüden pahalıdır.
+#   Yumuşatmak bir karardır: workflow_dispatch → bilinmeyen=rapor.
+#   Ayrıntı: .github/KARARLAR-CICD.md § K-5
+#
+# ★ HAFTALIK KOŞU NEDEN ŞART: bir CVE, kod değişmeden yayımlanır. Yalnızca PR'de
+#   koşan bir denetim, hareketsiz bir deponun güvende olduğunu sanır.
+name: guvenlik
+
+on:
+  # Pazartesi 04:17 UTC. Dakika bilerek yuvarlak değil: GitHub'ın zamanlanmış
+  # koşuları saat başlarında kuyruklanır ve gecikir.
+  schedule:
+    - cron: "17 4 * * 1"
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      esik:
+        description: "Bu seviye ve üstü koşuyu kırar"
+        type: choice
+        options: [kritik, yuksek, orta, dusuk]
+        default: yuksek
+      bilinmeyen:
+        description: "Şiddeti bilinmeyen bulgu (pip-audit) ne olsun"
+        type: choice
+        options: [kir, rapor]
+        default: kir
+
+concurrency:
+  group: guvenlik-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  ESIK: ${{ inputs.esik || 'yuksek' }}
+  BILINMEYEN: ${{ inputs.bilinmeyen || 'kir' }}
+  DOTNET_NOLOGO: "1"
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+  # gitleaks SÜRÜMÜ burada sabitlenir. TODO(K-9): resmî `gitleaks-action`
+  # üçüncü taraf ve TİCARİ LİSANSLIDIR (kuruluş depoları için anahtar ister);
+  # bu yüzden MIT lisanslı gitleaks ikilisini KENDİ imajından koşuyoruz.
+  # Bedeli: dependabot bu satırı güncelleyemez, elle takip gerekir.
+  GITLEAKS_SURUM: v8.30.1
+
+jobs:
+  # ── 1) BAĞIMLILIK DENETİMİ ──────────────────────────────────────────────
+  bagimlilik:
+    name: bağımlılık denetimi (npm · pip · nuget)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Kaynak kodu al
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Ortam kur
+        uses: ./.github/actions/ortam-kur
+
+      # Denetim çıktıları TEK dizinde toplanır: artifact'a yalnızca bunlar
+      # gitsin, kurulum eylemlerinin $RUNNER_TEMP'e bıraktığı ara dosyalar
+      # değil. ($RUNNER_TEMP doğrudan yüklenirse rapor, gürültünün içinde kaybolur.)
+      # Not: `runner` bağlamı iş düzeyi `env:` içinde KULLANILAMAZ — bu yüzden
+      # değişken burada, adım içinde $GITHUB_ENV'e yazılıyor.
+      - name: Denetim dizini
+        run: |
+          mkdir -p "$RUNNER_TEMP/denetim"
+          echo "DENETIM=$RUNNER_TEMP/denetim" >> "$GITHUB_ENV"
+
+      # Üç denetim de continue-on-error: ilkinin bulgusu diğer ikisinin
+      # ÖLÇÜLMESİNİ engellememeli. Kırmızı karar sonda, tek yerde verilir.
+      #
+      # `|| true` neden var: npm audit BULGU BULUNCA sıfırdan farklı döner.
+      # Bizim istediğimiz o çıkış kodu değil, JSON'un kendisi — kararı eşik
+      # script'i verir. Kodun yutulması burada bilinçlidir.
+      - name: npm audit — servers/typescript
+        id: npm
+        continue-on-error: true
+        run: |
+          (cd servers/typescript && npm audit --json) > "$DENETIM/npm-audit.json" || true
+          node .github/scripts/guvenlik-esigi.mjs \
+            --kaynak npm --dosya "$DENETIM/npm-audit.json" \
+            --ad "npm — servers/typescript" \
+            --esik "$ESIK" --bilinmeyen "$BILINMEYEN" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+      # pip-audit'i `uvx` ile YALITILMIŞ koşuyoruz. `uv run --with pip-audit`
+      # pip-audit'in KENDİ bağımlılıklarını projenin ortamına ekler ve rapora
+      # sokar — denetlenen şeyin denetleyiciyle kirlenmesi kabul edilemez.
+      #
+      # --python 3.13: uvx aksi hâlde rastgele bir yorumlayıcı seçer; bu
+      #   makinede seçtiği 3.10 ile pip-audit'in geçici ortam kurma adımı
+      #   çöküyordu. Yorumlayıcıyı projenin sürümüne sabitlemek hem bu çökmeyi
+      #   hem de "başka Python'da başka sonuç" sınıfını ortadan kaldırır.
+      # --no-deps: `uv export` ZATEN tam çözülmüş ve sabitlenmiş bir liste
+      #   üretir. pip-audit'e bağımlılık çözdürmek, kilit dosyasının söylediği
+      #   sürümler yerine kendi çözdüğü sürümleri denetlemesi demek olurdu.
+      - name: pip-audit — servers/python
+        id: pip
+        continue-on-error: true
+        run: |
+          req="$DENETIM/gereksinimler.txt"
+          rapor="$DENETIM/pip-audit.json"
+          (cd servers/python && uv export --frozen --no-hashes --no-emit-project \
+             --format requirements-txt --output-file "$req")
+          uvx --python 3.13 pip-audit -r "$req" --no-deps \
+            --format json --output "$rapor" || true
+          node .github/scripts/guvenlik-esigi.mjs \
+            --kaynak pip --dosya "$rapor" \
+            --ad "pip-audit — servers/python" \
+            --esik "$ESIK" --bilinmeyen "$BILINMEYEN" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+      # --include-transitive: doğrudan bağımlılığımız temiz olabilir, açık onun
+      # çektiği pakette olabilir. Transitifi dışarıda bırakan bir denetim
+      # NuGet'te neredeyse hiçbir şey görmez.
+      - name: dotnet list package --vulnerable — servers/csharp
+        id: nuget
+        continue-on-error: true
+        run: |
+          kod=0
+          for proj in servers/csharp/XurrentMcp.csproj servers/csharp/XurrentMcp.Tests/XurrentMcp.Tests.csproj; do
+            ad=$(basename "$proj" .csproj)
+            rapor="$DENETIM/dotnet-vuln-$ad.json"
+            dotnet list "$proj" package --vulnerable --include-transitive --format json > "$rapor" || true
+            node .github/scripts/guvenlik-esigi.mjs \
+              --kaynak nuget --dosya "$rapor" \
+              --ad "nuget — $ad" \
+              --esik "$ESIK" --bilinmeyen "$BILINMEYEN" \
+              >> "$GITHUB_STEP_SUMMARY" || kod=1
+          done
+          exit "$kod"
+
+      - name: Denetim raporlarını yükle
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bagimlilik-denetimi
+          path: ${{ runner.temp }}/denetim/
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Karar
+        run: |
+          echo "npm=${{ steps.npm.outcome }} · pip=${{ steps.pip.outcome }} · nuget=${{ steps.nuget.outcome }}"
+          if [ "${{ steps.npm.outcome }}" != "success" ] \
+            || [ "${{ steps.pip.outcome }}" != "success" ] \
+            || [ "${{ steps.nuget.outcome }}" != "success" ]; then
+            echo "::error::eşiği (${ESIK}) aşan bağımlılık bulgusu var — iş akışı özetindeki tablolara bakın"
+            exit 1
+          fi
+          echo "✔ eşiği aşan bulgu yok (eşik=$ESIK, bilinmeyen=$BILINMEYEN)"
+
+  # ── 2) GİZLİ ANAHTAR TARAMASI ───────────────────────────────────────────
+  sir:
+    name: gizli anahtar taraması (gitleaks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      # ★ fetch-depth: 0 ZORUNLU. Sığ bir klonda yalnızca son hâl taranır;
+      #   oysa sızan bir anahtar genelde EKLENİP SONRA SİLİNMİŞTİR ve tam
+      #   olarak geçmişte durur. Sığ tarama "temiz" der ve yanılır.
+      - name: Kaynak kodu al (tüm geçmiş)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      # ★ --redact ŞART: rapor artifact olarak yüklenecek. Redaksiyonsuz bir
+      #   rapor, bulunan sırrı ikinci kez sızdırır — üstelik indirilebilir
+      #   bir dosyada.
+      - name: gitleaks (tüm git geçmişi)
+        id: tarama
+        continue-on-error: true
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/repo" \
+            -v "$RUNNER_TEMP:/cikti" \
+            "ghcr.io/gitleaks/gitleaks:${GITLEAKS_SURUM}" \
+            git /repo \
+            --config /repo/.github/gitleaks.toml \
+            --report-format sarif \
+            --report-path /cikti/gitleaks.sarif \
+            --redact \
+            --no-banner \
+            --exit-code 1
+
+      - name: Sonucu özetle
+        if: always()
+        run: |
+          {
+            echo "## gizli anahtar taraması"
+            echo ""
+            echo "gitleaks \`${GITLEAKS_SURUM}\` · tüm git geçmişi · yapılandırma \`.github/gitleaks.toml\`"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ steps.tarama.outcome }}" = "success" ]; then
+            echo "✅ Bulgu yok." >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "❌ **Bulgu var.** Ayrıntı için \`gitleaks-raporu\` artifact'ini indirin (değerler redakte edilmiştir)."
+              echo ""
+              echo "> Bir anahtar gerçekten sızdıysa yapılacak ilk iş **anahtarı iptal etmektir**;"
+              echo "> geçmişi temizlemek ikinci iştir. Depodan silmek, çekilmiş kopyalardan silmez."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Raporu yükle
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: gitleaks-raporu
+          path: ${{ runner.temp }}/gitleaks.sarif
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Karar
+        run: |
+          if [ "${{ steps.tarama.outcome }}" != "success" ]; then
+            echo "::error::gitleaks bulgu buldu — sızan anahtarı ÖNCE iptal edin"
+            exit 1
+          fi
+
+  # ── 3) BAĞIMLILIK İNCELEMESİ (yalnızca PR) ──────────────────────────────
+  # Yukarıdaki denetimden farklı soru: "bu PR YENİ bir açık GETİRİYOR mu?"
+  # Deponun mevcut borcunu tekrar tekrar raporlamaz; yalnızca DEĞİŞİMİ okur.
+  # Not: GitHub'ın bağımlılık grafiği depo ayarlarından açık olmalıdır.
+  inceleme:
+    name: bağımlılık incelemesi (PR farkı)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Kaynak kodu al
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Bağımlılık incelemesi
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          # Yukarıdaki eşikle AYNI çizgi: high ve critical kırar.
+          fail-on-severity: high
+          comment-summary-in-pr: never # PR'ye yazma yetkisi istemiyoruz (K-4)

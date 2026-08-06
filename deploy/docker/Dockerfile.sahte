@@ -1,0 +1,66 @@
+# syntax=docker/dockerfile:1.7
+#
+# xurrent-mcp — SAHTE dış servisler (tek imaj, iki rol)
+#
+#   docker build -f deploy/docker/Dockerfile.sahte -t xurrent-mcp-sahte .
+#
+#   docker run … xurrent-mcp-sahte node tools/fake-xurrent/server.mjs
+#   docker run … xurrent-mcp-sahte node tools/fake-gemini/server.mjs --mod otomatik
+#
+# ── Neden AYRI bir imaj ──────────────────────────────────────────────────────
+# Sahteler TypeScript imajına da sığardı (ikisi de saf Node). Ayrı tutulmalarının
+# sebebi boyut değil, SINIR: bunlar test ikizleridir, ürün değildir. Aynı imajda
+# yaşasalardı "üretim imajında sahte Gemini var mı?" sorusu her dağıtımda
+# yeniden sorulurdu. Ayrı imaj bu soruyu bir kere ve kalıcı olarak cevaplar.
+#
+# ── Tek aşamalı, çünkü inşa edilecek bir şey yok ─────────────────────────────
+# Her iki sahte de bağımlılıksız .mjs dosyalarıdır (yalnızca node: yerleşikleri).
+# npm install YOK, derleme YOK → çok aşamalı inşa burada boş tören olurdu.
+#
+# ── İkisi de 127.0.0.1'e çakılı ──────────────────────────────────────────────
+#   tools/fake-xurrent/server.mjs:491  server.listen(PORT, "127.0.0.1")
+#   tools/fake-gemini/server.mjs:460   server.listen(PORT, "127.0.0.1")
+# loopback-kopru.sh ile aşılır; hangi ortam değişkeninin port taşıdığı
+# compose'da KOPRU_PORT_DEGISKENI ile seçilir. Bkz. KARARLAR.md → K-01.
+
+FROM node:24-alpine AS calisma
+
+RUN apk add --no-cache socat curl
+
+WORKDIR /uygulama
+
+# fake-xurrent repo kökünü tools/fake-xurrent'ten iki üst dizin olarak bulur
+# (server.mjs:34 REPO = HERE/../..) ve fixtures/ oradan okunur. Bu yüzden
+# tools/ ile fixtures/ kardeş kalmak ZORUNDA.
+COPY fixtures ./fixtures
+COPY tools    ./tools
+
+COPY deploy/docker/bin/loopback-kopru.sh /usr/local/bin/loopback-kopru.sh
+RUN chmod +x /usr/local/bin/loopback-kopru.sh
+
+# fake-gemini'nin "sor" modu istekleri kuyruk/ altına YAZAR. Dizin
+# .dockerignore ile bağlamdan atıldı (yerel geçici durum); burada boş ve
+# ayrıcalıksız kullanıcıya ait olarak yeniden yaratılıyor.
+RUN mkdir -p tools/fake-gemini/kuyruk \
+ && chown -R node:node /uygulama/tools/fake-gemini
+
+ENV XURRENT_TIMEZONE=Europe/Istanbul \
+    TZ=Europe/Istanbul \
+    FAKE_XURRENT_PORT=4000 \
+    FAKE_GEMINI_PORT=5100
+
+EXPOSE 4000 5100
+
+# uid 1000 = node imajının hazır ayrıcalıksız kullanıcısı.
+# SAYIYLA yazıldı — gerekçe: Dockerfile.typescript (hadolint DL3066).
+USER 1000
+
+# Sağlık kontrolü YOK — bilerek. Sebebi her iki sahtede de farklı ve
+# compose.yaml'da servis başına tanımlanıyor:
+#   fake-gemini  → GET /saglik VAR (server.mjs:412)
+#   fake-xurrent → sağlık ucu YOK; POST dışı her isteğe 405 döner (server.mjs:448),
+#                  canlılık ancak bu belgelenmiş 405 ile ölçülebilir.
+# İmaja tek bir HEALTHCHECK yazmak, iki farklı gerçeği tek yalanla örtmek olurdu.
+
+ENTRYPOINT ["/usr/local/bin/loopback-kopru.sh"]
+CMD ["node", "tools/fake-xurrent/server.mjs"]

@@ -1,0 +1,114 @@
+# ORTAM KUR — üç dilin araç zinciri, önbelleğiyle birlikte, TEK yerde.
+# ═════════════════════════════════════════════════════════════════════
+#
+# Neden bileşik (composite) eylem: bu repoda DÖRT iş akışı (ci, release,
+# güvenlik ve ileride eklenecekler) aynı üç araç zincirini kurar. Aynı 40
+# satırı dört kez kopyalamak, bir gün Node sürümü değiştiğinde ÜÇÜNÜ
+# güncelleyip BİRİNİ unutmak demektir. Sürüm sabitleri tek dosyada durur.
+#
+# Neden matrix DEĞİL: bkz. ci.yml başlığı. Bu repoda "üç dil" bir matris
+# ekseni değil, TEK sözleşmenin üç implementasyonudur; doğrulayıcılar üçünü
+# AYNI ANDA ayağa kaldırıp karşılaştırır.
+#
+# Sürüm sabitleri (TEK KAYNAK):
+#   Node 24 · Python 3.13 (uv) · .NET 10
+name: "Ortam kur (Node 24 · Python 3.13 · .NET 10)"
+description: "Üç dilin araç zincirini kurar, bağımlılık önbelleğini açar ve bağımlılıkları yükler."
+
+inputs:
+  node:
+    description: "TypeScript araç zinciri kurulsun mu"
+    required: false
+    default: "true"
+  python:
+    description: "Python (uv) araç zinciri kurulsun mu"
+    required: false
+    default: "true"
+  dotnet:
+    description: "'.NET araç zinciri kurulsun mu"
+    required: false
+    default: "true"
+  bagimliliklar:
+    description: >-
+      Bağımlılıklar da yüklensin mi (npm ci · uv sync · dotnet restore).
+      "false" → yalnızca araçlar kurulur. Güvenlik denetimi gibi bazı işler
+      kendi kurulumunu farklı bayraklarla yapmak ister.
+    required: false
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    # ── Node 24 ──────────────────────────────────────────────────────────
+    # Önbellek: setup-node'un yerleşik npm önbelleği package-lock.json'ın
+    # sağlamasına bakar. Kilit dosyası commit edilmiştir; `npm ci` ONA göre
+    # kurar — bu, ders çıktılarının deterministik kalmasının şartıdır.
+    - name: Node 24 kur
+      if: inputs.node == 'true'
+      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      with:
+        node-version: "24"
+        # Önbellek yalnızca bağımlılık kuracak işlerde anlamlı. Yalnızca bir
+        # .mjs koşturacak bir iş (ci/özet, release/sürüm) için npm önbelleğini
+        # geri yüklemek boşa iştir. Boş dize = önbellek kapalı.
+        cache: ${{ inputs.bagimliliklar == 'true' && 'npm' || '' }}
+        cache-dependency-path: servers/typescript/package-lock.json
+
+    - name: TypeScript bağımlılıkları (npm ci)
+      if: inputs.node == 'true' && inputs.bagimliliklar == 'true'
+      shell: bash
+      working-directory: servers/typescript
+      run: npm ci
+
+    # ── Python 3.13 (uv) ─────────────────────────────────────────────────
+    # enable-cache: uv'nin indirme önbelleğini (~/.cache/uv) saklar.
+    # cache-dependency-glob: uv.lock değişmedikçe önbellek geçerlidir.
+    - name: uv + Python 3.13 kur
+      if: inputs.python == 'true'
+      uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      with:
+        python-version: "3.13"
+        enable-cache: true
+        cache-dependency-glob: servers/python/uv.lock
+
+    # --frozen: uv.lock'u GÜNCELLEMEZ, ona UYAR. Yan etkisi bir denetimdir —
+    # pyproject.toml kilit dosyasından ayrışmışsa burada kırılır. Ayrışmış bir
+    # kiliti sessizce tazeleyen bir CI, "yerelde başka sürüm, CI'da başka sürüm"
+    # sınıfını görünmez kılar. (npm ci ile aynı sözleşme.)
+    - name: Python bağımlılıkları (uv sync)
+      if: inputs.python == 'true' && inputs.bagimliliklar == 'true'
+      shell: bash
+      working-directory: servers/python
+      run: uv sync --frozen
+
+    # ── .NET 10 ──────────────────────────────────────────────────────────
+    # setup-dotnet'in `cache: true` girdisi packages.lock.json İSTER; bu repoda
+    # NuGet kilit dosyası YOK (bilinçli — bkz. KARARLAR-CICD.md K-6). Bu yüzden
+    # ~/.nuget/packages'ı elle önbelleğe alıyoruz ve anahtarı csproj'ların
+    # sağlamasına bağlıyoruz. Kilit dosyası olmadığı için bu önbellek
+    # "yaklaşık"tır: aynı csproj farklı bir transitif sürüm çözebilir. Bu
+    # doğruluğu bozmaz, yalnızca önbelleğin bir kez bayatlamasına yol açar.
+    - name: .NET 10 kur
+      if: inputs.dotnet == 'true'
+      uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+      with:
+        dotnet-version: "10.0.x"
+
+    - name: NuGet paket önbelleği
+      if: inputs.dotnet == 'true'
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/.nuget/packages
+        key: nuget-${{ runner.os }}-${{ hashFiles('servers/csharp/**/*.csproj') }}
+        restore-keys: |
+          nuget-${{ runner.os }}-
+
+    # İKİ proje restore edilir: ana uygulama ve test projesi. test-all'ın
+    # birim-cs adımı `dotnet test XurrentMcp.Tests` koşar; onu restore etmezsek
+    # ilk `dotnet test` ağa çıkar ve önbellek anlamsızlaşır.
+    - name: C# bağımlılıkları (dotnet restore)
+      if: inputs.dotnet == 'true' && inputs.bagimliliklar == 'true'
+      shell: bash
+      run: |
+        dotnet restore servers/csharp/XurrentMcp.csproj
+        dotnet restore servers/csharp/XurrentMcp.Tests/XurrentMcp.Tests.csproj

@@ -1,0 +1,46 @@
+# GITLEAKS yapılandırması — gizli anahtar taraması.
+# ═════════════════════════════════════════════════
+#
+# Nerede duruyor: depo kökünde DEĞİL, .github/ altında. Gitleaks yapılandırma
+# yolunu `--config` ile alır; bu dosya CI'nın parçasıdır, uygulamanın değil.
+#
+# ★ İZİN LİSTESİ BİR KARARDIR, BİR KOLAYLIK DEĞİL.
+#   Her satırı "burada gerçek bir sır ASLA bulunmaz" iddiasıdır. İddia yanlışsa
+#   tarama sessizce kör olur — ve gizli anahtar taramasının sessizce kör olması,
+#   hiç olmamasından kötüdür (yanlış güven verir).
+#   Bu yüzden GENİŞ dizin izinleri (docs/ gibi) BİLEREK verilmedi: ders notlarına
+#   yapıştırılmış gerçek bir token yakalanmalıdır.
+
+[extend]
+# Varsayılan kural kümesi (AWS, GitHub PAT, Google API key, özel anahtarlar…)
+# olduğu gibi kullanılır. Bu repoda özel bir sır biçimi YOK: XURRENT_TOKEN
+# Xurrent'ın personal access token'ıdır ve genel yüksek-entropi kuralına takılır.
+useDefault = true
+
+# ── 1) Yer tutucu değerleri olan dosyalar ───────────────────────────────────
+# Bunlar ders materyalinin KENDİSİDİR ve sahte değer barındırmaları gerekir.
+[[allowlists]]
+description = "Bilinçli sahte/yer tutucu değer barındıran dosyalar"
+paths = [
+  '''(^|/)\.env\.example$''',
+  # fixtures/ mock veridir: kişi, talep, takvim. Gerçek bir sistemden
+  # kopyalanmamıştır (bkz. fixtures/README.md).
+  '''(^|/)fixtures/[^/]+\.(json|ics)$''',
+  # Sahte Gemini'nin "kayit" modunun oynatma dosyaları — LLM istek/yanıt
+  # dökümleri. API anahtarı içermezler; anahtar env'den gelir.
+  '''(^|/)tools/fake-gemini/kayitlar/''',
+]
+
+# ── 2) Satırında "bu sahtedir" diyen eşleşmeler ─────────────────────────────
+# Dizin bazlı değil, SATIR bazlı: docs/ ya da README içindeki bir örnek
+# "sahte" / "<personal access token>" ile işaretliyse geçilir; işaretlenmemiş
+# yüksek-entropi bir dizi hâlâ YAKALANIR.
+[[allowlists]]
+description = "Satırında sahte olduğu yazan örnek değerler"
+regexTarget = "line"
+regexes = [
+  '''(?i)\b(sahte|ornek|örnek|example|placeholder|dummy|degistirin|değiştirin)\b''',
+  # <personal access token>, <hesap slug'ı>, YOUR_TOKEN_HERE gibi yer tutucular
+  '''<[^<>\n]{3,60}>''',
+  '''(?i)\b(your|buraya)[_ -]?[a-z0-9_]*(token|key|secret)''',
+]

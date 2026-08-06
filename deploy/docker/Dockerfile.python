@@ -1,0 +1,142 @@
+# syntax=docker/dockerfile:1.7
+#
+# xurrent-mcp — Python sunucusu
+#
+#   docker build -f deploy/docker/Dockerfile.python -t xurrent-mcp-py .
+#
+# İnşa bağlamı repo köküdür (gerekçe: Dockerfile.typescript başlığı).
+#
+# ── Bu imajın iki tuzağı ─────────────────────────────────────────────────────
+#
+# 1) KAYNAK DÜZENİ KORUNMAK ZORUNDA. config.py repo kökünü şöyle bulur:
+#
+#        servers/python/src/xurrent_mcp/config.py:68
+#        def _repo_root() -> Path:
+#            return Path(__file__).resolve().parents[4]
+#
+#    Yani kök, config.py'nin DÖRT ÜST DİZİNİDİR. Paketi site-packages'a
+#    kurarsak `parents[4]` `.venv` çıkar ve fixtures/ bulunamaz — mock mod
+#    sessizce çöker. Bu yüzden paket KURULMAZ (`--no-install-project`), kaynak
+#    olduğu yerde bırakılır ve PYTHONPATH ile gösterilir.
+#    Bkz. KARARLAR.md → K-03 (kalıcı düzeltme: importlib.resources ya da
+#    XURRENT_REPO_ROOT ortam değişkeni).
+#
+# 2) 127.0.0.1'E ÇAKILI DİNLEME. server.py:205 `uvicorn.Config(host="127.0.0.1")`
+#    yazar ve bunu geçersiz kılan hiçbir ortam değişkeni YOKTUR. Konteynerde
+#    port yayınlansa bile hiçbir istek içeri giremez. loopback-kopru.sh bunu
+#    socat ile aşar. Bkz. KARARLAR.md → K-01.
+#
+# ── VE ÜÇÜNCÜSÜ: bu imaj ŞU AN YALNIZCA ANA MAKİNEDEN ERİŞİLEBİLİR ───────────
+#    server.py:202 `server.streamable_http_app()` VARSAYILANLARLA çağrılır.
+#    Konteynerde koşturup ölçtük — üç sonuç da dağıtımı doğrudan ilgilendiriyor:
+#
+#      a) OTURUM TUTAR. `stateless_http` varsayılan olarak False. Oturumsuz
+#         POST → -32600 "Missing session ID". Yani çok replikalı bir dağıtımda
+#         Python STICKY SESSION İSTER — sırrı paylaşmak yetmez.
+#      b) 2026-07-28 KONUŞMAZ. `initialize` → protocolVersion "2025-11-25";
+#         `server/discover` → -32601. HTTP yolu v1'dir. (stdio'da v2 çalışır.)
+#      c) DNS REBINDING KORUMASI AÇIK. SDK, host="127.0.0.1" varsayılanını
+#         görünce allowed_hosts'u localhost'a kilitler. `Host: mcp-py:8788`
+#         ile gelen istek → HTTP 421 "Invalid Host header". Yani KONTEYNERDEN
+#         KONTEYNERE çağrı ÇALIŞMAZ; yalnızca ana makineden 127.0.0.1:<port>
+#         çalışır.
+#
+#    Üçü de tek bir çağrının argümanlarıyla düzelir; bu imaj o çağrıya
+#    dokunamaz (yazma alanı deploy/docker/ ile sınırlıydı).
+#    Bkz. KARARLAR.md → K-02.
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 1) İnşa — bağımlılıklar uv ile çözülür, .venv üretilir
+# ═════════════════════════════════════════════════════════════════════════════
+FROM python:3.13-slim AS insa
+
+# uv resmi imajdan alınır; pip ile kurmak sürüm belirsizliği getirirdi.
+# TODO(KARARLAR K-06): etiket yerine digest ile sabitlenebilir.
+COPY --from=ghcr.io/astral-sh/uv:0.9.21 /uv /usr/local/bin/uv
+
+WORKDIR /uygulama/servers/python
+
+# Yalnızca kilit dosyaları: kaynak değişince bağımlılık katmanı yeniden koşmasın.
+COPY servers/python/pyproject.toml servers/python/uv.lock servers/python/.python-version ./
+
+# --frozen              → uv.lock AYNEN uygulanır; çözücü çalışmaz, sürüm kaymaz.
+# --no-dev              → pytest ve arkadaşları üretim imajına girmez.
+# --no-install-project  → ★ paketin KENDİSİ kurulmaz. Yukarıdaki (1) numaralı
+#                         tuzak yüzünden zorunludur: kurulum kaynağı
+#                         site-packages'a taşır ve _repo_root() bozulur.
+RUN uv sync --frozen --no-dev --no-install-project
+
+COPY servers/python/src ./src
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 2) Çalışma — .venv + kaynak + paylaşılan veri
+# ═════════════════════════════════════════════════════════════════════════════
+FROM python:3.13-slim AS calisma
+
+# socat → loopback köprüsü (yukarıdaki 2 numaralı tuzak)
+# curl  → sağlık kontrolü
+# Aynı RUN'da temizlik: apt listeleri katmanda kalırsa imaj boşuna şişer.
+RUN apt-get update \
+ && apt-get install --no-install-recommends -y socat curl \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /uygulama
+
+# ── Paylaşılan veri ──────────────────────────────────────────────────────────
+COPY contract      ./contract
+COPY fixtures      ./fixtures
+COPY docs/wizard   ./docs/wizard
+COPY clients/web   ./clients/web
+
+# ── Uygulama ─────────────────────────────────────────────────────────────────
+# DİKKAT: .venv ve src, /uygulama/servers/python altına AYNEN bu düzende
+# gitmeli. `src/xurrent_mcp/config.py` → parents[4] = /uygulama olsun diye.
+COPY --from=insa /uygulama/servers/python/.venv ./servers/python/.venv
+COPY --from=insa /uygulama/servers/python/src   ./servers/python/src
+
+COPY deploy/docker/bin/loopback-kopru.sh /usr/local/bin/loopback-kopru.sh
+COPY deploy/docker/bin/saglik-kontrol.sh /usr/local/bin/saglik-kontrol.sh
+RUN chmod +x /usr/local/bin/loopback-kopru.sh /usr/local/bin/saglik-kontrol.sh
+
+# ── Varsayılan yapılandırma ──────────────────────────────────────────────────
+# SIR YOK — gerekçe: Dockerfile.typescript.
+ENV PATH="/uygulama/servers/python/.venv/bin:${PATH}" \
+    PYTHONPATH=/uygulama/servers/python/src \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    XURRENT_MODE=mock \
+    CALENDAR_PROVIDER=mock \
+    MCP_PROTOCOL=2026-07-28 \
+    MCP_HTTP_PORT=8788 \
+    WEB_PORT=8787 \
+    XURRENT_TIMEZONE=Europe/Istanbul \
+    TZ=Europe/Istanbul \
+    MCP_SAGLIK_YOLU=/mcp \
+    MCP_SAGLIK_METODU=initialize
+
+EXPOSE 8788 8787
+
+# MCP_SAGLIK_METODU=initialize — DİĞER İKİ İMAJDAN FARKI BURASI.
+# Sebep yukarıdaki (b): Python'un HTTP yolu `server/discover`a -32601 der.
+# Sağlığı `server/discover` ile ölçseydik konteyner sonsuza dek "unhealthy"
+# kalırdı ve sebebi yapılandırma sanılırdı. Sağlık kontrolü sunucunun GERÇEKTEN
+# konuştuğu protokolü yoklamalıdır, konuşmasını istediğimizi değil.
+
+# python:*-slim ayrıcalıksız kullanıcı GETİRMEZ; açıkça oluşturuyoruz.
+# Sabit uid: bir gün volume bağlanırsa dosya sahipliği tahmin edilebilir olsun.
+# --system YOK: sistem kullanıcıları uid<1000 ister, 10001 uyarı üretirdi.
+RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin xurrent
+# SAYIYLA yazıldı, adla değil — gerekçe: Dockerfile.typescript (hadolint DL3066).
+USER 10001
+
+# start-period Node'unkinden uzun: yorumlayıcı + mcp/uvicorn import zinciri
+# soğuk başlangıçta birkaç saniye alır.
+HEALTHCHECK --interval=15s --timeout=6s --start-period=15s --retries=3 \
+  CMD ["/usr/local/bin/saglik-kontrol.sh"]
+
+# ENTRYPOINT köprü, CMD uygulama: köprü portu iç porta çevirip uygulamayı
+# exec eder (uygulama PID 1 olur, SIGTERM doğrudan ona gider).
+ENTRYPOINT ["/usr/local/bin/loopback-kopru.sh"]
+CMD ["python", "-m", "xurrent_mcp", "--http"]

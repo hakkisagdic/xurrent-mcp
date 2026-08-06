@@ -1,4 +1,4 @@
-# CI — üç dilin doğrulama katmanlarının HEPSİ, TEK koşuda.
+# CI — üç dilin doğrulama katmanlarının HEPSİ, iki hızda.
 #
 # Neden matrix YOK: bu repoda "üç dil" bir matris ekseni değil, TEK bir
 # sözleşmenin üç implementasyonudur. Sözleşme doğrulaması (verify-contract) ve
@@ -6,12 +6,32 @@
 # KARŞILAŞTIRIR — üçünü ayrı job'lara bölmek bu karşılaştırmayı imkânsız kılar.
 # Yani matrix burada paralellik değil, KÖRLÜK üretirdi.
 #
+# ★ BÖLÜNME EKSENİ DİL DEĞİL, HIZDIR.
+#   hızlı  → derleme + birim + şema   (~3-4 dk)  ilk geri bildirim
+#   yavaş  → sözleşme + protokol uyumu + uçtan uca + wire  (~10-20 dk)
+#   özet   → iki raporu tek tabloda birleştirir, TEK zorunlu kontrol olur
+#
+#   Bir tsc hatası için 20 dakika beklemek, o hatayı gören insanın dikkatini
+#   çoktan başka yere kaydırmış olur. Derleme kırıldığında yavaş katmanı hiç
+#   koşturmuyoruz — kırık derlemeden çıkan uçtan uca hatası zaten türev bir
+#   gürültüdür, yeni bilgi taşımaz.
+#
+#   Bedeli açıkça yazılmalı: yavaş iş `derleme` grubunu TEKRAR koşar (~1-2 dk).
+#   Alternatifi dist/ + bin/ + .venv'i işler arasında artifact ile taşımaktı;
+#   .venv taşınabilir DEĞİLDİR (mutlak yollar gömülüdür) ve bayat bir derleme
+#   çıktısını ölçme riski, yeniden derlemenin bedelinden pahalıdır.
+#
 # Ağ: kurulum adımları (npm ci / uv sync / dotnet restore) ağ ister. Testlerin
 # KENDİSİ istemez — varsayılan XURRENT_MODE=mock, CALENDAR_PROVIDER=mock ve LLM
 # çağrısı yapan tek adım (wire-denetimi) yerel sahte Gemini'ye konuşur.
+#
+# Eylem sürümleri SHA ile SABİTLENMİŞTİR (tedarik zinciri). Yanındaki yorum
+# insan-okunur sürümdür; dependabot ikisini birlikte günceller.
 name: ci
 
 on:
+  # branches filtresi verildiği için ETİKET push'ları buraya DÜŞMEZ — v* etiketi
+  # release.yml'i tetikler ve o zaten test-all'ı baştan koşar.
   push:
     branches: ["**"]
   pull_request:
@@ -27,106 +47,171 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# En dar varsayılan. Hiçbir iş bunu yükseltmiyor: CI yalnızca OKUR.
+# (PR'ye bot yorumu yazmak isteyen bir iş `pull-requests: write` isterdi —
+#  bilinçli olarak eklenmedi, bkz. KARARLAR-CICD.md § K-4)
 permissions:
   contents: read
 
-jobs:
-  test-all:
-    name: test-all (ts + py + cs)
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+env:
+  # Testler ağ ya da hesap İSTEMEZ. Bu üçü .env.example varsayılanlarıyla
+  # aynıdır; burada AÇIKÇA yazılmalarının sebebi, bir gün varsayılan
+  # değişirse CI'nın sessizce canlı sisteme bağlanmaması.
+  XURRENT_MODE: mock
+  XURRENT_DRY_RUN: "1"
+  CALENDAR_PROVIDER: mock
+  # Ders çıktıları saat dilimine duyarlıdır (bkz. docs/14 § kırılgan test).
+  # CI'yı UTC'de değil, dersin anlatıldığı dilimde koşturuyoruz ki
+  # "yerelde geçiyor, CI'da kalıyor" sınıfı bir fark ortaya çıkmasın.
+  TZ: Europe/Istanbul
+  DOTNET_NOLOGO: "1"
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "1"
 
-    env:
-      # Testler ağ ya da hesap İSTEMEZ. Bu üçü .env.example varsayılanlarıyla
-      # aynıdır; burada AÇIKÇA yazılmalarının sebebi, bir gün varsayılan
-      # değişirse CI'nın sessizce canlı sisteme bağlanmaması.
-      XURRENT_MODE: mock
-      XURRENT_DRY_RUN: "1"
-      CALENDAR_PROVIDER: mock
-      # Ders çıktıları saat dilimine duyarlıdır (bkz. docs/14 § kırılgan test).
-      # CI'yı UTC'de değil, dersin anlatıldığı dilimde koşturuyoruz ki
-      # "yerelde geçiyor, CI'da kalıyor" sınıfı bir fark ortaya çıkmasın.
-      TZ: Europe/Istanbul
+jobs:
+  # ── 1) HIZLI: derleme + birim + şema ────────────────────────────────────
+  hizli:
+    name: hızlı (derleme · birim · şema)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
       - name: Kaynak kodu al
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # ── Node 24 ────────────────────────────────────────────────────────────
-      - name: Node 24 kur
-        uses: actions/setup-node@v4
-        with:
-          node-version: "24"
-          cache: npm
-          cache-dependency-path: servers/typescript/package-lock.json
+      - name: Ortam kur
+        uses: ./.github/actions/ortam-kur
 
-      - name: TypeScript bağımlılıkları
-        working-directory: servers/typescript
-        run: npm ci
-
-      # ── Python 3.13 (uv) ───────────────────────────────────────────────────
-      - name: uv + Python 3.13 kur
-        uses: astral-sh/setup-uv@v5
-        with:
-          python-version: "3.13"
-          enable-cache: true
-          cache-dependency-glob: servers/python/uv.lock
-
-      - name: Python bağımlılıkları
-        working-directory: servers/python
-        run: uv sync
-
-      # ── .NET 10 ────────────────────────────────────────────────────────────
-      - name: .NET 10 kur
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: "10.0.x"
-
-      - name: C# bağımlılıkları
-        run: dotnet restore servers/csharp/XurrentMcp.csproj
-
-      # ── Tek komut, her şey ─────────────────────────────────────────────────
       # --json: makine-okunur rapor stdout'a (artifact), anlatım stderr'e (log).
       # Böylece iş akışı logunda İNSAN OKUNAKLI tablo görünür, artifact'ta ise
       # adım adım süre/kanıt kalır.
-      #
-      # --bilinen-ihlaller BİLİNÇLİ OLARAK varsayılan DEĞİLDİR. Bilinen bir MUST
-      # ihlalini sessizleştirmek bir KARAR olmalıdır, bir alışkanlık değil.
-      # Elle koşuda (workflow_dispatch) açılabilir.
-      - name: Bütün doğrulama katmanları
+      - name: Derleme · birim · şema
         run: |
           node scripts/test-all.mjs --json --no-color \
-            ${{ inputs.bilinen_ihlaller && '--bilinen-ihlaller' || '' }} \
-            > test-all-raporu.json
+            --sadece derleme,birim,sema \
+            > test-all-hizli.json
 
       - name: Raporu yükle
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: test-all-raporu
-          path: test-all-raporu.json
+          name: test-all-raporu-hizli
+          path: test-all-hizli.json
           if-no-files-found: warn
           retention-days: 14
 
-      # Koşu kırmızıysa özetin İŞ AKIŞI ÖZETİ sayfasında da durması,
-      # log'a inmeden ne kaldığını görmeyi sağlar.
-      - name: Özeti iş akışı sayfasına yaz
-        if: always()
+  # ── 2) YAVAŞ: sözleşme + protokol + uçtan uca + wire ────────────────────
+  yavas:
+    name: yavaş (sözleşme · uyum · uçtan uca · wire)
+    needs: hizli
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Kaynak kodu al
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Ortam kur
+        uses: ./.github/actions/ortam-kur
+
+      # `derleme` grubu BİLEREK tekrar koşuluyor: bu işteki adımların ön koşulu
+      # dist/ · bin/ · .venv'dir ve bunlar işler arasında taşınmıyor (başlıktaki
+      # gerekçe). test-all'ın bağımlılık modeli de böylece doğru çalışır —
+      # `gerektirir` bağı bu koşuda GERÇEKTEN ölçülmüş bir derlemeye dayanır.
+      #
+      # --bilinen-ihlaller BİLİNÇLİ OLARAK varsayılan DEĞİLDİR. Bilinen bir MUST
+      # ihlalini sessizleştirmek bir KARAR olmalıdır, bir alışkanlık değil.
+      # Elle koşuda (workflow_dispatch) açılabilir. Bayrak yalnızca mcp-uyum
+      # adımını etkiler, o da bu işte koşar.
+      - name: Sözleşme · uyum · uçtan uca · wire
         run: |
-          if [ -f test-all-raporu.json ]; then
+          node scripts/test-all.mjs --json --no-color \
+            --sadece derleme,sozlesme,protokol,uctan-uca,wire \
+            ${{ inputs.bilinen_ihlaller && '--bilinen-ihlaller' || '' }} \
+            > test-all-yavas.json
+
+      - name: Raporu yükle
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-all-raporu-yavas
+          path: test-all-yavas.json
+          if-no-files-found: warn
+          retention-days: 14
+
+  # ── 3) ÖZET: iki raporu tek tabloda birleştir ───────────────────────────
+  # Bu iş, dal koruma kuralında ZORUNLU KONTROL olarak seçilecek tektir:
+  # hızlı ya da yavaş iş kırıldığında burası da kırılır, ama okuyan insan
+  # önce TEK bir tablo görür — hangi işin hangi adımı kaldığını aramak zorunda
+  # kalmaz.
+  ozet:
+    name: özet
+    needs: [hizli, yavas]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Kaynak kodu al
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Bu iş yalnızca bir .mjs çalıştırır: Python/.NET gerekmez, bağımlılık
+      # kurulmaz, npm önbelleği geri yüklenmez.
+      - name: Ortam kur (yalnızca Node)
+        uses: ./.github/actions/ortam-kur
+        with:
+          python: "false"
+          dotnet: "false"
+          bagimliliklar: "false"
+
+      # pattern + merge-multiple: iki iş de kendi raporunu ayrı artifact olarak
+      # yükledi. Yavaş iş hiç koşmadıysa (hızlı kırıldı) sadece biri iner —
+      # bu bir hata değildir, özet o durumu da anlatır.
+      - name: Raporları indir
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: test-all-raporu-*
+          path: raporlar
+          merge-multiple: true
+
+      - name: Birleşik özeti yaz
+        run: |
+          shopt -s nullglob
+          raporlar=(raporlar/*.json)
+          if [ ${#raporlar[@]} -eq 0 ]; then
             {
               echo "## test-all"
               echo ""
-              echo "| adım | durum | süre | kanıt |"
-              echo "|---|---|---|---|"
-              node -e '
-                const r = JSON.parse(require("node:fs").readFileSync("test-all-raporu.json", "utf8"));
-                for (const a of r.adimlar)
-                  console.log(`| \`${a.id}\` | ${a.durum} | ${(a.sureMs / 1000).toFixed(1)}s | ${String(a.kanit).replace(/\|/g, "\\|")} |`);
-                console.log("");
-                console.log(`**${r.ozet.gecti} geçti · ${r.ozet.kaldi} kaldı · ${r.ozet.atlandi} atlandı**`);
-              '
+              echo "Hiç rapor üretilmedi — koşu doğrulama başlamadan kırıldı."
             } >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "test-all raporu üretilmedi — koşu daha erken kırıldı." >> "$GITHUB_STEP_SUMMARY"
+            # --eksik-onemsiz: eksik rapor bu adımı KIRMASIN. Asıl kırmızı,
+            # aşağıdaki kapı adımından gelir; aynı olayı iki kez saymıyoruz.
+            node .github/scripts/rapor-ozeti.mjs \
+              --baslik "test-all — birleşik" --eksik-onemsiz \
+              "${raporlar[@]}" >> "$GITHUB_STEP_SUMMARY" || true
+          fi
+
+      # Birleşik raporlar tek artifact olarak da dursun: release.yml ve elle
+      # inceleme aynı dosya kümesini bekler.
+      - name: Birleşik raporu yükle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-all-raporu
+          path: raporlar/
+          if-no-files-found: warn
+          retention-days: 14
+
+      # ── Kapı ───────────────────────────────────────────────────────────
+      # `needs.*.result` = success | failure | cancelled | skipped.
+      # "skipped" burada başarı DEĞİLDİR: yavaş iş atlandıysa hızlı iş kırılmış
+      # demektir ve o durumda da kırmızı yanmalıyız.
+      - name: Sonuç kapısı
+        run: |
+          hizli='${{ needs.hizli.result }}'
+          yavas='${{ needs.yavas.result }}'
+          echo "hızlı=$hizli · yavaş=$yavas"
+          if [ "$hizli" != "success" ] || [ "$yavas" != "success" ]; then
+            echo "::error::doğrulama tamamlanmadı (hızlı=$hizli, yavaş=$yavas)"
+            exit 1
           fi
