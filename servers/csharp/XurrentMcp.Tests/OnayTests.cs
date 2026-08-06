@@ -232,6 +232,25 @@ public class OnayTests
         Assert.True(RequestStateCodec.Verify(cfg, ikinci, Ben, Metot, Argumanlar()).Ok);
     }
 
+    // ── Amaç ayracı (kind) ───────────────────────────────────────────────────
+
+    /// <summary>
+    /// Sihirbazın sessionState'i AYNI sırla ve AYNI zarfla imzalanır ama AMACI
+    /// farklıdır (kind: "wizard"). Onay yerine geçmeye çalışırsa REDDEDİLMELİDİR —
+    /// aksi hâlde 30 dakikalık wizard TTL'i, 5 dakikalık onay penceresini deler.
+    /// </summary>
+    [Fact]
+    public void sihirbaz_state_i_requestState_olarak_kullanilamaz()
+    {
+        var cfg = Ortam.Yapilandirma();
+        var wizardBlob = WizardStateCodec.Sign(cfg, "duration", new JsonObject { ["minutes"] = 60 });
+
+        var karar = RequestStateCodec.Verify(cfg, wizardBlob, Ben, Metot, Argumanlar());
+
+        Assert.False(karar.Ok);
+        Assert.Contains("BAŞKA BİR AMAÇLA", karar.Reason);
+    }
+
     // ── Biçim bozuklukları ───────────────────────────────────────────────────
 
     [Theory]

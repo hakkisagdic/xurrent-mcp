@@ -22,6 +22,24 @@ HTTP'de her istek ayri baglantidir, iki era yan yana yasayabilir.
             SABIT-ZAMANLIDIR (hmac.compare_digest) — '==' karakter karakter
             erken cikar ve zamanlama olcumuyle anahtar sizdirir.
 
+★ HOST SUZGECI (DNS rebinding) — uc durus:
+
+    Anahtar BOS                        -> SDK'nin rebinding korumasi ACIK,
+                                          yalnizca localhost Host/Origin gecer.
+    Anahtar DOLU, MCP_ALLOWED_HOSTS BOS -> koruma ACIKCA KAPALI. NEDEN:
+                                          konteynerler arasi cagrida Host asla
+                                          localhost degildir; suzgec burada
+                                          koruma degil 421 ureten engeldir.
+                                          Kapi API anahtarinin KENDISIDIR.
+    Anahtar DOLU, MCP_ALLOWED_HOSTS DOLU-> koruma ACIK, yalnizca listedeki
+                                          Host'lar gecer (derinlemesine
+                                          savunma: anahtar sizarsa saldirgan
+                                          yine dogru Host'u bilmek zorunda).
+
+★ /healthz — kapisiz saglik ucu: orkestratorler (Docker/K8s) MCP protokolu
+konusamaz; GET /healthz her MCP_PROTOCOL modunda 200 doner, API anahtari
+ISTEMEZ ve sir SIZDIRMAZ (yalnizca status + protokol modu).
+
 Bu kapi MCP sunucusunun KENDISINI korur; Xurrent kimligi (XURRENT_TOKEN)
 sunucuda kalir, dis istemci onu asla gormez. Web chat portu (WEB_PORT) bu
 dosyanin kapsami DISINDADIR ve davranisi degismez.
@@ -84,6 +102,42 @@ def api_key_dogru(beklenen: str, gelen: str | None) -> bool:
     if not beklenen or gelen is None:
         return False
     return hmac.compare_digest(beklenen.encode("utf-8"), gelen.encode("utf-8"))
+
+
+def izinli_hostlar(girdiler: tuple[str, ...] | list[str]) -> list[str]:
+    """MCP_ALLOWED_HOSTS girdilerini SDK'nin Host desenine acar.
+
+    "host" -> ["host", "host:*"]: HTTP istemcileri 80 disi portta Host'a portu
+    EKLER (curl dahil); ciplak girdiyi hem portsuz hem her-portlu kabul etmek
+    kullaniciyi ":8788 yazmayi unuttum" tuzagindan korur. ":" iceren girdi
+    (acik port ya da IPv6) OLDUGU GIBI birakilir — kullanici portu acikca
+    yazdiysa yalnizca o port gecerlidir.
+    """
+    desenler: list[str] = []
+    for h in girdiler:
+        desenler.append(h)
+        if ":" not in h:
+            desenler.append(f"{h}:*")
+    return desenler
+
+
+def izinli_originler(girdiler: tuple[str, ...] | list[str]) -> list[str]:
+    """Ayni allowlist'in Origin karsiligi (http + https, portlu/portsuz).
+
+    NEDEN gerekli: SDK'da rebinding korumasi acikken Origin TASIYAN bir istek
+    listede yoksa 403 alir. API istemcileri (curl, SDK'ler) Origin gondermez ve
+    zaten gecer; bu liste yalnizca izinli host'tan gelen TARAYICI trafigini
+    acik tutar.
+    """
+    desenler: list[str] = []
+    for h in girdiler:
+        if ":" in h:  # acik portlu girdi: sema eklenmis birebir varyantlar
+            desenler.extend([f"http://{h}", f"https://{h}"])
+        else:
+            desenler.extend(
+                [f"http://{h}", f"https://{h}", f"http://{h}:*", f"https://{h}:*"]
+            )
+    return desenler
 
 
 def dinleme_adresi(mcp_api_key: str) -> str:
@@ -150,16 +204,26 @@ def build_http_app(
     """
     tablo = yol_tablosu(cfg.mcp_protocol)
 
-    # Anahtar BOSKEN SDK'nin loopback varsayilanini koruyoruz: DNS rebinding
+    # Anahtar BOSKEN SDK'nin loopback durusunu koruyoruz: DNS rebinding
     # korumasi + localhost Host/Origin suzgeci. Anahtar DOLUYKEN sunucu bilerek
-    # dis istemcilere aciliyor — Host suzgeci kaldirilir, kapi API anahtaridir.
-    guvenlik: TransportSecuritySettings | None = None
+    # dis istemcilere acilir; Host suzgecinin kaderi MCP_ALLOWED_HOSTS'a baglidir
+    # (dosya basligindaki uc durus). Kapatma ACIKCA yazilir — SDK'nin
+    # "settings=None -> koruma kapali" geriye-uyum varsayilanina yaslanmak,
+    # SDK guncellemesinde sessizce 421'e donusebilirdi.
     if not cfg.mcp_api_key:
         guvenlik = TransportSecuritySettings(
             enable_dns_rebinding_protection=True,
             allowed_hosts=["127.0.0.1:*", "localhost:*", "[::1]:*"],
             allowed_origins=["http://127.0.0.1:*", "http://localhost:*", "http://[::1]:*"],
         )
+    elif cfg.mcp_allowed_hosts:
+        guvenlik = TransportSecuritySettings(
+            enable_dns_rebinding_protection=True,
+            allowed_hosts=izinli_hostlar(cfg.mcp_allowed_hosts),
+            allowed_origins=izinli_originler(cfg.mcp_allowed_hosts),
+        )
+    else:
+        guvenlik = TransportSecuritySettings(enable_dns_rebinding_protection=False)
 
     # Era basina TEK session manager: v1 sessionful (initialize Mcp-Session-Id
     # uretir), v2 stateless (SDK'ya stateless=True gecilir — session header'i
@@ -175,9 +239,20 @@ def build_http_app(
             security_settings=guvenlik,
         )
 
+    async def saglik(_request: Any) -> JSONResponse:
+        # Kapisiz saglik ucu: orkestrator sondasi (Docker HEALTHCHECK, K8s
+        # probe) MCP protokolu konusamaz ve API anahtari tasimamalidir —
+        # anahtari her konteynerin ortamina sizdirmak gerekirdi. Govde
+        # BILEREK kucuk tutulur: status + protokol modu. Sir, surum, yol
+        # listesi SIZDIRILMAZ.
+        return JSONResponse({"status": "ok", "protocol": cfg.mcp_protocol})
+
     rotalar = [
-        Route(yol, endpoint=StreamableHTTPASGIApp(yoneticiler[era]))
-        for yol, era in tablo
+        Route("/healthz", endpoint=saglik, methods=["GET"]),
+        *(
+            Route(yol, endpoint=StreamableHTTPASGIApp(yoneticiler[era]))
+            for yol, era in tablo
+        ),
     ]
 
     @contextlib.asynccontextmanager
@@ -204,5 +279,7 @@ __all__ = [
     "api_key_dogru",
     "build_http_app",
     "dinleme_adresi",
+    "izinli_hostlar",
+    "izinli_originler",
     "yol_tablosu",
 ]

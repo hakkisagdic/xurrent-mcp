@@ -45,16 +45,18 @@ test("★ imzala → doğrula: GEÇER ve payload beklenen alanları taşır", ()
   assert.ok(typeof r.payload.nonce === "string" && r.payload.nonce.length > 0);
 });
 
-test("wire biçimi 'v1.<gövde>.<imza>' üç parçalıdır", () => {
+test("wire biçimi '<gövde>.<imza>' İKİ parçalıdır (wizard sessionState ile ortak zarf)", () => {
   const state = signRequestState(CFG, { principal: PRINCIPAL, tool: TOOL, args: ARGS });
   const parts = state.split(".");
-  assert.equal(parts.length, 3);
-  assert.equal(parts[0], "v1");
+  assert.equal(parts.length, 2);
+  // Gövde base64url'den doğrudan JSON'a çözülür — sürüm ön eki YOKTUR.
+  const govde = JSON.parse(Buffer.from(parts[0], "base64url").toString("utf8"));
+  assert.equal(typeof govde, "object");
 });
 
 test("state İMZALIDIR ama ŞİFRELİ DEĞİLDİR — client gövdeyi okuyabilir (içine sır konmaz)", () => {
   const state = signRequestState(CFG, { principal: PRINCIPAL, tool: TOOL, args: ARGS });
-  const govde = JSON.parse(Buffer.from(state.split(".")[1], "base64url").toString("utf8"));
+  const govde = JSON.parse(Buffer.from(state.split(".")[0], "base64url").toString("utf8"));
   assert.equal(govde.principal, PRINCIPAL);
   assert.equal(govde.tool, TOOL);
 });
@@ -81,19 +83,19 @@ test("iç içe nesnelerde de anahtar sırası önemsizdir", () => {
 test("★ imza bozulursa REDDEDİLİR", () => {
   const state = signRequestState(CFG, { principal: PRINCIPAL, tool: TOOL, args: ARGS });
   const parts = state.split(".");
-  const bozuk = `${parts[0]}.${parts[1]}.${Buffer.from("sahte-imza").toString("base64url")}`;
+  const bozuk = `${parts[0]}.${Buffer.from("sahte-imza").toString("base64url")}`;
   const r = verifyRequestState(CFG, bozuk, bekle());
   assert.equal(r.ok, false);
   assert.ok(r.reason.includes("imzası GEÇERSİZ"));
 });
 
-test("★ gövde değiştirilirse (minutes 120 → 480) REDDEDİLİR", () => {
+test("★ gövde değiştirilirse (principal başkası yapılırsa) REDDEDİLİR", () => {
   const state = signRequestState(CFG, { principal: PRINCIPAL, tool: TOOL, args: ARGS });
   const parts = state.split(".");
-  const govde = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
+  const govde = JSON.parse(Buffer.from(parts[0], "base64url").toString("utf8"));
   govde.principal = "TW9jay9QZXJzb24vOTk"; // saldırgan kendini başkası yapmaya çalışır
   const yeniGovde = Buffer.from(JSON.stringify(govde), "utf8").toString("base64url");
-  const r = verifyRequestState(CFG, `v1.${yeniGovde}.${parts[2]}`, bekle());
+  const r = verifyRequestState(CFG, `${yeniGovde}.${parts[1]}`, bekle());
   assert.equal(r.ok, false);
   assert.ok(r.reason.includes("imzası GEÇERSİZ"), r.reason);
 });
@@ -106,8 +108,11 @@ test("BAŞKA anahtarla üretilmiş state REDDEDİLİR (sunucu yeniden başladı 
   assert.ok(r.reason.includes("imzası GEÇERSİZ"));
 });
 
-test("biçimsiz state REDDEDİLİR (boş, string olmayan, yanlış prefix, eksik parça)", () => {
-  for (const kotu of ["", "abc", "v1.abc", "v2.abc.def", null, undefined, 42, { a: 1 }]) {
+test("biçimsiz state REDDEDİLİR (boş, string olmayan, noktasız, eski v1-prefix'li biçim)", () => {
+  // "v1.abc" ve "v2.abc.def": ESKİ üç parçalı biçimin kalıntıları — yeni codec
+  // bunları da (imza tutmadığı için) reddeder. Eski biçime geriye-uyum YOKTUR:
+  // sunucu yeniden başlayınca eski state'lerin ölmesi zaten istenen davranıştır.
+  for (const kotu of ["", "abc", "v1.abc", "v2.abc.def", ".abc", "abc.", null, undefined, 42, { a: 1 }]) {
     const r = verifyRequestState(CFG, kotu, bekle());
     assert.equal(r.ok, false, `kabul edilmemeliydi: ${JSON.stringify(kotu)}`);
   }
@@ -204,7 +209,7 @@ test("resetNonces sonrası aynı state yeniden kabul edilir (test izolasyonu gar
 test("imzası bozuk VE principal'ı yanlış state'te reddin sebebi İMZA'dır (ucuz ve kesin olan önce)", () => {
   const state = signRequestState(CFG, { principal: PRINCIPAL, tool: TOOL, args: ARGS });
   const parts = state.split(".");
-  const bozuk = `${parts[0]}.${parts[1]}.${Buffer.from("sahte").toString("base64url")}`;
+  const bozuk = `${parts[0]}.${Buffer.from("sahte").toString("base64url")}`;
   const r = verifyRequestState(CFG, bozuk, bekle({ principal: "baskasi" }));
   assert.equal(r.ok, false);
   assert.ok(r.reason.includes("imzası GEÇERSİZ"), r.reason);

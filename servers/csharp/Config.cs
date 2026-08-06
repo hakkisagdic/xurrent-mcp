@@ -170,6 +170,23 @@ public sealed class AppConfig
     /// </summary>
     public string McpApiKey { get; init; } = "";
 
+    /// <summary>
+    /// MCP_ALLOWED_HOSTS — virgülle ayrılmış Host allowlist'i (opsiyonel).
+    ///
+    /// NEDEN VAR: paralel altyapı ölçümü, konteynerler arası çağrının Host başlığı
+    /// yüzünden ölebildiğini gösterdi (DNS-rebinding koruması olan SDK'lar localhost
+    /// dışını 421 ile keser). Karar üç durumlu:
+    ///   · MCP_API_KEY BOŞ  → sunucu zaten yalnız loopback dinler; Host engeli C#'ta
+    ///     hiç yoktu ve EKLENMEDİ (mevcut duruş aynen korunur, sınırı bind çizer).
+    ///   · MCP_API_KEY DOLU + bu liste BOŞ → HER Host geçer; kapı ANAHTARDIR.
+    ///     Konteynerler arası çağrıda Host servis adıdır, localhost değildir —
+    ///     Host'u kesmek anahtarlı modda yanlış katmanda güvenliktir.
+    ///   · Bu liste DOLU → yalnız listedeki Host'lar geçer (port'suz, büyük/küçük
+    ///     harf duyarsız). Reverse proxy arkasında Host sabitlemek isteyen dağıtım
+    ///     için sıkma vidası.
+    /// </summary>
+    public IReadOnlyList<string> McpAllowedHosts { get; init; } = [];
+
     // ── Türetilmiş yollar ────────────────────────────────────────────────────
     public string RepoRoot { get; init; } = "";
     public string FixturesDir { get; init; } = "";
@@ -267,6 +284,9 @@ public sealed class AppConfig
             WebPort = EnvInt("WEB_PORT", 8787),
             McpHttpPort = EnvInt("MCP_HTTP_PORT", 8788),
             McpApiKey = Env("MCP_API_KEY"),
+            // Boş girdiler ve baş/son boşluklar temizlenir: "a, b," → ["a","b"].
+            McpAllowedHosts = Env("MCP_ALLOWED_HOSTS")
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries),
         };
     }
 

@@ -64,4 +64,37 @@ public static class HttpKapi
     /// </summary>
     public static string DinlemeAdresi(string apiKey, int port)
         => string.IsNullOrEmpty(apiKey) ? $"http://localhost:{port}" : $"http://0.0.0.0:{port}";
+
+    /// <summary>
+    /// Host allowlist kapısı (MCP_ALLOWED_HOSTS — AppConfig.McpAllowedHosts).
+    ///
+    /// NEDEN bu şekilde: paralel altyapı ölçümü, DNS-rebinding koruması Host'u
+    /// localhost'a kilitleyen SDK'larda konteynerler arası çağrının 421 ile
+    /// öldüğünü buldu. C# yığınında ise ÖLÇÜLDÜ ki hiçbir katman Host'u kesmiyor
+    /// (Kestrel Host'a bakmaz; ASP.NET HostFiltering varsayılanı "*"; MCP C# SDK'sı
+    /// yalnız OAuth resource-metadata ucunda Host karşılaştırır). Yani:
+    ///   · liste BOŞ → true. Anahtarlı modda kapı ANAHTARDIR, anahtarsız modda
+    ///     sınırı loopback bind çizer — iki durumda da Host serbesttir (mevcut duruş).
+    ///   · liste DOLU → yalnız listedeki Host'lar geçer. Karşılaştırma PORT'SUZ
+    ///     hostname üzerinde (ASP.NET HostString.Host) ve harf duyarsızdır:
+    ///     Host başlığındaki port istemci/ortam gürültüsüdür, kimlik hostname'dedir.
+    /// </summary>
+    public static bool HostUygun(IReadOnlyList<string> izinliHostlar, string? host)
+    {
+        if (izinliHostlar.Count == 0) return true;
+        if (string.IsNullOrEmpty(host)) return false;
+        return izinliHostlar.Any(h => string.Equals(h, host, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// /healthz'in bildirdiği protokol metni — MCP_PROTOCOL'ün .env'deki değeriyle
+    /// BİREBİR aynıdır (üç dil de aynı sözlüğü döner; orkestratör probu karşılaştırır).
+    /// </summary>
+    public static string ProtokolMetni(ProtocolChoice protokol) => protokol switch
+    {
+        ProtocolChoice.V1 => Mcp.ServerSetup.ProtocolV1,
+        ProtocolChoice.V2 => Mcp.ServerSetup.ProtocolV2,
+        ProtocolChoice.Both => "both",
+        _ => throw new ArgumentOutOfRangeException(nameof(protokol)),
+    };
 }

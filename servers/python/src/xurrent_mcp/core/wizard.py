@@ -43,7 +43,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..config import Config
 from ..timeutil import iso, iso_date, local_datetime, today_in
-from .confirm import _b64url, _b64url_decode
+from .confirm import _b64url_decode, encode_state
 
 if TYPE_CHECKING:  # dongusel import onlemi — yalnizca tip denetimi icin
     from ..tools.runtime import Runtime
@@ -105,10 +105,13 @@ def _secret(config: Config) -> bytes:
 
 
 def sign_state(secret: bytes, payload: dict[str, Any]) -> str:
-    """payload -> base64url(json) + "." + base64url(HMAC_SHA256(secret, jsonBytes))."""
-    body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    signature = hmac.new(secret, body, hashlib.sha256).digest()
-    return f"{_b64url(body)}.{_b64url(signature)}"
+    """payload -> base64url(json) + "." + base64url(HMAC_SHA256(secret, jsonBytes)).
+
+    Zarf, confirm.encode_state ile ORTAKTIR (fixtures/state-vektorleri.json bunun
+    sozlesmesidir); burada yalnizca serilestirme yapilir, imza tek yerde atilir.
+    """
+    body = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    return encode_state(secret, body)
 
 
 def verify_state(secret: bytes, token: str) -> dict[str, Any]:

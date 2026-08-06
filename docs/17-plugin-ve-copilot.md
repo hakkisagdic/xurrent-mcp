@@ -65,13 +65,20 @@ orkestrasyonu kendi LLM'i yapar, sohbet arayüzü Teams/web'de hazırdır.
 Kullanıcı ⇄ Copilot Studio agent'ı ⇄ [X-MCP-Api-Key] ⇄ MCP sunucumuz ⇄ [Bearer PAT] ⇄ Xurrent
 ```
 
-İki güvenlik kararı:
+Üç güvenlik kararı:
 
 1. **Xurrent PAT'i sunucuda kalır.** Copilot Studio Xurrent kimliği görmez;
    yalnızca MCP sunucusunun kapı anahtarını (`MCP_API_KEY` ↔ `X-MCP-Api-Key`
    başlığı) taşır. Anahtar boşsa sunucu yalnız loopback dinler — tunnel açmadan
    önceki varsayılan duruş korunur.
-2. **Onay akışı LLM'e bırakılmaz** (docs/03'teki karar burada da geçerli).
+2. **Host kısıtı anahtarla birlikte gevşer.** SDK'ların DNS-rebinding koruması
+   loopback modunda aynen yürürlüktedir; anahtar doluyken kapı anahtardır ve
+   yabancı `Host` başlıkları kabul edilir — konteyner/tunnel gerçeği: ilk
+   konteyner ölçümünde bu koruma, geçerli anahtar taşıyan istekleri bile
+   `421` ile öldürüyordu. Host'u yine de sabitlemek isteyen `MCP_ALLOWED_HOSTS`
+   verir. Sağlık probu için her modda anahtarsız `GET /healthz` vardır
+   (CI'daki `kabuk-http` adımı üçünü de ölçer).
+3. **Onay akışı LLM'e bırakılmaz** (docs/03'teki karar burada da geçerli).
    Copilot Studio'nun elicitation desteği ölçülene kadar onay,
    `timesheet_wizard`'ın yapılandırılmış `next_question` alanıyla yürür —
    sunucu-güdümlü, atlatılamaz.

@@ -23,6 +23,19 @@
  *   dolu → 0.0.0.0'a bağlanılır ve HER /mcp* isteği X-MCP-Api-Key başlığında
  *   aynı değeri taşımak zorundadır (sabit-zamanlı karşılaştırma; aksi 401).
  *   Her iki era için de geçerlidir. Web chat portu (WEB_PORT) bundan ETKİLENMEZ.
+ *
+ * HOST BAŞLIĞI (MCP_ALLOWED_HOSTS, .env.example §8):
+ *   Ölçülen durum: ne v1 SDK'sı (dnsRebindingProtection varsayılan KAPALI) ne
+ *   v2 createMcpHandler Host'u süzer — koruma anahtar boşken loopback bind'i,
+ *   doluyken anahtardır. MCP_ALLOWED_HOSTS doluysa /mcp* için Host allowlist'i
+ *   BURADA (tek kapıda) uygulanır; liste dışı Host 421 alır. SDK'nın kendi
+ *   rebinding seçeneği bilinçli olarak KAPALI bırakıldı: yalnız v1'i kapsar ve
+ *   iki era'ya iki ayrı mekanizma dağıtmak kapıyı test edilemez hâle getirirdi.
+ *
+ * GET /healthz (anahtarsız, Host kısıtsız):
+ *   Konteyner orkestratörlerinin sağlık probu. MCP konuşmaz, sır sızdırmaz;
+ *   yalnız {"status":"ok","protocol":<MCP_PROTOCOL>} döner. Kapılardan ÖNCE
+ *   yanıtlanır — probe'un anahtarı yoktur ve Host'u öngörülemez.
  */
 
 import { randomUUID } from "node:crypto";
@@ -32,7 +45,7 @@ import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { createMcpHandler } from "@modelcontextprotocol/server";
 import { loadConfig, type AppConfig } from "../config.js";
 import { log } from "../util/log.js";
-import { apiKeyOk, bindHost, resolvePathTarget } from "./http-gate.js";
+import { apiKeyOk, bindHost, hostOk, resolvePathTarget } from "./http-gate.js";
 import { parametreKoruyucusuTak } from "./params-guard.js";
 import { createV1Server } from "./v1/server.js";
 import { createV2Server } from "./v2/server.js";
@@ -212,6 +225,29 @@ async function main(): Promise<void> {
       const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
       const path = url.pathname.replace(/\/+$/, "") || "/";
 
+      // ── GET /healthz: KAPILARDAN ÖNCE — anahtarsız, Host kısıtsız ─────────
+      // Konteyner sağlık probu anahtar taşımaz ve Host'u öngörülemez; MCP
+      // protokolü gerektirmez. Sır sızdırmaz: yalnız durum + protokol modu.
+      if (path === "/healthz" && (req.method === "GET" || req.method === "HEAD")) {
+        res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+        res.end(req.method === "HEAD" ? undefined : JSON.stringify({ status: "ok", protocol: cfg.mcpProtocol }));
+        return;
+      }
+
+      // ── MCP_ALLOWED_HOSTS kapısı: liste doluysa yalnız listedeki Host'lar ─
+      // 421 Misdirected Request: istek bu sunucuya YÖNELMEMİŞ sayılır. Liste
+      // boşsa Host'a bakılmaz — anahtar doluyken kapı anahtardır (ilk konteyner
+      // ölçümünde Host kısıtı geçerli anahtarlı istekleri öldürüyordu).
+      if (!hostOk(cfg.mcpAllowedHosts, req.headers.host)) {
+        res.writeHead(421, { "Content-Type": "application/json; charset=utf-8" });
+        res.end(
+          JSON.stringify({
+            error: "Host başlığı MCP_ALLOWED_HOSTS listesinde değil — istek bu sunucuya yönelmemiş sayıldı.",
+          }),
+        );
+        return;
+      }
+
       // ── MCP_API_KEY kapısı: TÜM /mcp* istekleri, HER İKİ era ──────────────
       if (cfg.mcpApiKey && !apiKeyOk(cfg.mcpApiKey, req.headers["x-mcp-api-key"])) {
         res.writeHead(401, { "Content-Type": "application/json; charset=utf-8" });
@@ -259,6 +295,12 @@ async function main(): Promise<void> {
         ? "MCP_API_KEY DOLU: 0.0.0.0'a bağlanıldı, her istekte X-MCP-Api-Key zorunlu."
         : "MCP_API_KEY boş: yalnız loopback (127.0.0.1) dinleniyor.",
     );
+    log.info(
+      cfg.mcpAllowedHosts.length > 0
+        ? `MCP_ALLOWED_HOSTS: yalnız şu Host'lar kabul edilir: ${cfg.mcpAllowedHosts.join(", ")}`
+        : "MCP_ALLOWED_HOSTS boş: Host başlığı süzülmüyor (kapı anahtardır).",
+    );
+    log.info(`Sağlık probu: ${base}/healthz (anahtarsız).`);
   });
 }
 

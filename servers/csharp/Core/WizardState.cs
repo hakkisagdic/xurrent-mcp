@@ -16,9 +16,10 @@ public sealed record WizardStateVerdict(JsonObject? Payload, string? RestartReas
 /// <summary>
 /// ★ timesheet_wizard sessionState codec'i (contract/wizard.md §4).
 ///
-/// Wire biçimi requestState ile AYNI AİLEDİR (base64url + HMAC-SHA256) ama AYRI amaç,
-/// AYRI payload: {"v":1,"kind":"wizard","step":"...","exp":&lt;epoch sn&gt;,"data":{...}}.
-/// RequestStateCodec DEĞİŞTİRİLMEDİ — yalnızca base64url/hmac yardımcıları paylaşılıyor.
+/// Wire biçimi requestState ile ARTIK BİREBİR AYNIDIR — iki codec de
+/// RequestStateCodec'teki paylaşılan ZARFI (ZarfImzala/ZarfCoz) kullanır; ayrışan
+/// yalnız AMAÇ ve payload'dır: {"v":1,"kind":"wizard","step":"...","exp":&lt;epoch sn&gt;,"data":{...}}.
+/// Çapraz-dil sözleşmesi fixtures/state-vektorleri.json ile sabitlenmiştir.
 ///
 /// Kritik kurallar:
 ///   • HMAC, payload BYTE'ları üzerinde hesaplanır — kanonikleştirme GEREKMEZ.
@@ -47,44 +48,36 @@ public static class WizardStateCodec
             ["data"] = data.DeepClone(),
         };
 
-        var bytes = Encoding.UTF8.GetBytes(payload.ToJsonString(Json.Options));
-        return RequestStateCodec.Base64Url(bytes) + "." + RequestStateCodec.Base64Url(RequestStateCodec.Hmac(cfg, bytes));
+        return RequestStateCodec.ZarfImzala(cfg, payload.ToJsonString(Json.Options));
     }
 
     /// <summary>
     /// Geri gelen state'i doğrular. Herhangi bir kontrol tutmazsa akış start'tan
     /// başlar ve gerekçe AÇIKÇA söylenir (WizardStateVerdict.RestartReason).
+    ///
+    /// ★ Zarf çözümü RequestStateCodec.ZarfCoz ile ORTAKTIR: imza önce, ham
+    /// byte'lar üzerinde — parse edilmeden. Kanonikleştirme yok; başka bir dilin
+    /// ürettiği byte dizisi de aynen doğrulanır (çapraz-dil devir).
     /// </summary>
     public static WizardStateVerdict Verify(AppConfig cfg, string blob)
     {
-        var dot = blob.IndexOf('.');
-        if (dot <= 0 || dot == blob.Length - 1)
-            return WizardStateVerdict.Restart(
-                "Oturum durumu (sessionState) beklenen biçimde değil (payload.signature bekleniyordu).");
-
-        byte[] payloadBytes, signature;
-        try
+        var (payload, zarf) = RequestStateCodec.ZarfCoz(cfg, blob);
+        switch (zarf)
         {
-            payloadBytes = RequestStateCodec.FromBase64Url(blob[..dot]);
-            signature = RequestStateCodec.FromBase64Url(blob[(dot + 1)..]);
+            case RequestStateCodec.ZarfSonucu.BicimBozuk:
+                return WizardStateVerdict.Restart(
+                    "Oturum durumu (sessionState) beklenen biçimde değil (payload.signature bekleniyordu).");
+            case RequestStateCodec.ZarfSonucu.Base64Degil:
+                return WizardStateVerdict.Restart("Oturum durumu base64url olarak çözülemedi.");
+            case RequestStateCodec.ZarfSonucu.ImzaGecersiz:
+                return WizardStateVerdict.Restart(
+                    "Oturum durumunun İMZASI GEÇERSİZ — state değiştirilmiş ya da başka bir anahtarla üretilmiş.");
+            case RequestStateCodec.ZarfSonucu.JsonDegil:
+                return WizardStateVerdict.Restart("Oturum durumunun içeriği geçerli JSON değil.");
         }
-        catch (FormatException)
-        {
-            return WizardStateVerdict.Restart("Oturum durumu base64url olarak çözülemedi.");
-        }
 
-        // ★ İMZA ÖNCE, ham byte'lar üzerinde — parse edilmeden. Kanonikleştirme yok;
-        // başka bir dilin ürettiği byte dizisi de aynen doğrulanır (çapraz-dil devir).
-        if (!CryptographicOperations.FixedTimeEquals(signature, RequestStateCodec.Hmac(cfg, payloadBytes)))
-            return WizardStateVerdict.Restart(
-                "Oturum durumunun İMZASI GEÇERSİZ — state değiştirilmiş ya da başka bir anahtarla üretilmiş.");
-
-        JsonObject payload;
-        try { payload = JsonNode.Parse(Encoding.UTF8.GetString(payloadBytes))!.AsObject(); }
-        catch (Exception e) when (e is JsonException or InvalidOperationException or NullReferenceException)
-        {
+        if (payload is null)   // Gecerli sonuçta payload hep doludur; derleyiciye kanıt.
             return WizardStateVerdict.Restart("Oturum durumunun içeriği geçerli JSON değil.");
-        }
 
         if (payload["v"]?.GetValue<int>() != Version || payload["kind"]?.GetValue<string>() != Kind)
             return WizardStateVerdict.Restart("Oturum durumu bu sihirbaza ait değil (v/kind uyuşmuyor).");

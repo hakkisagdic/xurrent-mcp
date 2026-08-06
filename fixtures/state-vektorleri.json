@@ -1,0 +1,25 @@
+{
+  "_comment": [
+    "ÇAPRAZ-DİL DURUM İMZASI TEST VEKTÖRLERİ — üç dil de bu dosyayı okuyup",
+    "AYNEN bu token'ları üretmek ve doğrulamak zorundadır. Zarf biçimi:",
+    "b64url(payloadJson) + '.' + b64url(HMAC_SHA256(secret, payloadJsonBytes)).",
+    "İmza HAM byte'lar üzerindedir — kanonikleştirme YOKTUR; bu yüzden testler",
+    "payloadJson DİZGESİNİ yeniden serileştirmeden, olduğu gibi kullanmalıdır.",
+    "Bu dosya, 'TS'in ürettiği requestState'i C# çözemedi' bulgusunun (docs/08)",
+    "bir daha yaşanmamasının sözleşmesidir."
+  ],
+  "vektorler": [
+    {
+      "aciklama": "requestState (confirm) — MRTR onay durumu; exp 2100 yılı (vektör süresiz geçerli)",
+      "secret": "vektor-sirri-0123456789abcdef",
+      "payloadJson": "{\"v\":1,\"kind\":\"confirm\",\"principal\":\"stdio:local\",\"fingerprint\":\"abc123def4567890\",\"nonce\":\"vektor-nonce-1\",\"exp\":4102444800}",
+      "token": "eyJ2IjoxLCJraW5kIjoiY29uZmlybSIsInByaW5jaXBhbCI6InN0ZGlvOmxvY2FsIiwiZmluZ2VycHJpbnQiOiJhYmMxMjNkZWY0NTY3ODkwIiwibm9uY2UiOiJ2ZWt0b3Itbm9uY2UtMSIsImV4cCI6NDEwMjQ0NDgwMH0.8Nq5J1KYbIV6PqKcWZQ6-I_mA-RiTGIuBvbWRCEqrWU"
+    },
+    {
+      "aciklama": "wizard sessionState — sohbet durumu; Türkçe içerik UTF-8 byte'larıyla imzalanır",
+      "secret": "vektor-sirri-0123456789abcdef",
+      "payloadJson": "{\"v\":1,\"kind\":\"wizard\",\"step\":\"duration\",\"exp\":4102444800,\"data\":{\"targetLabel\":\"Request #70248 — VPN kopuşları\",\"minutes\":null}}",
+      "token": "eyJ2IjoxLCJraW5kIjoid2l6YXJkIiwic3RlcCI6ImR1cmF0aW9uIiwiZXhwIjo0MTAyNDQ0ODAwLCJkYXRhIjp7InRhcmdldExhYmVsIjoiUmVxdWVzdCAjNzAyNDgg4oCUIFZQTiBrb3B1xZ9sYXLEsSIsIm1pbnV0ZXMiOm51bGx9fQ.C29D1Wah2TMDcB2xHNaXUV9C2RH_cj0erw-rITNIwkI"
+    }
+  ]
+}

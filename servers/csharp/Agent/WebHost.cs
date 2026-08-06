@@ -151,18 +151,46 @@ public static class WebHost
 
         var app = builder.Build();
 
-        // API anahtarı kapısı — TÜM /mcp* yolları (proxy'lenen /mcp/v1 dahil).
+        // ── /healthz — konteyner sağlık probu (docs/17) ────────────────────
+        // ANAHTARSIZ ve Host kapısız çalışır: orchestrator probu ne anahtar bilir
+        // ne de "doğru" Host gönderir (pod IP'siyle sorar). MCP protokolü gerekmez;
+        // 'both' modda da DIŞ host'tan servis edilir — iç v1 Kestrel'ine gitmez.
+        // SIR SIZDIRMAZ: yalnız durum + yapılandırılmış protokol metni döner.
+        app.MapGet("/healthz", () => Results.Json(new
+        {
+            status = "ok",
+            protocol = HttpKapi.ProtokolMetni(cfg.McpProtocol),
+        }));
+
+        // Host allowlist + API anahtarı kapısı — TÜM /mcp* yolları (proxy'lenen
+        // /mcp/v1 dahil). Sıra bilinçli: önce Host (yapılandırma sınırı), sonra anahtar.
         app.Use(async (http, next) =>
         {
-            if (http.Request.Path.StartsWithSegments("/mcp")
-                && !HttpKapi.AnahtarUygun(cfg.McpApiKey, http.Request.Headers["X-MCP-Api-Key"]))
+            if (http.Request.Path.StartsWithSegments("/mcp"))
             {
-                http.Response.StatusCode = 401;
-                http.Response.ContentType = "application/json; charset=utf-8";
-                await http.Response.WriteAsync(
-                    """{"error":"Yetkisiz: X-MCP-Api-Key başlığı eksik veya hatalı."}""",
-                    http.RequestAborted);
-                return;
+                // MCP_ALLOWED_HOSTS doluysa liste dışı Host 421 alır (Misdirected
+                // Request — "bu istek bu sunucuya yönelmemiş"in standart kodu).
+                // Liste boşsa Host serbesttir: anahtarlı modda kapı ANAHTARDIR
+                // (konteynerler arası çağrıda Host servis adıdır, localhost değil).
+                if (!HttpKapi.HostUygun(cfg.McpAllowedHosts, http.Request.Host.Host))
+                {
+                    http.Response.StatusCode = 421;
+                    http.Response.ContentType = "application/json; charset=utf-8";
+                    await http.Response.WriteAsync(
+                        """{"error":"Reddedildi: Host başlığı MCP_ALLOWED_HOSTS listesinde değil."}""",
+                        http.RequestAborted);
+                    return;
+                }
+
+                if (!HttpKapi.AnahtarUygun(cfg.McpApiKey, http.Request.Headers["X-MCP-Api-Key"]))
+                {
+                    http.Response.StatusCode = 401;
+                    http.Response.ContentType = "application/json; charset=utf-8";
+                    await http.Response.WriteAsync(
+                        """{"error":"Yetkisiz: X-MCP-Api-Key başlığı eksik veya hatalı."}""",
+                        http.RequestAborted);
+                    return;
+                }
             }
             await next();
         });
@@ -192,8 +220,11 @@ public static class WebHost
         foreach (var yol in HttpKapi.YolTablosu(cfg.McpProtocol))
             Console.WriteLine($"MCP Streamable HTTP: http://localhost:{cfg.McpHttpPort}{yol.Yol}  " +
                               $"({yol.ProtokolSurumu}, {(yol.Sessionful ? "sessionful" : "stateless")})");
+        Console.WriteLine($"Sağlık probu: http://localhost:{cfg.McpHttpPort}/healthz  (anahtarsız)");
         if (!string.IsNullOrEmpty(cfg.McpApiKey))
             Console.WriteLine("MCP_API_KEY etkin: 0.0.0.0 dinleniyor, /mcp* için X-MCP-Api-Key zorunlu.");
+        if (cfg.McpAllowedHosts.Count > 0)
+            Console.WriteLine($"MCP_ALLOWED_HOSTS etkin: yalnız [{string.Join(", ", cfg.McpAllowedHosts)}] Host'ları kabul edilir.");
 
         await app.RunAsync(ct);
         if (v1App is not null) await v1App.StopAsync(CancellationToken.None);

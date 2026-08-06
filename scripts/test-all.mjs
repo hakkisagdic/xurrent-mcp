@@ -641,6 +641,34 @@ const ADIMLAR = [
           }
           if (!hazir) return { durum: KALDI, kanit: `${dil}: HTTP sunucusu ${port} portunda açılmadı` };
 
+          // 0) /healthz — ANAHTARSIZ çalışmalı (konteyner sağlık probu; docs/17).
+          const r0 = await fetch(uc + "/healthz");
+          const s0 = await r0.json().catch(() => null);
+          if (r0.status !== 200 || s0?.status !== "ok")
+            return { durum: KALDI, kanit: `${dil}: /healthz → HTTP ${r0.status}, status=${s0?.status ?? "?"}` };
+
+          // 0b) v2 HTTP üzerinden server/discover — paralel altyapı ölçümü eski
+          // kodda Python'un HTTP'de v2 KONUŞMADIĞINI bulmuştu; bu kontrol o
+          // gerilemeyi kalıcı olarak yakalar.
+          const rd = await fetch(uc + "/mcp/v2", {
+            method: "POST",
+            headers: { "content-type": "application/json", accept: "application/json, text/event-stream",
+              "x-mcp-api-key": ANAHTAR, "mcp-method": "server/discover", "mcp-name": "xurrent-mcp",
+              "mcp-protocol-version": "2026-07-28" },
+            body: JSON.stringify({ jsonrpc: "2.0", id: 9, method: "server/discover", params: { _meta: {
+              "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+              "io.modelcontextprotocol/clientCapabilities": {},
+              "io.modelcontextprotocol/clientInfo": { name: "kabuk-smoke", version: "1.0.0" } } } }),
+          });
+          const dMetin = await rd.text();
+          const dJson = (() => { try {
+            const satir = dMetin.split("\n").find((l) => l.startsWith("data:"));
+            return JSON.parse(satir ? satir.slice(5) : dMetin);
+          } catch { return null; } })();
+          const surumler = JSON.stringify(dJson?.result ?? {});
+          if (!rd.ok || !surumler.includes("2026-07-28"))
+            return { durum: KALDI, kanit: `${dil}: HTTP server/discover → ${rd.status}, 2026-07-28 görünmüyor` };
+
           // 1) v1 oturumlu el sıkışma
           const r1 = await fetch(uc + "/mcp/v1", {
             method: "POST",
@@ -680,7 +708,22 @@ const ADIMLAR = [
           if (r3.status !== 401)
             return { durum: KALDI, kanit: `${dil}: anahtarsız istek ${r3.status} aldı (beklenen 401)` };
 
-          kanitlar.push(`${dil}: v1 oturum ✓ v2 10 tool ✓ 401 ✓`);
+          // 4) Host koruması: anahtar DOLUYKEN yabancı Host kabul edilmeli
+          // (konteynerler arası çağrının 421 ile ölmesi bulgusunun kapanışı).
+          const r4 = await fetch(uc + "/mcp/v2", {
+            method: "POST",
+            headers: { "content-type": "application/json", accept: "application/json, text/event-stream",
+              "x-mcp-api-key": ANAHTAR, "mcp-method": "tools/list", "mcp-name": "xurrent-mcp",
+              "mcp-protocol-version": "2026-07-28", host: "konteyner-a.internal:8788" },
+            body: JSON.stringify({ jsonrpc: "2.0", id: 5, method: "tools/list", params: { _meta: {
+              "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+              "io.modelcontextprotocol/clientCapabilities": {},
+              "io.modelcontextprotocol/clientInfo": { name: "kabuk-smoke", version: "1.0.0" } } } }),
+          });
+          if (!r4.ok)
+            return { durum: KALDI, kanit: `${dil}: yabancı Host + anahtar → HTTP ${r4.status} (beklenen 200; DNS-rebinding kapısı anahtarlı modda gevşemeli)` };
+
+          kanitlar.push(`${dil}: healthz ✓ discover ✓ v1 oturum ✓ v2 10 tool ✓ 401 ✓ Host ✓`);
         } finally {
           try { p.kill(); } catch { /* zaten ölmüş olabilir */ }
           await new Promise((z) => setTimeout(z, 300));

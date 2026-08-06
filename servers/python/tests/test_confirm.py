@@ -282,6 +282,34 @@ def test_govdeden_nonce_silinirse_REDDEDILIR():
         imzalayici.verify(token, principal=PRINCIPAL, method=METOD, arguments=ARGUMANLAR)
 
 
+# ── kind ayirici: wizard state'i onay yerine GECMEZ ─────────────────────────
+
+
+def test_wizard_kind_tasiyan_token_onay_yerine_GECMEZ(imzalayici):
+    """Zarf wizard sessionState ile ORTAK oldugundan, ayni sirla imzalanmis bir
+    wizard state'ini requestState diye oynatmak denenebilir — kind keser."""
+    from xurrent_mcp.core.confirm import encode_state
+
+    govde = json.dumps(
+        {"v": 1, "kind": "wizard", "step": "duration", "exp": int(time.time()) + 300},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    token = encode_state(imzalayici.secret, govde)
+
+    with pytest.raises(StateError, match="kind uyusmuyor"):
+        _dogrula(imzalayici, token)
+
+
+def test_uretilen_token_kind_confirm_tasir(imzalayici):
+    """Capraz-dil sozlesmesi (fixtures/state-vektorleri.json): requestState
+    payload'i kind='confirm' ile ayrisir."""
+    govde_ham = _token_uret(imzalayici).split(".")[0]
+    dolgu = "=" * (-len(govde_ham) % 4)
+    govde = json.loads(base64.urlsafe_b64decode(govde_ham + dolgu))
+    assert govde["kind"] == "confirm"
+
+
 # ── principal ───────────────────────────────────────────────────────────────
 
 

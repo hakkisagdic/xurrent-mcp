@@ -78,4 +78,45 @@ public class HttpKapiTests
         Assert.Equal("http://localhost:8788", HttpKapi.DinlemeAdresi("", 8788));
         Assert.Equal("http://0.0.0.0:8788", HttpKapi.DinlemeAdresi("deneme", 8788));
     }
+
+    // ── HostUygun (MCP_ALLOWED_HOSTS) ────────────────────────────────────────
+
+    /// <summary>
+    /// Liste BOŞ = Host serbest. Anahtarlı modda kapı ANAHTARDIR (konteynerler arası
+    /// çağrıda Host servis adıdır); anahtarsız modda sınırı loopback bind çizer —
+    /// C# yığınında Host'u kesen başka katman yoktur ve bu bilinçli olarak korunur.
+    /// </summary>
+    [Fact]
+    public void bos_liste_her_hostu_gecirir()
+    {
+        Assert.True(HttpKapi.HostUygun([], "localhost"));
+        Assert.True(HttpKapi.HostUygun([], "konteyner-a.internal"));
+        Assert.True(HttpKapi.HostUygun([], null));
+    }
+
+    /// <summary>Liste doluysa yalnız listedekiler geçer; karşılaştırma harf duyarsızdır.</summary>
+    [Fact]
+    public void dolu_liste_yalniz_listedeki_hostlari_gecirir()
+    {
+        string[] izinli = ["only.example", "ic-servis.internal"];
+
+        Assert.True(HttpKapi.HostUygun(izinli, "only.example"));
+        Assert.True(HttpKapi.HostUygun(izinli, "ONLY.Example"));
+        Assert.True(HttpKapi.HostUygun(izinli, "ic-servis.internal"));
+        Assert.False(HttpKapi.HostUygun(izinli, "evil.example"));
+        Assert.False(HttpKapi.HostUygun(izinli, "localhost"));
+        Assert.False(HttpKapi.HostUygun(izinli, ""));
+        Assert.False(HttpKapi.HostUygun(izinli, null));
+    }
+
+    // ── ProtokolMetni (/healthz) ─────────────────────────────────────────────
+
+    /// <summary>/healthz'in "protocol" alanı MCP_PROTOCOL'ün .env değeriyle birebir aynıdır.</summary>
+    [Fact]
+    public void protokol_metni_env_degeriyle_birebirdir()
+    {
+        Assert.Equal("2025-11-25", HttpKapi.ProtokolMetni(ProtocolChoice.V1));
+        Assert.Equal("2026-07-28", HttpKapi.ProtokolMetni(ProtocolChoice.V2));
+        Assert.Equal("both", HttpKapi.ProtokolMetni(ProtocolChoice.Both));
+    }
 }

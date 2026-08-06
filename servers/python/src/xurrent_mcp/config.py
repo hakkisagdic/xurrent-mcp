@@ -158,6 +158,19 @@ class Config:
     #           karsilastirma; aksi halde 401). Xurrent PAT'i ile KARISTIRMAYIN:
     #           bu anahtar MCP sunucusunun kendisini korur.
     mcp_api_key: str = ""
+    # MCP_ALLOWED_HOSTS (virgülle ayrık, opsiyonel) — YALNIZCA anahtar DOLUYKEN
+    # anlamlıdır:
+    #   BOŞ  -> açık modda TÜM Host başlıkları geçer; kapı API anahtarının
+    #           KENDİSİDİR. NEDEN: konteynerler arası çağrıda Host asla
+    #           "localhost" olmaz; Host süzgeci burada koruma değil 421
+    #           üreten bir engel olurdu.
+    #   DOLU -> açık modda bile yalnızca listedeki Host'lar kabul edilir
+    #           (derinlemesine savunma: anahtar sızarsa saldırgan yine de
+    #           doğru Host'u bilmek zorundadır). Girdi "host" ise "host:port"
+    #           varyantları da kabul edilir; ":port" içeren girdi birebir aranır.
+    # Anahtar BOŞKEN bu liste YOK SAYILIR — loopback modunun katı localhost
+    # duruşu değişmez (warnings() bunu açıkça söyler).
+    mcp_allowed_hosts: tuple[str, ...] = ()
 
     fixtures_dir: Path = field(default_factory=lambda: _repo_root() / "fixtures")
     wizard_steps_path: Path = field(
@@ -209,6 +222,12 @@ class Config:
             out.append(
                 "XURRENT_CONFIRM_POLICY=strict — mock modda bile onay ZORUNLU. "
                 "Onay soramayan bir client ile yapilan yazma REDDEDILIR."
+            )
+        if self.mcp_allowed_hosts and not self.mcp_api_key:
+            out.append(
+                "MCP_ALLOWED_HOSTS verildi ama MCP_API_KEY bos — liste YOK SAYILIYOR. "
+                "Anahtarsiz mod her zaman yalnizca loopback'tir; Host allowlist'i "
+                "yalnizca acik modda (anahtar doluyken) uygulanir."
             )
         if not self.state_secret:
             out.append(
@@ -332,6 +351,10 @@ def load_config() -> Config:
         web_port=_env_int("WEB_PORT", 8787),
         mcp_http_port=_env_int("MCP_HTTP_PORT", 8788),
         mcp_api_key=_env("MCP_API_KEY"),
+        # Virgülle ayrık liste; bos parcalar ve kenar bosluklari elenir.
+        mcp_allowed_hosts=tuple(
+            h.strip() for h in _env("MCP_ALLOWED_HOSTS").split(",") if h.strip()
+        ),
         fixtures_dir=fixtures_dir,
         wizard_steps_path=_repo_root() / "docs" / "wizard" / "steps.json",
         web_client_dir=_repo_root() / "clients" / "web",

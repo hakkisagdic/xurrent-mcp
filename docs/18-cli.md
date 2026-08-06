@@ -7,7 +7,7 @@
 
 | ← Önceki | Sonraki → |
 |---|---|
-| [17 — Plugin ve Copilot Studio](17-plugin-ve-copilot.md) | [Demo senaryosu](demo/senaryo.md) |
+| [17 — Plugin ve Copilot Studio](17-plugin-ve-copilot.md) | [19 — Dağıtım](19-dagitim.md) |
 
 Kod: [`clients/cli/`](../clients/cli/) · Ayrıntılı kullanım: [`clients/cli/README.md`](../clients/cli/README.md)
 

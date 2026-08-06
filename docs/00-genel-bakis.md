@@ -225,8 +225,9 @@ Ayrıntı: [`fixtures/README.md`](../fixtures/README.md).
 | [16 — REST ve resmî SDK](16-rest-ve-sdk.md) | İkinci transport, 422 modeli, vendor SDK ölçümü | Transport seçmeden önce |
 | [17 — Plugin ve Copilot Studio](17-plugin-ve-copilot.md) | Plugin modeli, konektör, tunnel yürüyüşü | Dış yüzey bağlarken |
 | [18 — CLI](18-cli.md) | `xmcp`: ham JSON-RPC istemcisi + TUI sohbet | Terminalden sürmek için |
+| [19 — Dağıtım](19-dagitim.md) | IaC taslağı, replika deneyi, açık kararlar | Buluta çıkmadan önce |
 | [Demo senaryosu](demo/senaryo.md) | Sunum script'i, süre tahminleri | Sunum sabahı |
 
-**00'dan 18'e on dokuz bölüm**, artı demo senaryosu. Sıra bir okuma sırasıdır,
+**00'dan 19'a yirmi bölüm**, artı demo senaryosu. Sıra bir okuma sırasıdır,
 zorunluluk değil — yıldızlılar önceliklidir: **02** dersin kalbi, **09** en güncel
 dersi, **10** sürecin kendisi, **15** üretim yoluna çıkmadan önceki son kapı.

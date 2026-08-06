@@ -232,23 +232,41 @@ politikası deprecate edilen özellikler için bir pencere tanımlıyor. **Doğr
 - Bu bir *deprecation* mı yoksa *sonsuza kadar uyumluluk* mu?
 - Destek düştüğünde yalnızca v1 konuşan istemciler ne olur?
 
-*Neden şimdi önemli:* TypeScript sunucusu bugün **yalnızca v1** konuşuyor. Karşı
-taraftaki v1 desteği düşerse o sunucu SDK yükseltilmeden kullanılamaz hâle gelir.
+*Neden şimdi önemli:* Üç sunucu da her iki revizyonu konuşuyor ve **v1 yolu
+gerçekten kullanılıyor** (sihirbaz `MCP_PROTOCOL=2025-11-25` ile de koşuyor;
+Copilot Studio yolu da v1 — docs/17). Karşı taraftaki v1 desteği düşerse o yol
+sessizce ölür.
 
 *Nasıl:* SDK changelog'ları + spec'in deprecation takvimi. Kod okumakla değil,
 **politika okumakla** cevaplanır.
 
-### D13 — TypeScript SDK 2.0.0'a ne zaman geçilecek?
+### D13 — TypeScript SDK 2.0.0'a geçiş — ✅ **YAPILDI (kısmen)**
 
-`@modelcontextprotocol/sdk` **1.30.0** kullanılıyor ve `server/discover`'a
-`-32601` dönüyor — **ölçülmüştür**, tahmin değil.
+`@modelcontextprotocol/sdk` **1.30.0** (v1) ile
+`@modelcontextprotocol/{core,server,client}` **2.0.0** (v2) **yan yana kurulu**.
+Paket adları farklı olduğu için aynı `node_modules`'da çakışmıyorlar.
 
-*Doğrulanacak:* 2.0.0 sürümü yayınlandı mı, paket adları nasıl bölündü
-(`@modelcontextprotocol/{core,server,client}`), ve mevcut `registerTool` API'si
-korunuyor mu?
+`stdio.ts` `MCP_PROTOCOL`'e göre birini seçiyor; v2 yolunda `serveStdio`'nun
+*bring-your-own-transport* seçeneği kullanılıyor, böylece era seçimi SDK'da kalıyor.
 
-*Geçildiğinde:* TypeScript için yazılan elle v1/v2 adaptörü **silinir**. O katman
-kalıcı mimari değil, geçici köprüdür ([09](09-protokol-gecisi.md#olcum)).
+*Kalan soru:* v1 paketi (`sdk@1.30.0`) ne zaman tamamen çıkarılacak? Bugün
+çıkarılamaz — 2025-11-25 revizyonunu sunmak dersin bir parçası. **D12 cevaplanınca**
+bu madde de cevaplanır.
+
+---
+
+### Ölçüm sonrası kapananlar
+
+Aşağıdaki maddeler bu listede açıktı ve **artık kapandı**. Silinmediler; bir
+`DOĞRULANMALI` listesinin değeri, kapanan maddelerin nasıl kapandığını da
+göstermesindedir.
+
+| Madde | Nasıl kapandı |
+|---|---|
+| **D11** — Claude Code hangi revizyonu kabul ediyor | Ölçüldü: **ikisini de**. Üç `.mcp.json` girdisi de bağlandı, aynı çıktıyı verdi |
+| **D13** — TypeScript 2.0.0'a geçiş | Yapıldı; iki paket yan yana, `MCP_PROTOCOL` ile seçiliyor |
+| **SDK'lar iki revizyonu birden konuşur mu** | Ölçüldü: `mcp` 2.0.0 ve `ModelContextProtocol` 2.0.0 **evet**. "C# için üç ayrı proje" planı bu ölçümle iptal edildi |
+| **D14–D18** (aşağıda) | 2026-08-06'da resmî dokümantasyon + yerel ölçümle — bkz. kendi bölümü |
 
 ### D14–D18 — güvenilirlik ve dış yüzey maddeleri (2026-08-06'da açıldı ve KAPATILDI)
 
@@ -265,7 +283,68 @@ beklemeden kapatılabilir.*
 | **D17** ✅ | REST yanıt/istek şekilleri çıkarımdı — gerçek lehçe ne? | **Doğrulandı ve altı varsayım düzeltildi**: referans alanları id'siz (`person`, `effort_class`, `time_allocation`); tarih filtresi tek parametrede operatörlü (`?date=>=X<=Y`); 422 gövdesi `"Validation Failed"` + `[alan, mesaj]` **ikilileri**; yanıtta `assignment` yok, koşullu `request`/`task` referansları var; Yol B parametreleri `time_spent` + `time_spent_effort_class` + `note` (time entry description REST'te taşınamaz); sayfalama `x-pagination-*` başlıkları. Sahte sunucu ve üç adaptör bu lehçeye çekildi (docs/16) |
 | **D18** ✅ | Copilot Studio `initialize`'da hangi sürümü önerir? | Önerisi ancak tenant'ta görülür — ama **etkisizdir**: `/mcp/v1` ucu dört aday öneriyle ölçüldü (`2024-11-05`, `2025-03-26`, `2025-06-18`, `2025-11-25`). TS/Python öneriyi aynen kabul ediyor; C# spec kuralınca `2025-11-25` öneriyor; dördünde de **200 + `Mcp-Session-Id`**. Müzakere standart MCP istemci davranışıdır |
 
+### Yeni açılanlar — dış bağımlılık maddeleri (D19–D22)
+
+Altyapı çalışması sırasında **ortaya çıktılar**; anahtar/hesap gerektirdikleri
+için hâlâ açıklar. (Not: bu maddeler ilk yazıldıklarında D14–D17 numaralarını
+almıştı; güvenilirlik maddeleriyle çarpışınca D19–D22'ye taşındılar.)
+
+#### D19 — Gerçek Gemini API'sine karşı hiç istek atılmadı ★★
+
+Wire formatı [31 iddiayla denetlendi](../tools/fake-gemini/README.md) ve şema
+çevirisi üç dilde test edildi, ama `generativelanguage.googleapis.com`'a **hiç
+istek gitmedi**.
+
+*Doğrulanacak:* `functionDeclarations` şemamız gerçekten kabul ediliyor mu
+(Gemini "çok büyük veya derin şemaları reddedebilir" diyor); `gemini-3.6-flash`
+adı geçerli mi; `functionResponse.id` eşleştirmesi gerçek API'de de çalışıyor mu.
+
+*Nasıl:* `GEMINI_API_KEY` ver, `GEMINI_BASE_URL`'i sil, `npm run chat`.
+Kod yolu aynı — sahte sunucu tam da bunun için taban adresi üzerinden devrede.
+
+#### D20 — Google ve Microsoft Graph takvim sağlayıcıları ★
+
+`mock` ve `ics` doğrulandı. `google` ve `graph` **gerçek uçlara karşı
+denenmedi**; kod var, tuzaklar yorumlanmış.
+
+*Özellikle şüpheli:* Graph'in `dateTime` alanı (offset yok, 7 kesirli hane) ve
+Google'ın `singleEvents=true` zorunluluğu — ikisi de yalnızca gerçek yanıtla
+kesinleşir.
+
+#### D21 — Çok replikalı dağıtımda `requestState` ★★★ — ✅ **büyük ölçüde KAPANDI**
+
+MRTR onayı HMAC imzalı bir blob'u **istemciye emanet eder**; ikinci istek başka
+bir replikaya düşerse imzanın orada da doğrulanması gerekir. İki ayrı kanıtla
+kapatıldı:
+
+1. **Sır kuralı deneyle kanıtlı** (`deploy/docker/replika-deneyi.sh`): sır
+   paylaşılmışsa ikinci replika imzayı doğrulayıp yazıyor; paylaşılmamışsa
+   *"requestState imzası GEÇERSİZ"*. `XURRENT_STATE_SECRET` tüm replikalarda
+   aynı olmak ZORUNDADIR (boş bırakılırsa süreç başına rastgeledir — tek
+   replikada sorun yok, ikide sessizce kırılır).
+2. **Zarf artık diller arası da taşınabilir:** ilk ölçümde TS'in ürettiği
+   requestState'i aynı sırlı C# replikası ÇÖZEMİYORDU (üç dil üç zarf biçimi).
+   Üç dilin codec'i sihirbazın byte-imza zarfında birleştirildi ve
+   [`fixtures/state-vektorleri.json`](../fixtures/state-vektorleri.json)
+   vektörleriyle üç dilde birebir kanıtlandı.
+
+*Kalan nüans:* v2 (MRTR) yolu artık LB-güvenlidir; **v1 (oturumlu) yol** —
+Copilot Studio'nun kullandığı — `Mcp-Session-Id` gereği yapışkan oturum
+(sticky session) ister. Bkz. [19 — Dağıtım](19-dagitim.md).
+
+#### D22 — Claude Desktop ölçülmedi ★
+
+D11 yalnızca **Claude Code** için ölçüldü. Desktop'ın hangi revizyonu konuştuğu
+ve `elicitation`'ı bildirip bildirmediği bilinmiyor.
+
+*Neden önemli:* Bildirmiyorsa `XURRENT_CONFIRM_POLICY=closed` (varsayılan) live
+modda yazmayı reddeder — güvenli ama sunumda akış durur.
+
 ### Doğrulama sırası
+
+Sıra, **elindeki erişime** göre üç kola ayrılır.
+
+**A — Xurrent hesabın olduğunda** (`XURRENT_MODE=live`, `XURRENT_DRY_RUN=1` ile başla)
 
 | Sıra | Madde | Neden bu sırada |
 |---|---|---|
@@ -274,10 +353,28 @@ beklemeden kapatılabilir.*
 | 3 | **D4** | `timeIncrement` olmadan yazma kör |
 | 4 | **D5** | `two_step` stratejisinin kaderi |
 | 5 | D6, D7, D8, D2, D1 | İşlevsel ama kritik değil (D1'in REST yarısı kapandı: header adları ve `retry-after` birebir belgeli; GraphQL header adları hâlâ bu maddede) |
-| 6 | **D10** | Sunumdan önce, istemci üzerinde |
-| 7 | ~~D11~~ | ✅ Ölçüldü — iki revizyon da kabul ediliyor (aşağıda) |
-| 8 | D12, D13 | Ders sonrası; bakım planlaması |
-| — | ~~D14–D18~~ | ✅ 2026-08-06'da doküman + yerel ölçümle kapatıldı (yukarıda) |
+
+`DRY_RUN=1` iken 1–5 arası maddelerin **hepsi** üretim verisine dokunmadan
+kapatılabilir: okuma sorguları gerçek çalışır, yazmalar yalnızca planlanır.
+
+**B — Hesap beklemeden, bugün**
+
+| Sıra | Madde | Nasıl |
+|---|---|---|
+| 1 | **D19** | `GEMINI_API_KEY` ver, `GEMINI_BASE_URL`'i sil. Anahtar dışında hiçbir şey gerekmiyor |
+| 2 | **D22** | Claude Desktop'a `.mcp.json`'daki komutu ekle, bir okuma tool'u çağır |
+| 3 | **D20** | `node scripts/google-auth.mjs` → `CALENDAR_PROVIDER=google` |
+| 4 | **D10** | İstemci üzerinde elicitation desteği |
+
+**C — Kapananlar ve bakım**
+
+| Madde | Durum |
+|---|---|
+| ~~D11~~ | ✅ Claude Code iki revizyonu da kabul ediyor |
+| ~~D13~~ | ✅ İki SDK yan yana, `MCP_PROTOCOL` ile seçiliyor |
+| ~~D14–D18~~ | ✅ 2026-08-06, doküman + yerel ölçüm (yukarıda) |
+| ~~D21~~ | ✅ Sır kuralı deneyle, zarf taşınabilirliği vektörle kanıtlı; v1 sticky nüansı [19 — Dağıtım](19-dagitim.md)'da |
+| D12 | Politika okuma işi; bugünkü davranışı etkilemiyor |
 
 ---
 

@@ -27,6 +27,8 @@ from xurrent_mcp.mcp.http import (  # noqa: E402
     api_key_dogru,
     build_http_app,
     dinleme_adresi,
+    izinli_hostlar,
+    izinli_originler,
     yol_tablosu,
 )
 
@@ -204,16 +206,16 @@ def test_build_http_app_both_rotalari_tabloyla_ayni(yapilandirma) -> None:
     app, host = build_http_app(cfg, _sahte_fabrika(kayit))
     # Era basina TEK sunucu kuruldu (v1, v2) — /mcp takma adi v2'yi PAYLASIR.
     assert kayit == [MCP_PROTOCOL_V1, MCP_PROTOCOL_V2]
-    assert [r.path for r in app.routes] == ["/mcp/v1", "/mcp/v2", "/mcp"]
+    assert [r.path for r in app.routes] == ["/healthz", "/mcp/v1", "/mcp/v2", "/mcp"]
     assert host == "127.0.0.1"  # anahtar bos -> loopback
 
 
-def test_build_http_app_tek_era_tek_rota(yapilandirma) -> None:
+def test_build_http_app_tek_era_tek_mcp_rotasi(yapilandirma) -> None:
     kayit: list[str] = []
     cfg = yapilandirma(mcp_protocol=MCP_PROTOCOL_V2)
     app, _ = build_http_app(cfg, _sahte_fabrika(kayit))
     assert kayit == [MCP_PROTOCOL_V2]
-    assert [r.path for r in app.routes] == ["/mcp"]
+    assert [r.path for r in app.routes] == ["/healthz", "/mcp"]
 
 
 def test_build_http_app_anahtar_doluysa_kapiyla_sarilir(yapilandirma) -> None:
@@ -223,13 +225,136 @@ def test_build_http_app_anahtar_doluysa_kapiyla_sarilir(yapilandirma) -> None:
     assert host == "0.0.0.0"
 
 
+def _mcp_yoneticileri(app):
+    """Yol -> StreamableHTTPSessionManager haritasi (/healthz'in yoneticisi YOK).
+    Anahtar doluyken uygulama ApiKeyKapisi ile sarilidir — once acilir."""
+    ic = app.app if isinstance(app, ApiKeyKapisi) else app
+    return {
+        r.path: r.app.session_manager
+        for r in ic.routes
+        if r.path.startswith("/mcp")
+    }
+
+
 def test_build_http_app_stateless_durusu_eraya_gore(yapilandirma) -> None:
     """Oturum durusu sozlesmenin parcasi: v1 sessionful, v2 stateless.
     SDK'ya giden bayragi dogrudan dogruluyoruz."""
     cfg = yapilandirma(mcp_protocol="both")
     app, _ = build_http_app(cfg, _sahte_fabrika([]))
-    yonetici_by_yol = {r.path: r.app.session_manager for r in app.routes}
+    yonetici_by_yol = _mcp_yoneticileri(app)
     assert yonetici_by_yol["/mcp/v1"].stateless is False
     assert yonetici_by_yol["/mcp/v2"].stateless is True
     # /mcp takma adi v2 yoneticisinin AYNISIDIR (ayri sunucu degil).
     assert yonetici_by_yol["/mcp"] is yonetici_by_yol["/mcp/v2"]
+
+
+# ══════════════════════════════════ 6. Host suzgeci — uc durus (DNS rebinding)
+
+
+def test_anahtar_boske_rebinding_korumasi_ACIK_ve_localhost(yapilandirma) -> None:
+    """Loopback modunun kati durusu DEGISMEDI: koruma acik, yalnizca localhost."""
+    cfg = yapilandirma(mcp_protocol=MCP_PROTOCOL_V2)
+    app, _ = build_http_app(cfg, _sahte_fabrika([]))
+    guvenlik = _mcp_yoneticileri(app)["/mcp"].security_settings
+    assert guvenlik.enable_dns_rebinding_protection is True
+    assert "localhost:*" in guvenlik.allowed_hosts
+
+
+def test_anahtar_doluyken_host_suzgeci_ACIKCA_kapali(yapilandirma) -> None:
+    """Acik modda kapi API anahtaridir; Host suzgeci konteynerler arasi cagriyi
+    421 ile keserdi. Kapatma SDK varsayilanina birakilmaz, ACIKCA yazilir."""
+    cfg = yapilandirma(mcp_protocol=MCP_PROTOCOL_V2, mcp_api_key="deneme")
+    app, _ = build_http_app(cfg, _sahte_fabrika([]))
+    guvenlik = _mcp_yoneticileri(app)["/mcp"].security_settings
+    assert guvenlik is not None  # None -> SDK geriye-uyum varsayilanina yaslanmak olurdu
+    assert guvenlik.enable_dns_rebinding_protection is False
+
+
+def test_allowed_hosts_verilirse_acik_modda_da_suzgec_ACIK(yapilandirma) -> None:
+    """Derinlemesine savunma: anahtar + MCP_ALLOWED_HOSTS -> yalnizca liste gecer."""
+    cfg = yapilandirma(
+        mcp_protocol="both",
+        mcp_api_key="deneme",
+        mcp_allowed_hosts=("only.example",),
+    )
+    app, _ = build_http_app(cfg, _sahte_fabrika([]))
+    for yonetici in _mcp_yoneticileri(app).values():
+        guvenlik = yonetici.security_settings
+        assert guvenlik.enable_dns_rebinding_protection is True
+        assert "only.example" in guvenlik.allowed_hosts
+        assert "only.example:*" in guvenlik.allowed_hosts
+        assert "localhost:*" not in guvenlik.allowed_hosts  # liste NEYSE odur
+
+
+def test_izinli_hostlar_ciplak_girdiyi_portlu_varyantla_acar() -> None:
+    assert izinli_hostlar(["only.example"]) == ["only.example", "only.example:*"]
+
+
+def test_izinli_hostlar_acik_portlu_girdiyi_OLDUGU_GIBI_birakir() -> None:
+    """Kullanici portu acikca yazdiysa yalnizca o port gecerlidir."""
+    assert izinli_hostlar(["only.example:9000"]) == ["only.example:9000"]
+
+
+def test_izinli_originler_http_ve_https_varyantlarini_uretir() -> None:
+    assert izinli_originler(["only.example"]) == [
+        "http://only.example",
+        "https://only.example",
+        "http://only.example:*",
+        "https://only.example:*",
+    ]
+
+
+# ══════════════════════════════════ 7. /healthz — kapisiz saglik ucu
+
+
+def _healthz_cagir(app):
+    """GET /healthz'i bellek ici ASGI ile surer; (status, json_govde) doner."""
+
+    async def _run():
+        mesajlar: list[dict] = []
+
+        async def receive():
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        async def send(mesaj):
+            mesajlar.append(mesaj)
+
+        scope = {
+            "type": "http",
+            "method": "GET",
+            "path": "/healthz",
+            "headers": [(b"host", b"evil.example")],  # Host suzgecine TABI DEGIL
+            "query_string": b"",
+        }
+        await app(scope, receive, send)
+        return mesajlar
+
+    mesajlar = asyncio.run(_run())
+    status = next(m["status"] for m in mesajlar if m["type"] == "http.response.start")
+    govde = b"".join(m.get("body", b"") for m in mesajlar if m["type"] == "http.response.body")
+    return status, json.loads(govde.decode("utf-8"))
+
+
+@pytest.mark.parametrize("protokol", [MCP_PROTOCOL_V2, MCP_PROTOCOL_V1, "both"])
+def test_healthz_her_protokol_modunda_200_ve_kucuk_govde(yapilandirma, protokol) -> None:
+    """Orkestrator sondasi MCP konusamaz: /healthz protokol modundan bagimsiz
+    calisir ve yalnizca status + protokol doner."""
+    cfg = yapilandirma(mcp_protocol=protokol)
+    app, _ = build_http_app(cfg, _sahte_fabrika([]))
+    status, govde = _healthz_cagir(app)
+    assert status == 200
+    assert govde == {"status": "ok", "protocol": protokol}
+
+
+def test_healthz_api_anahtari_ISTEMEZ_ve_sir_sizdirmaz(yapilandirma) -> None:
+    """Kapi yalnizca /mcp* yollarini korur; saglik sondasina anahtar dagitmak
+    gerekmez. Govde anahtari/sirri ICERMEZ."""
+    cfg = yapilandirma(
+        mcp_protocol=MCP_PROTOCOL_V2, mcp_api_key="cok-gizli", state_secret="sir"
+    )
+    app, _ = build_http_app(cfg, _sahte_fabrika([]))
+    assert isinstance(app, ApiKeyKapisi)  # kapi kurulu ama /healthz'e dokunmuyor
+    status, govde = _healthz_cagir(app)
+    assert status == 200
+    assert govde == {"status": "ok", "protocol": MCP_PROTOCOL_V2}
+    assert "cok-gizli" not in json.dumps(govde) and "sir" not in json.dumps(govde)

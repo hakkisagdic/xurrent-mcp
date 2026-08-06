@@ -86,7 +86,7 @@ contract/protocol.md    ← çift protokol sözleşmesi (2025-11-25 + 2026-07-28
 contract/reliability.md ← retry/dedup/"kesin mesajlaşma" politikası — tek sahip
 contract/wizard.md      ← timesheet_wizard sohbet durum makinesi sözleşmesi
 fixtures/               ← ortak mock veri. Üç dil de aynı dosyaları okur.
-docs/                   ← anlatım notları (Türkçe, 19 bölüm + demo senaryosu + sunum)
+docs/                   ← anlatım notları (Türkçe, 20 bölüm + demo senaryosu + sunum)
 docs/wizard/steps.json  ← sihirbaz ders akışı (16 adım). Üç dil de aynı dosyayı yürütür.
 servers/typescript/     ├─ MCP sunucusu + chatbot + web (aynı sözleşme;
 servers/python/         ├─  GraphQL + REST adaptörleri, çift-çağ HTTP)
@@ -284,6 +284,7 @@ OAuth akışını üç kez implemente etmek yerine token yenilemeyi düz bir HTT
 | [16 — REST ve resmî SDK](docs/16-rest-ve-sdk.md) | İkinci transport, 422 modeli, vendor SDK ölçümü |
 | [17 — Plugin ve Copilot Studio](docs/17-plugin-ve-copilot.md) | Plugin modeli, konektör, tunnel yürüyüşü |
 | [18 — CLI](docs/18-cli.md) | `xmcp`: ham JSON-RPC istemcisi + TUI sohbet |
+| [19 — Dağıtım](docs/19-dagitim.md) | IaC taslağı, replika deneyi, dağıtım öncesi açık kararlar |
 | [Demo senaryosu](docs/demo/senaryo.md) | Sunumda adım adım ne yapılacak |
 | [Sunum](docs/sunum.html) | Tek dosyalık, bağımlılıksız sunum sayfası |
 

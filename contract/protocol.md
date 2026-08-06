@@ -119,6 +119,17 @@ ayrı proje öngörüyordu. **Ham JSON-RPC sondasıyla ölçtük; bu yanlış ç
 | Python — `mcp==2.0.0` | ✅ `supportedVersions: ["2026-07-28"]` | ✅ `2025-11-25` | **ikisi de** |
 | C# — `ModelContextProtocol 2.0.0` | ✅ `supportedVersions: ["2026-07-28"]` | ✅ `2025-11-25` | **ikisi de** |
 
+> ⚠️ **Bu tablo STDIO üzerinde ölçülmüştür** ve yalnız stdio için konuşur.
+> Aynı SDK'nın HTTP yüzeyi FARKLI davranabilir — nitekim ölçüldü: Python'un
+> ilk HTTP kabuğu (`streamable_http_app()` varsayılanlarıyla) v2'yi HİÇ
+> konuşmuyordu (`server/discover` → `-32601`, oturumsuz istek → `-32600`) ve
+> konteynerler arası çağrıyı DNS-rebinding korumasıyla 421'e boğuyordu.
+> HTTP yüzeyinin çağ matrisi bu yüzden AYRICA ve sürekli ölçülür:
+> `scripts/test-all.mjs` → `kabuk-http` adımı — üç dilde `/healthz`,
+> HTTP-üzerinden `server/discover`, `/mcp/v1` oturumlu el sıkışma,
+> `/mcp/v2` stateless 10-tool listesi, anahtarsız 401 ve yabancı-Host kabulü.
+> *"stdio'da ölçtüm" ile "HTTP'de ölçtüm" aynı cümle değildir.*
+
 **Resmî SDK 2.0.0'lar geriye dönük uyumluluğu kendileri taşıyor.** İki ayrı adaptör yazmak
 yalnızca **eski SDK'da kalan dilde** gerekiyor — bu repoda sadece TypeScript.
 

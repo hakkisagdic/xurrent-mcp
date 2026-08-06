@@ -209,6 +209,13 @@ const EnvSchema = z.object({
   // DOLUYSA 0.0.0.0'a bağlanır ve her /mcp* isteği X-MCP-Api-Key başlığında
   // bu değeri taşımak ZORUNDADIR (sabit-zamanlı karşılaştırma, aksi hâlde 401).
   MCP_API_KEY: withDefault(""),
+  // Host başlığı kısıtı (virgüllü liste, opsiyonel). NEDEN var: ilk konteyner
+  // ölçümünde katı localhost/Host koruması, GEÇERLİ anahtar taşıyan konteynerler
+  // arası istekleri 421 ile öldürüyordu. Anahtar doluyken kapı ANAHTARDIR;
+  // Host öngörülemez (tunnel, servis adı, pod IP'si) olduğundan bu liste BOŞSA
+  // Host'a bakılmaz. Doluysa yalnız listedeki Host'lar kabul edilir — dışa açık
+  // modda Host'u yine de sabitlemek isteyen dağıtımlar için.
+  MCP_ALLOWED_HOSTS: withDefault(""),
 
   XURRENT_FIXTURES_DIR: withDefault(""),
   XURRENT_MOCK_PERSIST: boolish(false),
@@ -301,6 +308,13 @@ export interface AppConfig {
    * Xurrent PAT'i ile KARIŞTIRILMAZ: bu anahtar MCP sunucusunun kendisini korur.
    */
   mcpApiKey: string;
+  /**
+   * Kabul edilen Host başlıkları (normalize edilmiş, küçük harf). BOŞ liste =
+   * Host kısıtı YOK: anahtar boşken koruma zaten loopback bind'idir, anahtar
+   * doluyken kapı anahtardır (konteynerler arası Host öngörülemez — bkz.
+   * .env.example §8). Dolu liste = yalnız bu Host'lar kabul edilir (421 aksi hâlde).
+   */
+  mcpAllowedHosts: string[];
 
   mockPersist: boolean;
 
@@ -390,6 +404,11 @@ export function loadConfig(force = false): AppConfig {
     webPort: parsed.WEB_PORT,
     mcpHttpPort: parsed.MCP_HTTP_PORT,
     mcpApiKey: parsed.MCP_API_KEY,
+    // Virgülle ayrılır; boş kalemler atılır, küçük harfe indirilir (Host
+    // başlığı büyük/küçük harf duyarsızdır — RFC 9110 §5.1).
+    mcpAllowedHosts: parsed.MCP_ALLOWED_HOSTS.split(",")
+      .map((h) => h.trim().toLowerCase())
+      .filter((h) => h.length > 0),
 
     mockPersist: parsed.XURRENT_MOCK_PERSIST,
 

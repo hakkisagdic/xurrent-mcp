@@ -60,9 +60,15 @@ public static class RequestStateCodec
 {
     private const int Version = 1;
 
+    /// <summary>Payload'daki amaç ayracı — sihirbaz state'i ("wizard") onay yerine geçemesin.</summary>
+    private const string Kind = "confirm";
+
     // Tek kullanımlık nonce seti. Süreç içidir: sunucu yeniden başlarsa eski state'ler
     // zaten imza doğrulamasından geçemez (secret verilmemişse yeniden üretilir).
     private static readonly ConcurrentDictionary<string, DateTimeOffset> _usedNonces = new();
+
+    /// <summary>Zarf çözümünün olası sonuçları. Türkçe mesajı HER codec kendi üslubuyla üretir.</summary>
+    internal enum ZarfSonucu { Gecerli, BicimBozuk, Base64Degil, ImzaGecersiz, JsonDegil }
 
     /// <summary>Onaylanmış bir çağrı için imzalı state üretir.</summary>
     public static string Sign(AppConfig cfg, string principal, string method, JsonNode? arguments)
@@ -73,6 +79,7 @@ public static class RequestStateCodec
         var payload = new JsonObject
         {
             ["v"] = Version,
+            ["kind"] = Kind,
             ["principal"] = principal,
             ["method"] = method,
             ["fingerprint"] = Fingerprint(method, arguments),
@@ -81,8 +88,7 @@ public static class RequestStateCodec
             ["exp"] = now.AddSeconds(cfg.StateTtlSeconds).ToUnixTimeSeconds(),
         };
 
-        var bytes = Encoding.UTF8.GetBytes(payload.ToJsonString(Json.Options));
-        return Base64Url(bytes) + "." + Base64Url(Hmac(cfg, bytes));
+        return ZarfImzala(cfg, payload.ToJsonString(Json.Options));
     }
 
     /// <summary>
@@ -95,32 +101,32 @@ public static class RequestStateCodec
         if (string.IsNullOrWhiteSpace(blob))
             return RequestStateVerdict.Invalid("requestState boş geldi.");
 
-        var dot = blob.IndexOf('.');
-        if (dot <= 0 || dot == blob.Length - 1)
-            return RequestStateVerdict.Invalid("requestState biçimi bozuk (payload.signature bekleniyordu).");
-
-        byte[] payloadBytes, signature;
-        try
+        var (payload, zarf) = ZarfCoz(cfg, blob);
+        switch (zarf)
         {
-            payloadBytes = FromBase64Url(blob[..dot]);
-            signature = FromBase64Url(blob[(dot + 1)..]);
-        }
-        catch (FormatException)
-        {
-            return RequestStateVerdict.Invalid("requestState base64url olarak çözülemedi.");
+            case ZarfSonucu.BicimBozuk:
+                return RequestStateVerdict.Invalid("requestState biçimi bozuk (payload.signature bekleniyordu).");
+            case ZarfSonucu.Base64Degil:
+                return RequestStateVerdict.Invalid("requestState base64url olarak çözülemedi.");
+            case ZarfSonucu.ImzaGecersiz:
+                return RequestStateVerdict.Invalid(
+                    "requestState İMZASI GEÇERSİZ — blob değiştirilmiş ya da başka bir sunucu tarafından üretilmiş.");
+            case ZarfSonucu.JsonDegil:
+                return RequestStateVerdict.Invalid("requestState içeriği JSON değil.");
         }
 
-        // Sabit zamanlı karşılaştırma: imza doğrulamasında erken çıkış zamanlama sızdırır.
-        if (!CryptographicOperations.FixedTimeEquals(signature, Hmac(cfg, payloadBytes)))
-            return RequestStateVerdict.Invalid(
-                "requestState İMZASI GEÇERSİZ — blob değiştirilmiş ya da başka bir sunucu tarafından üretilmiş.");
-
-        JsonObject payload;
-        try { payload = JsonNode.Parse(Encoding.UTF8.GetString(payloadBytes))!.AsObject(); }
-        catch (JsonException) { return RequestStateVerdict.Invalid("requestState içeriği JSON değil."); }
+        if (payload is null)   // Gecerli sonuçta payload hep doludur; derleyiciye kanıt.
+            return RequestStateVerdict.Invalid("requestState içeriği JSON değil.");
 
         if (payload["v"]?.GetValue<int>() != Version)
             return RequestStateVerdict.Invalid("requestState sürümü desteklenmiyor.");
+
+        // kind ayracı: aynı sırla imzalanmış ama BAŞKA AMAÇLI bir state (örn. sihirbazın
+        // sessionState'i) onay yerine geçemez. Alanı hiç taşımayan eski/yabancı üreticiler
+        // tolere edilir — zarf ve diğer semantik kontroller onları zaten sınırlar.
+        if (payload["kind"] is not null && payload["kind"]!.GetValue<string>() != Kind)
+            return RequestStateVerdict.Invalid(
+                "requestState BAŞKA BİR AMAÇLA üretilmiş (kind uyuşmuyor) — onay yerine geçemez.");
 
         var now = cfg.Clock.GetUtcNow();
         var exp = payload["exp"]?.GetValue<long>() ?? 0;
@@ -174,9 +180,58 @@ public static class RequestStateCodec
         _ => node.ToJsonString(Json.Options),
     };
 
-    // internal: wizard sessionState codec'i AYNI wire ailesini kullanır
-    // (base64url(payload) "." base64url(HMAC-SHA256(secret, payloadBytes))) —
-    // yalnızca payload alanları farklıdır (bkz. Core/WizardState.cs).
+    // ── Paylaşılan ZARF: base64url(payloadJson) "." base64url(HMAC-SHA256(secret, payloadJsonBytes)) ──
+    //
+    // ★ ÇAPRAZ-DİL SÖZLEŞMESİ (fixtures/state-vektorleri.json): requestState ve
+    // wizard sessionState AYNI zarfı kullanır; imza HAM payload byte'ları üzerindedir
+    // ve parse edilmeden ÖNCE doğrulanır. Kanonikleştirme YOKTUR — başka bir dilin
+    // ürettiği byte dizisi (anahtar sırası ne olursa olsun) aynen doğrulanır.
+    // Paralel altyapı ölçümü "TS'in ürettiği requestState'i C# çözemedi" bulmuştu;
+    // bu zarfın TEK yerde yaşaması o sapmanın bir daha oluşmamasının güvencesidir.
+
+    /// <summary>Verilen payload JSON DİZGESİNİ olduğu gibi (yeniden serileştirmeden) imzalar.</summary>
+    internal static string ZarfImzala(AppConfig cfg, string payloadJson)
+    {
+        var bytes = Encoding.UTF8.GetBytes(payloadJson);
+        return Base64Url(bytes) + "." + Base64Url(Hmac(cfg, bytes));
+    }
+
+    /// <summary>
+    /// Zarfı çözer: biçim → base64url → İMZA (ham byte'lar, sabit zamanlı) → JSON parse.
+    /// Semantik kontroller (kind/exp/principal/...) her codec'in kendisindedir.
+    /// </summary>
+    internal static (JsonObject? Payload, ZarfSonucu Sonuc) ZarfCoz(AppConfig cfg, string blob)
+    {
+        var dot = blob.IndexOf('.');
+        if (dot <= 0 || dot == blob.Length - 1)
+            return (null, ZarfSonucu.BicimBozuk);
+
+        byte[] payloadBytes, signature;
+        try
+        {
+            payloadBytes = FromBase64Url(blob[..dot]);
+            signature = FromBase64Url(blob[(dot + 1)..]);
+        }
+        catch (FormatException)
+        {
+            return (null, ZarfSonucu.Base64Degil);
+        }
+
+        // Sabit zamanlı karşılaştırma: imza doğrulamasında erken çıkış zamanlama sızdırır.
+        if (!CryptographicOperations.FixedTimeEquals(signature, Hmac(cfg, payloadBytes)))
+            return (null, ZarfSonucu.ImzaGecersiz);
+
+        try
+        {
+            return (JsonNode.Parse(Encoding.UTF8.GetString(payloadBytes))!.AsObject(), ZarfSonucu.Gecerli);
+        }
+        catch (Exception e) when (e is JsonException or InvalidOperationException or NullReferenceException)
+        {
+            return (null, ZarfSonucu.JsonDegil);
+        }
+    }
+
+    // Sır UTF-8 byte'larıyla anahtarlanır — üç dil de aynı türetmeyi kullanır.
     internal static byte[] Hmac(AppConfig cfg, byte[] payload)
         => HMACSHA256.HashData(Encoding.UTF8.GetBytes(cfg.StateSecret), payload);
 

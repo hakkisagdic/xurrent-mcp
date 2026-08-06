@@ -10,7 +10,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { apiKeyOk, bindHost, resolvePathTarget } from "../../dist/mcp/http-gate.js";
+import { apiKeyOk, bindHost, hostOk, resolvePathTarget } from "../../dist/mcp/http-gate.js";
 
 // ── apiKeyOk ─────────────────────────────────────────────────────────────────
 
@@ -68,4 +68,43 @@ test("yol tablosu: bilinmeyen yollar her modda 404", () => {
 test("bindHost: anahtar boş → yalnız loopback; dolu → 0.0.0.0 (kapı devrede)", () => {
   assert.equal(bindHost(""), "127.0.0.1");
   assert.equal(bindHost("deneme"), "0.0.0.0");
+});
+
+// ── hostOk: MCP_ALLOWED_HOSTS kapısı ─────────────────────────────────────────
+
+test("★ hostOk: liste BOŞSA Host'a bakılmaz — konteynerler arası çağrı ölmez (421 bulgusunun kapanışı)", () => {
+  assert.equal(hostOk([], "evil.example"), true);
+  assert.equal(hostOk([], "konteyner-a.internal:8788"), true);
+  assert.equal(hostOk([], undefined), true);
+});
+
+test("hostOk: liste doluysa yalnız listedekiler geçer; Host'suz istek geçmez", () => {
+  assert.equal(hostOk(["only.example"], "only.example"), true);
+  assert.equal(hostOk(["only.example"], "evil.example"), false);
+  assert.equal(hostOk(["only.example"], undefined), false);
+  assert.equal(hostOk(["only.example"], ""), false);
+});
+
+test("hostOk: port'suz kalem her portla eşleşir; port'lu kalem birebir ister", () => {
+  assert.equal(hostOk(["only.example"], "only.example:8788"), true);
+  assert.equal(hostOk(["only.example:8788"], "only.example:8788"), true);
+  assert.equal(hostOk(["only.example:8788"], "only.example:9999"), false);
+  assert.equal(hostOk(["only.example:8788"], "only.example"), false);
+});
+
+test("hostOk: Host büyük/küçük harf duyarsızdır (RFC 9110); kalemler config'te küçültülmüş gelir", () => {
+  assert.equal(hostOk(["only.example"], "ONLY.Example"), true);
+  assert.equal(hostOk(["only.example"], "Only.Example:8788"), true);
+});
+
+test("hostOk: IPv6 literal'inde port ayracı köşeli parantezden SONRAKİ iki noktadır", () => {
+  assert.equal(hostOk(["[::1]"], "[::1]:8788"), true);
+  assert.equal(hostOk(["[::1]:8788"], "[::1]:8788"), true);
+  assert.equal(hostOk(["[::1]:8788"], "[::1]:9999"), false);
+  assert.equal(hostOk(["[::1]"], "[::2]"), false);
+});
+
+test("hostOk: Node çok değerli başlığı dizi verirse İLK değer esas alınır (apiKeyOk ile aynı kural)", () => {
+  assert.equal(hostOk(["a.example"], ["a.example", "evil.example"]), true);
+  assert.equal(hostOk(["a.example"], ["evil.example", "a.example"]), false);
 });

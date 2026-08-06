@@ -98,6 +98,62 @@ def _b64url_decode(text: str) -> bytes:
     return base64.urlsafe_b64decode(text + padding)
 
 
+# ── ortak zarf codec'i — requestState VE wizard sessionState AYNI teli konusur.
+#
+# Bicim: base64url(payloadJson) + "." + base64url(HMAC_SHA256(secret, jsonBytes))
+#
+# NEDEN ortak: capraz-dil olcumu, TS'in urettigi requestState'in ayni sirri
+# tasiyan bir C# replikasinda COZULEMEDIGINI gosterdi — her dil kendi zarfini
+# uydurmustu. Wizard'in sessionState codec'i tasinabilirligi KANITLADI
+# (fixtures/state-vektorleri.json); requestState artik ayni zarfi kullanir.
+# Imza HAM payload byte'lari uzerindedir ve parse'tan ONCE dogrulanir —
+# kanonikleştirme GEREKMEZ, anahtar sirasi dile gore degisebilir.
+
+
+def encode_state(secret: bytes, payload_json: str) -> str:
+    """payloadJson DIZGESINI oldugu gibi imzalar — yeniden serilestirme YOK.
+
+    Cagiran serilestirmeyi kendi yapar; boylece test vektorlerindeki birebir
+    dizge de, calisma zamaninin urettigi dizge de AYNI yoldan gecer.
+    """
+    body = payload_json.encode("utf-8")
+    signature = hmac.new(secret, body, hashlib.sha256).digest()
+    return f"{_b64url(body)}.{_b64url(signature)}"
+
+
+def decode_state(secret: bytes, token: str) -> bytes:
+    """Zarfi acar: IMZA ONCE, parse SONRA. Ham payload byte'larini dondurur.
+
+    Yalnizca zarf/imza denetlenir; alan anlamlari (exp, principal, nonce…)
+    cagiranin isidir. Basarisizsa StateError (Turkce mesajla) firlatir.
+    """
+    parts = token.split(".")
+    if len(parts) != 2:
+        raise StateError(
+            "requestState bicimi bozuk (beklenen 'govde.imza'). Onay gecersiz — "
+            "hicbir sey yazilmadi."
+        )
+    body_raw, signature_raw = parts
+    try:
+        body_bytes = _b64url_decode(body_raw)
+        signature = _b64url_decode(signature_raw)
+    except Exception as exc:  # noqa: BLE001
+        raise StateError(
+            f"requestState base64url olarak cozulemedi ({exc}). Onay gecersiz — "
+            "hicbir sey yazilmadi."
+        ) from exc
+
+    expected = hmac.new(secret, body_bytes, hashlib.sha256).digest()
+    # compare_digest: sabit zamanli karsilastirma. == kullanmak imzayi
+    # byte byte tahmin etmeye izin veren bir zamanlama sizintisidir.
+    if not hmac.compare_digest(expected, signature):
+        raise StateError(
+            "requestState IMZASI GECERSIZ — blob kurcalanmis olabilir. "
+            "Yazma REDDEDILDI."
+        )
+    return body_bytes
+
+
 def fingerprint(method: str, arguments: dict[str, Any] | None) -> str:
     """Metod adi + tool argumanlarinin SHA-256 ozeti.
 
@@ -138,8 +194,14 @@ class StateSigner:
         return cls(secret=secret, ttl_seconds=max(1, ttl_seconds))
 
     def issue(self, *, principal: str, method: str, arguments: dict[str, Any] | None) -> str:
+        # "kind":"confirm" AYIRICIDIR: zarf wizard sessionState ile ortak
+        # oldugundan, bir wizard state'inin onay yerine oynatilmasini alan
+        # duzeyinde de keser (imza zaten ayni sirla atilir). Alan sirasi
+        # fixtures/state-vektorleri.json ile ayni tutulur — imza icin sart
+        # DEGIL (ham byte imzalanir) ama capraz-dil kiyasi kolaylasir.
         payload = {
             "v": 1,
+            "kind": "confirm",
             "principal": principal,
             "method": method,
             "fingerprint": fingerprint(method, arguments),
@@ -147,10 +209,8 @@ class StateSigner:
             "iat": int(time.time()),
             "exp": int(time.time()) + self.ttl_seconds,
         }
-        body = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
-        body_bytes = body.encode("utf-8")
-        signature = hmac.new(self.secret, body_bytes, hashlib.sha256).digest()
-        return f"{_b64url(body_bytes)}.{_b64url(signature)}"
+        body = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        return encode_state(self.secret, body)
 
     def verify(
         self, token: str, *, principal: str, method: str, arguments: dict[str, Any] | None
@@ -160,35 +220,22 @@ class StateSigner:
         Cagiran taraf StateError'u yakalayip isError=true + Turkce aciklama
         dondurmek ZORUNDADIR. Yazma YAPILMAZ.
         """
-        parts = token.split(".")
-        if len(parts) != 2:
-            raise StateError(
-                "requestState bicimi bozuk (beklenen 'govde.imza'). Onay gecersiz — "
-                "hicbir sey yazilmadi."
-            )
-        body_raw, signature_raw = parts
-        try:
-            body_bytes = _b64url_decode(body_raw)
-            signature = _b64url_decode(signature_raw)
-        except Exception as exc:  # noqa: BLE001
-            raise StateError(
-                f"requestState base64url olarak cozulemedi ({exc}). Onay gecersiz — "
-                "hicbir sey yazilmadi."
-            ) from exc
-
-        expected = hmac.new(self.secret, body_bytes, hashlib.sha256).digest()
-        # compare_digest: sabit zamanli karsilastirma. == kullanmak imzayi
-        # byte byte tahmin etmeye izin veren bir zamanlama sizintisidir.
-        if not hmac.compare_digest(expected, signature):
-            raise StateError(
-                "requestState IMZASI GECERSIZ — blob kurcalanmis olabilir. "
-                "Yazma REDDEDILDI."
-            )
+        body_bytes = decode_state(self.secret, token)
 
         try:
             payload = json.loads(body_bytes.decode("utf-8"))
         except Exception as exc:  # noqa: BLE001
             raise StateError(f"requestState govdesi JSON degil ({exc}). Yazma REDDEDILDI.") from exc
+
+        # kind AYIRICI kontrolu: alan VARSA "confirm" olmak zorundadir — ayni
+        # sirla imzalanan bir wizard sessionState'i onay yerine gecmez. Alan
+        # YOKSA gecerlidir: eski (kind'siz) token'lar TTL penceresi icinde
+        # calismaya devam eder; sert kesinti kimseyi korumazdi.
+        if "kind" in payload and payload.get("kind") != "confirm":
+            raise StateError(
+                "requestState bir onay durumu DEGIL (kind uyusmuyor). "
+                "Yazma REDDEDILDI."
+            )
 
         if int(payload.get("exp", 0)) < int(time.time()):
             raise StateError(
@@ -225,5 +272,7 @@ __all__ = [
     "StateError",
     "StateSigner",
     "build_prompt",
+    "decode_state",
+    "encode_state",
     "fingerprint",
 ]

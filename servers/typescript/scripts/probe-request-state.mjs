@@ -103,14 +103,17 @@ head("1) tools/call — onay yok → InputRequiredResult bekleniyor");
 const state = show(await call({ name: TOOL, arguments: ARGS }));
 
 head("2) İMZA KURCALANDI → yazma REDDEDİLMELİ");
+// Biçimden bağımsız: imza HER ZAMAN son nokta-parçasıdır (ortak zarf
+// "<gövde>.<imza>" — bkz. core/confirm.ts ve fixtures/state-vektorleri.json).
 const parts = state.split(".");
-const sig = Buffer.from(parts[2], "base64url");
+const sig = Buffer.from(parts[parts.length - 1], "base64url");
 sig[0] ^= 0xff; // imzanın ilk baytını çeviriyoruz
+parts[parts.length - 1] = sig.toString("base64url");
 show(
   await call({
     name: TOOL,
     arguments: ARGS,
-    requestState: `${parts[0]}.${parts[1]}.${sig.toString("base64url")}`,
+    requestState: parts.join("."),
     inputResponses: ACCEPT,
   }),
 );

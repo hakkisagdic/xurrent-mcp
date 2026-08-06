@@ -43,6 +43,37 @@ export function bindHost(mcpApiKey: string): string {
   return mcpApiKey ? "0.0.0.0" : "127.0.0.1";
 }
 
+/**
+ * Host başlığı kapısı (MCP_ALLOWED_HOSTS).
+ *
+ * NEDEN böyle: ilk konteyner ölçümünde katı localhost/Host koruması, GEÇERLİ
+ * API anahtarı taşıyan konteynerler arası istekleri 421 ile öldürüyordu.
+ * Bu repoda ölçülen gerçek şudur: NE v1 SDK'sı (1.30.0 — dnsRebindingProtection
+ * varsayılan KAPALI) NE de v2 createMcpHandler Host'u kendiliğinden süzer.
+ * Dolayısıyla kapı TEK yerdedir: burada. Liste BOŞSA Host'a bakılmaz —
+ * anahtar boşken koruma loopback bind'idir, anahtar doluyken kapı anahtardır.
+ * Liste DOLUYSA yalnız listedeki Host'lar geçer (dışa açık modda Host'u yine
+ * de sabitlemek isteyen dağıtımlar için).
+ *
+ * Eşleşme kuralı: kalem port İÇERİYORSA başlıkla birebir ("a.example:8788"),
+ * port içermiyorsa başlığın port'suz kısmıyla ("a.example" ↔ "a.example:8788")
+ * karşılaştırılır — sağlık probu ve tunnel'lar portu öngörülemez şekilde ekler.
+ * Karşılaştırma küçük harf üzerindendir (Host büyük/küçük harf duyarsızdır).
+ */
+export function hostOk(allowedHosts: string[], hostHeader: string | string[] | undefined): boolean {
+  if (allowedHosts.length === 0) return true;
+  const raw = Array.isArray(hostHeader) ? hostHeader[0] : hostHeader;
+  if (typeof raw !== "string" || raw.length === 0) return false;
+  const host = raw.trim().toLowerCase();
+  // IPv6 literal'inde iki nokta adresin parçasıdır ("[::1]:8788") — port ayracı
+  // KÖŞELİ PARANTEZDEN SONRAKİ son iki noktadır.
+  const portSep = host.startsWith("[") ? host.indexOf("]:") + 1 : host.lastIndexOf(":");
+  const hostname = portSep > 0 ? host.slice(0, portSep) : host;
+  return allowedHosts.some((allowed) =>
+    allowed.includes(":") && !allowed.endsWith("]") ? allowed === host : allowed === host || allowed === hostname,
+  );
+}
+
 export type PathTarget = "v1" | "v2" | null;
 
 /**
