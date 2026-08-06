@@ -254,6 +254,107 @@ export const LATEST_TIME_ENTRY_QUERY = /* GraphQL */ `
   }
 `;
 
+/**
+ * Dedup geri-okuması (contract/reliability.md §5).
+ *
+ * NEDEN GEREKLİ: her Yol A yazması deterministik bir sourceID taşır ama Xurrent
+ * tarafında sourceID üzerinde UNIQUE KISITI YOKTUR — kör retry çift kayıt
+ * yazabilir. Bu sorgu "o yazma gerçekten ulaştı mı?" sorusunun tek cevabıdır:
+ *   - yazma ÖNCESİ: kayıt varsa yazma ATLANIR (deduped).
+ *   - belirsiz hata (5xx/ağ) SONRASI: kayıt varsa ilk deneme başarılıymış —
+ *     retry İPTAL, mevcut kayıt başarı olarak döndürülür.
+ *
+ * ★ DOĞRULANMALI (D14): gerçek TimeEntryFilter'da sourceID filtresi var mı?
+ * Yoksa kişi+tarih sorgusuna düşüp client tarafında sourceID eşleştirilir.
+ */
+export const TIME_ENTRY_BY_SOURCE_ID_QUERY = /* GraphQL */ `
+  query TimeEntryBySourceId($sourceID: String!) {
+    timeEntries(first: 5, filter: { sourceID: { values: [$sourceID] } }) {
+      nodes {
+        id
+        date
+        startedAt
+        timeSpent
+        description
+        correction
+        source
+        sourceID
+        person {
+          id
+          name
+        }
+        effortClass {
+          id
+          name
+        }
+        timeAllocation {
+          id
+          name
+        }
+      }
+    }
+  }
+`;
+
+/**
+ * xurrent_list_time_entries — geri-okumanın resmî gözü (contract/tools.json #9).
+ *
+ * TEK sorgu, dört filtre değişkeni: personId / dateFrom / dateTo / sourceID.
+ * Değişken ADLARI sözleşmenin parçasıdır — sahte sunucu (tools/fake-xurrent)
+ * tam bu adları okur; üç dil de aynı adları göndermek zorundadır.
+ *
+ * TUZAK — personId yine String! (ID! DEĞİL): PersonReferenceFilter.values [String]!
+ * ve "$me" özel değerini kabul eder.
+ *
+ * ★ DOĞRULANMALI (D14 devamı): gerçek TimeEntryFilter'da sourceID filtresi ve
+ * null-değerli filtre alanlarının davranışı doğrulanmadı. Sahte sunucu null
+ * filtreyi "filtre yok" sayar; gerçek tenant reddederse sorgunun filtre bloğu
+ * çağrı tarafında budanmalıdır (bilinen sınır, README "Durum ve sınırlar").
+ */
+export const LIST_TIME_ENTRIES_QUERY = /* GraphQL */ `
+  query ListTimeEntries($personId: String!, $dateFrom: ISO8601Date, $dateTo: ISO8601Date, $sourceID: String, $first: Int!) {
+    timeEntries(
+      first: $first
+      order: { field: createdAt, direction: desc }
+      filter: {
+        person: { values: [$personId] }
+        date: { greaterThanOrEqualTo: $dateFrom, lessThanOrEqualTo: $dateTo }
+        sourceID: { values: [$sourceID] }
+      }
+    ) {
+      nodes {
+        id
+        date
+        startedAt
+        timeSpent
+        description
+        correction
+        source
+        sourceID
+        person {
+          id
+          name
+        }
+        effortClass {
+          id
+          name
+        }
+        assignment {
+          __typename
+          ... on Request {
+            id
+            requestId
+          }
+          ... on Task {
+            id
+            taskId
+          }
+        }
+      }
+    }
+  }
+`;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Yazma — YOL A: timeEntryCreate
 // ─────────────────────────────────────────────────────────────────────────────

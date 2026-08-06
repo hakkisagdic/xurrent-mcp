@@ -235,6 +235,9 @@ export const writeResultOutput = {
   planned: z.array(plannedMutationSchema),
   warnings: z.array(z.string()),
   timeEntry: z.record(z.string(), z.unknown()).nullable(),
+  // Sözleşme: opsiyonel boolean. true → yazma atlandı, aynı sourceID'li kayıt
+  // zaten vardı ve timeEntry MEVCUT kaydı gösterir (contract/reliability.md §5).
+  deduped: z.boolean().optional(),
   errors: z.array(validationErrorSchema),
 } as const;
 
@@ -257,7 +260,8 @@ export const bulkOutput = {
   results: z.array(
     z.object({
       index: z.number().int(),
-      status: z.enum(["created", "failed", "skipped"]),
+      // "deduped": sourceID geri-okuması kaydı buldu → yazma atlandı, çift kayıt yok.
+      status: z.enum(["created", "failed", "skipped", "deduped"]),
       timeEntryId: z.string().nullable(),
       errors: z.array(validationErrorSchema),
     }),
@@ -267,6 +271,8 @@ export const bulkOutput = {
     created: z.number().int(),
     failed: z.number().int(),
     skipped: z.number().int(),
+    // Sözleşme: opsiyonel sayaç — "zaten yazılmış" bulunup atlanan kalem sayısı.
+    deduped: z.number().int().optional(),
     totalMinutes: z.number().int(),
   }),
 } as const;
@@ -340,4 +346,101 @@ export const planOutput = {
     meetingMinutes: z.number().int(),
     proposedMinutes: z.number().int(),
   }),
+} as const;
+
+// ── 9) xurrent_list_time_entries ────────────────────────────────────────────
+
+export const timeEntryRecordSchema = z.object({
+  id: z.string(),
+  date: z.string(),
+  startedAt: z.string().nullable().optional(),
+  // DAKİKA — sözleşmenin tek süre birimi.
+  timeSpent: z.number().int(),
+  description: z.string().nullable().optional(),
+  correction: z.boolean().nullable().optional(),
+  source: z.string().nullable().optional(),
+  // İdempotency anahtarı (xmcp-…) — dedup bu alanla çalışır.
+  sourceID: z.string().nullable().optional(),
+  person: z.object({ id: z.string(), name: z.string().nullable() }).nullable().optional(),
+  // Bağlı ticket — Yol A kayıtlarında null (dersin kalbi, bkz. docs/02).
+  assignment: z
+    .object({
+      type: z.string().nullable(),
+      id: z.string().nullable(),
+      displayId: z.string().nullable(),
+    })
+    .nullable()
+    .optional(),
+  effortClass: z.object({ id: z.string(), name: z.string().nullable() }).nullable().optional(),
+});
+
+export const listTimeEntriesInput = {
+  personId: z.string().default("$me").describe("Kişi (opak id ya da $me)."),
+  dateFrom: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .optional()
+    .describe("Bu tarihten itibaren (dahil)."),
+  dateTo: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .optional()
+    .describe("Bu tarihe kadar (dahil)."),
+  sourceId: z.string().optional().describe("İdempotency anahtarıyla nokta arama (dedup geri-okuması)."),
+  first: z.number().int().min(1).max(100).default(25),
+} as const;
+
+export const listTimeEntriesOutput = {
+  accountId: z.string(),
+  timeEntries: z.array(timeEntryRecordSchema),
+  // Dönen kayıtların toplam dakikası (correction'lar işaretli dahil).
+  totalMinutes: z.number().int(),
+} as const;
+
+// ── 10) timesheet_wizard ────────────────────────────────────────────────────
+
+export const wizardInput = {
+  utterance: z.string().optional().describe("Kullanıcının son cümlesi (ilk çağrıda boş olabilir)."),
+  sessionState: z
+    .string()
+    .optional()
+    .describe("Önceki yanıttan AYNEN geri gönderilen imzalı opak durum."),
+} as const;
+
+export const wizardOutput = {
+  step: z.enum([
+    "start",
+    "pick_work",
+    "duration",
+    "detail",
+    "strategy",
+    "confirm",
+    "write",
+    "calendar_plan",
+    "calendar_confirm",
+    "done",
+  ]),
+  reply: z.string(),
+  nextQuestion: z
+    .object({
+      prompt: z.string(),
+      choices: z
+        .array(
+          z.object({
+            id: z.string(),
+            label: z.string(),
+            detail: z.string().nullable().optional(),
+          }),
+        )
+        .optional(),
+      expectsFreeText: z.boolean().optional(),
+    })
+    .nullable()
+    .optional(),
+  // done=true iken null — host için "sohbet bitti" işareti.
+  sessionState: z.string().nullable().optional(),
+  done: z.boolean(),
+  // $defs/WriteResult şekli; write adımı gerçekleşmediyse null.
+  writeResult: z.record(z.string(), z.unknown()).nullable().optional(),
+  errors: z.array(validationErrorSchema),
 } as const;

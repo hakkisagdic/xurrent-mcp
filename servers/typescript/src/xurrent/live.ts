@@ -24,6 +24,7 @@ import type {
   ListOpenWorkResult,
   PlannedMutation,
   RateLimitInfo,
+  TimeEntryRecord,
   TimeTrackingContext,
   ValidationError,
   ViewOption,
@@ -32,26 +33,55 @@ import type {
 } from "../types.js";
 import { log } from "../util/log.js";
 import { addDaysISO, todayISO, weekStartISO } from "../util/time.js";
-import type { ExecuteResult, ListOpenWorkArgs, XurrentAdapter } from "./index.js";
+import type {
+  ExecuteResult,
+  ListOpenWorkArgs,
+  ListTimeEntriesArgs,
+  ListTimeEntriesPage,
+  XurrentAdapter,
+} from "./index.js";
 import {
   FIND_PERSON_QUERY,
   LATEST_TIME_ENTRY_QUERY,
+  LIST_TIME_ENTRIES_QUERY,
   ME_QUERY,
   OPEN_REQUESTS_QUERY,
   OPEN_TASKS_QUERY,
+  TIME_ENTRY_BY_SOURCE_ID_QUERY,
   TIME_TRACKING_CONTEXT_QUERY,
 } from "./queries.js";
+import {
+  XurrentRequestError,
+  classifyReason,
+  retryingRequest,
+  traceDedup,
+  type OperationClass,
+} from "./retry.js";
 import { PENDING_TIME_ENTRY_ID } from "./strategies.js";
 
 const REQUEST_CLOSED = new Set(["completed"]);
 const TASK_CLOSED = new Set(["completed", "approved", "failed", "rejected", "canceled"]);
 
-/** İstekler arası minimum bekleme: 20 istek / 2 sn → 100 ms; güvenlik payıyla 110 ms. */
-const MIN_REQUEST_GAP_MS = 110;
+/** İstek toplamı için üst sınır (reliability.md §3): 30 sn. */
+const REQUEST_TIMEOUT_MS = 30000;
 
 interface GraphQLResponse<T> {
   data?: T;
   errors?: unknown;
+}
+
+/**
+ * Mutation path'i → operasyon sınıfı (contract/reliability.md §2).
+ *
+ * AYNI HTTP HATASI farklı operasyonlarda farklı karar üretir:
+ *   timeEntryCreate  → guarded_create   (dedup geri-okumalı retry)
+ *   timeEntryUpdate  → idempotent_update (mutlak SET — tekrar zararsız)
+ *   parent update'ler → no_retry         (timeSpent ARTIMLI — tekrar = çift sayım)
+ */
+function operationClassFor(path: string): OperationClass {
+  if (path === "timeEntryCreate") return "guarded_create";
+  if (path === "timeEntryUpdate") return "idempotent_update";
+  return "no_retry"; // requestUpdate / taskUpdate / projectTaskUpdate / problemUpdate
 }
 
 function sleep(ms: number): Promise<void> {
@@ -87,37 +117,100 @@ export class LiveXurrentAdapter implements XurrentAdapter {
     this.cfg = cfg;
   }
 
+  /**
+   * Retry politikalı GraphQL çağrısı. Varsayılan sınıf "query"dir (yan etkisiz,
+   * serbestçe tekrarlanabilir); mutation'lar execute() içinden kendi sınıflarını
+   * geçirir. Politikanın kendisi retry.ts'tedir — burada yalnızca tek denemenin
+   * nasıl atılacağı (sendOnce) tanımlanır.
+   */
   private async gql<T>(
     query: string,
     variables: Record<string, unknown>,
     signal?: AbortSignal,
+    op?: {
+      opClass?: OperationClass;
+      label?: string;
+      /** guarded_create dedup kurtarması — bkz. execute(). */
+      recoverUncertain?: () => Promise<{ data: T; errors: ValidationError[] } | null>;
+    },
   ): Promise<{ data: T; errors: ValidationError[] }> {
-    // Rate limit koruması — bulk yazmada istekler arası boşluk bırakılır.
+    return retryingRequest({
+      label: op?.label ?? "query",
+      opClass: op?.opClass ?? "query",
+      policy: {
+        maxAttempts: this.cfg.retryMaxAttempts,
+        baseMs: this.cfg.retryBaseMs,
+        capMs: this.cfg.retryCapMs,
+      },
+      attempt: () => this.sendOnce<T>(query, variables, signal),
+      recoverUncertain: op?.recoverUncertain,
+      signal,
+    });
+  }
+
+  /**
+   * TEK HTTP denemesi. Gaz (throttle) BURADADIR — yani retry tekrarları dahil
+   * HER istek aynı kapıdan geçer (reliability.md §4: gaz tek yerde yaşar).
+   */
+  private async sendOnce<T>(
+    query: string,
+    variables: Record<string, unknown>,
+    signal?: AbortSignal,
+  ): Promise<{ data: T; errors: ValidationError[] }> {
+    // Rate limit koruması: istekler arası minimum boşluk (XURRENT_MIN_REQUEST_GAP_MS).
     const gap = Date.now() - this.lastRequestAt;
-    if (gap < MIN_REQUEST_GAP_MS) await sleep(MIN_REQUEST_GAP_MS - gap);
+    if (gap < this.cfg.minRequestGapMs) await sleep(this.cfg.minRequestGapMs - gap);
     this.lastRequestAt = Date.now();
 
-    const res = await fetch(this.cfg.graphqlUrl, {
-      method: "POST", // Xurrent GraphQL'de GET YOKTUR.
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${this.cfg.token}`,
-        // Slug'dır, numerik DEĞİL. İç personelin time entry'leri DIRECTORY hesabında yaşar.
-        "X-Xurrent-Account": this.cfg.account,
-      },
-      body: JSON.stringify({ query, variables }),
-      // AbortSignal HER istekte geçirilir: MCP client iptal ederse HTTP de iptal olur.
-      signal: signal ?? null,
-    });
+    // Zaman aşımı çağıranın iptaliyle BİRLEŞTİRİLİR: hangisi önce gelirse.
+    const timeoutSignal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+    const composed = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+
+    let res: Response;
+    try {
+      res = await fetch(this.cfg.graphqlUrl, {
+        method: "POST", // Xurrent GraphQL'de GET YOKTUR.
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.cfg.token}`,
+          // Slug'dır, numerik DEĞİL. İç personelin time entry'leri DIRECTORY hesabında yaşar.
+          "X-Xurrent-Account": this.cfg.account,
+        },
+        body: JSON.stringify({ query, variables }),
+        signal: composed,
+      });
+    } catch (err) {
+      // Çağıranın iptali retry EDİLMEZ — sınıflandırılamayan hata olarak yükselir.
+      if (signal?.aborted) throw err;
+      if (timeoutSignal.aborted) {
+        throw new XurrentRequestError(
+          `Xurrent isteği ${REQUEST_TIMEOUT_MS / 1000} sn içinde tamamlanmadı (zaman aşımı).`,
+          { kind: "timeout" },
+        );
+      }
+      // Tüm ağ hataları BELİRSİZ sayılır (reliability.md §1 notu): fetch'in ham
+      // TypeError'ı sarmalanır ki sınıflandırma bizim kontrolümüzde kalsın.
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new XurrentRequestError(`Ağ hatası: ${msg}`, { kind: "network" });
+    }
 
     this.captureRateLimit(res);
 
     if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`Xurrent GraphQL HTTP ${res.status}: ${text.slice(0, 500)}`);
+      const text = await res.text().catch(() => "");
+      // Retry-After saniye cinsindendir (D15 varsayımı) → ms'e çevrilir.
+      const rawRetryAfter = res.headers.get("retry-after");
+      const retryAfterSec = rawRetryAfter !== null ? Number(rawRetryAfter) : NaN;
+      throw new XurrentRequestError(`Xurrent GraphQL HTTP ${res.status}: ${text.slice(0, 500)}`, {
+        status: res.status,
+        retryAfterMs: Number.isFinite(retryAfterSec) ? Math.max(0, retryAfterSec * 1000) : null,
+        kind: "http",
+      });
     }
 
     const json = (await res.json()) as GraphQLResponse<T>;
+    // Top-level GraphQL errors ve payload errors FIRLATILMAZ, değerle döner:
+    // ikisi de "kesin-reddedildi" sınıfıdır ve retry katmanına hiç girmez.
     return { data: (json.data ?? {}) as T, errors: normalizeGraphQLErrors(json.errors) };
   }
 
@@ -343,6 +436,68 @@ export class LiveXurrentAdapter implements XurrentAdapter {
     return `${targetType} ${targetId}`;
   }
 
+  /**
+   * Geri-okuma listesi (contract #9). TEK timeEntries sorgusu; değişken adları
+   * sözleşme gereği personId/dateFrom/dateTo/sourceID'dir. Sınıf "query" —
+   * yan etkisiz, retry politikası serbestçe uygulanır (reliability.md §2).
+   */
+  async listTimeEntries(args: ListTimeEntriesArgs, signal?: AbortSignal): Promise<ListTimeEntriesPage> {
+    const first = args.first ?? 25;
+    const { data, errors } = await this.gql<any>(
+      LIST_TIME_ENTRIES_QUERY,
+      {
+        // personId String! — "$me" özel değeri de bu değişkenden geçer.
+        personId: args.personId || "$me",
+        dateFrom: args.dateFrom ?? null,
+        dateTo: args.dateTo ?? null,
+        sourceID: args.sourceId ?? null,
+        first,
+      },
+      signal,
+      { label: "listTimeEntries" },
+    );
+    if (errors.length) {
+      throw new Error(`timeEntries sorgusu başarısız: ${errors.map((e) => e.message).join("; ")}`);
+    }
+    const nodes: Array<Record<string, any>> = data?.timeEntries?.nodes ?? [];
+    return {
+      accountId: this.cfg.account,
+      timeEntries: nodes.slice(0, first).map((n) => this.toTimeEntryRecord(n)),
+    };
+  }
+
+  private toTimeEntryRecord(n: Record<string, any>): TimeEntryRecord {
+    const a = n["assignment"];
+    return {
+      id: String(n["id"]),
+      date: String(n["date"]),
+      startedAt: n["startedAt"] ?? null,
+      timeSpent: Number(n["timeSpent"] ?? 0),
+      description: n["description"] ?? null,
+      correction: n["correction"] ?? null,
+      source: n["source"] ?? null,
+      sourceID: n["sourceID"] ?? null,
+      person: n["person"] ? { id: String(n["person"].id), name: n["person"].name ?? null } : null,
+      // ★ Yol A kayıtlarında assignment null'dır — bu alan dersin kalbidir.
+      assignment: a
+        ? {
+            type: a["__typename"] ?? null,
+            id: a["id"] ?? null,
+            // Request'te requestId, Task'ta taskId — UI numarası tipe göre değişir.
+            displayId:
+              a["requestId"] !== undefined && a["requestId"] !== null
+                ? String(a["requestId"])
+                : a["taskId"] !== undefined && a["taskId"] !== null
+                  ? String(a["taskId"])
+                  : null,
+          }
+        : null,
+      effortClass: n["effortClass"]
+        ? { id: String(n["effortClass"].id), name: n["effortClass"].name ?? null }
+        : null,
+    };
+  }
+
   // ── yazma ─────────────────────────────────────────────────────────────────
 
   async execute(planned: PlannedMutation[], signal?: AbortSignal): Promise<ExecuteResult> {
@@ -372,7 +527,40 @@ export class LiveXurrentAdapter implements XurrentAdapter {
         variables = { input: inner };
       }
 
-      const { data, errors: topLevel } = await this.gql<any>(step.mutation, variables, signal);
+      // ★ Her adım KENDİ operasyon sınıfıyla çalışır: aynı 500 hatası
+      // timeEntryUpdate'te retry, requestUpdate'te "asla" demektir.
+      const opClass = operationClassFor(step.path);
+      const inner = (variables["input"] ?? {}) as Record<string, unknown>;
+      const sourceID = typeof inner["sourceID"] === "string" ? (inner["sourceID"] as string) : "";
+
+      let data: any;
+      let topLevel: ValidationError[];
+      try {
+        const res = await this.gql<any>(step.mutation, variables, signal, {
+          opClass,
+          label: step.path,
+          // guarded_create'in belirsiz-hata kurtarması: 5xx/ağ hatasında ÖNCE
+          // "yazma aslında ulaştı mı?" sorusu sorulur. Kayıt bulunursa retry
+          // İPTAL edilir ve mevcut kayıt başarı sayılır — ikinci POST atılmaz.
+          recoverUncertain:
+            opClass === "guarded_create" && sourceID
+              ? async () => {
+                  const found = await this.findTimeEntryBySourceId(sourceID, signal);
+                  traceDedup(sourceID, found !== null);
+                  if (!found) return null;
+                  return {
+                    data: { timeEntryCreate: { clientMutationId: null, errors: [], timeEntry: found } },
+                    errors: [],
+                  };
+                }
+              : undefined,
+        });
+        data = res.data;
+        topLevel = res.errors;
+      } catch (err) {
+        errors.push(this.transportErrorToValidation(step.path, opClass, err));
+        break;
+      }
       if (topLevel.length) {
         errors.push(...topLevel);
         break;
@@ -409,5 +597,52 @@ export class LiveXurrentAdapter implements XurrentAdapter {
     );
     const nodes: Array<{ id: string }> = data?.timeEntries?.nodes ?? [];
     return nodes[0]?.id ?? null;
+  }
+
+  /**
+   * Dedup geri-okuması (reliability.md §5): sourceID ile mevcut kayıt aranır.
+   * Kendisi query sınıfıdır — yani BU sorgu da retry politikasından geçer
+   * (geri-okumanın kendisi 429 yerse politika onu da kurtarır).
+   */
+  async findTimeEntryBySourceId(sourceID: string, signal?: AbortSignal): Promise<Record<string, unknown> | null> {
+    if (!sourceID) return null;
+    const { data, errors } = await this.gql<any>(TIME_ENTRY_BY_SOURCE_ID_QUERY, { sourceID }, signal);
+    if (errors.length) {
+      // Geri-okuma sorgu hatası "kayıt yok" DEMEK DEĞİLDİR ama güvenli taraf
+      // "bulunamadı"dır: dedup kaçarsa en kötü ihtimalle çift kayıt Xurrent
+      // tarafında sourceID ile TESPİT EDİLEBİLİR kalır; ters yönde hata
+      // (var sanıp yazmamak) kaybolan zaman girişi demektir.
+      log.warn("dedup geri-okuması başarısız — kayıt yok varsayıldı", {
+        errors: errors.map((e) => e.message),
+      });
+      return null;
+    }
+    const nodes: Array<Record<string, unknown>> = data?.timeEntries?.nodes ?? [];
+    return nodes[0] ?? null;
+  }
+
+  /**
+   * Retry katmanından KAÇAN (tüketilmiş ya da hiç yapılmamış) transport hatasını
+   * kullanıcıya dönecek ValidationError'a çevirir. no_retry sınıfında mesaj,
+   * sözleşmenin şart koştuğu uyarıyı taşır: yazma ULAŞMIŞ da olabilir.
+   */
+  private transportErrorToValidation(path: string, opClass: OperationClass, err: unknown): ValidationError {
+    const base = err instanceof Error ? err.message : String(err);
+    const reason = classifyReason(err);
+    if (opClass === "no_retry" && (reason === "5xx" || reason === "network")) {
+      return {
+        message:
+          `${path} BELİRSİZ hatayla düştü (${base}). Bu operasyonda timeSpent ARTIMLIDIR ve ` +
+          "otomatik tekrar ÇİFT SAYIM riski taşıdığı için YAPILMADI. DİKKAT: istek sunucuya " +
+          "ulaşmış ve İŞLENMİŞ olabilir — kayıt oluşmuş da olabilir, oluşmamış da. " +
+          "Ticket'ın zaman girişlerini kontrol edip elle karar verin.",
+      };
+    }
+    if (reason !== null && this.cfg.retryMaxAttempts > 1) {
+      return {
+        message: `${path} ${this.cfg.retryMaxAttempts} denemede başarılamadı: ${base}`,
+      };
+    }
+    return { message: `${path} başarısız: ${base}` };
   }
 }

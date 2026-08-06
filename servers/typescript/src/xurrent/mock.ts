@@ -23,6 +23,7 @@ import type {
   Person,
   PlannedMutation,
   TimeAllocation,
+  TimeEntryRecord,
   TimeTrackingContext,
   ValidationError,
   WhoamiResult,
@@ -31,7 +32,13 @@ import type {
 import { log } from "../util/log.js";
 import { addDaysISO, todayISO, toOffsetISO, weekStartISO, zonedToInstant } from "../util/time.js";
 import { PENDING_TIME_ENTRY_ID } from "./strategies.js";
-import type { ExecuteResult, ListOpenWorkArgs, XurrentAdapter } from "./index.js";
+import type {
+  ExecuteResult,
+  ListOpenWorkArgs,
+  ListTimeEntriesArgs,
+  ListTimeEntriesPage,
+  XurrentAdapter,
+} from "./index.js";
 
 // Terminal (kapalı) durumlar — açık/kapalı ayrımının TEK kaynağı budur.
 // RequestStatus'ta TEK terminal değer vardır.
@@ -345,6 +352,70 @@ export class MockXurrentAdapter implements XurrentAdapter {
       if (e.date >= weekStart && e.date < weekEnd) week += e.timeSpent;
     }
     return { dayMinutes: day, weekMinutes: week };
+  }
+
+  async findTimeEntryBySourceId(sourceID: string): Promise<Record<string, unknown> | null> {
+    // Mock'ta geri-okuma bellek içi store'dan yapılır — davranış canlıyla AYNI:
+    // aynı sourceID'li kayıt varsa döner, yoksa null. Birim testlerin dedup'ı
+    // ağsız kanıtlayabilmesi bu simetriye dayanır.
+    if (!sourceID) return null;
+    const found = this.entries.find((e) => e.sourceID === sourceID);
+    return found ? ({ ...found } as unknown as Record<string, unknown>) : null;
+  }
+
+  /**
+   * Geri-okuma listesi (contract #9): bellek içi store, canlı sorgunun
+   * filtreleriyle BİREBİR aynı anlamda süzülür — personId/dateFrom/dateTo/sourceID.
+   * TimeEntryRecord eşlemesi TEK yerde (toTimeEntryRecord) yaşar; dedup
+   * geri-okuması ile aynı store'u okur, ayrı bir "görüş" üretmez.
+   */
+  async listTimeEntries(args: ListTimeEntriesArgs): Promise<ListTimeEntriesPage> {
+    const pid = this.resolvePersonId(args.personId);
+    const first = args.first ?? 25;
+    const rows = this.entries
+      .filter(
+        (e) =>
+          e.personId === pid &&
+          (!args.dateFrom || e.date >= args.dateFrom) &&
+          (!args.dateTo || e.date <= args.dateTo) &&
+          (!args.sourceId || e.sourceID === args.sourceId),
+      )
+      .slice(0, first);
+    return {
+      accountId: this.account.id,
+      timeEntries: rows.map((e) => this.toTimeEntryRecord(e)),
+    };
+  }
+
+  private toTimeEntryRecord(e: MockTimeEntry): TimeEntryRecord {
+    let assignment: TimeEntryRecord["assignment"] = null;
+    if (e.assignmentType && e.assignmentId) {
+      // displayId gerçek API'deki gibi tipe göre çözülür: Request→requestId, Task→taskId.
+      const displayId =
+        e.assignmentType === "Request"
+          ? this.requests.find((r) => r.id === e.assignmentId)?.requestId ?? null
+          : e.assignmentType === "Task"
+            ? this.tasks.find((t) => t.id === e.assignmentId)?.taskId ?? null
+            : null;
+      assignment = { type: e.assignmentType, id: e.assignmentId, displayId };
+    }
+    const ec = e.effortClassId ? this.effortClasses.find((c) => c.id === e.effortClassId) ?? null : null;
+    return {
+      id: e.id,
+      date: e.date,
+      startedAt: e.startedAt,
+      timeSpent: e.timeSpent,
+      description: e.description,
+      correction: e.correction,
+      source: e.source,
+      sourceID: e.sourceID,
+      person: {
+        id: e.personId,
+        name: this.people.find((p) => p.id === e.personId)?.name ?? null,
+      },
+      assignment,
+      effortClass: ec ? { id: ec.id, name: ec.name } : null,
+    };
   }
 
   async resolveTargetLabel(targetType: string, targetId: string): Promise<string | null> {

@@ -11,6 +11,7 @@ import type {
   FindPersonResult,
   ListOpenWorkResult,
   PlannedMutation,
+  TimeEntryRecord,
   TimeTrackingContext,
   ValidationError,
   ViewOption,
@@ -19,6 +20,7 @@ import type {
 } from "../types.js";
 import { LiveXurrentAdapter } from "./live.js";
 import { MockXurrentAdapter } from "./mock.js";
+import { RestXurrentAdapter } from "./rest.js";
 
 export interface ListOpenWorkArgs {
   personId?: string;
@@ -36,6 +38,24 @@ export interface ExecuteResult {
   executed: number;
 }
 
+export interface ListTimeEntriesArgs {
+  /** Kişi (opak id ya da "$me"). */
+  personId?: string;
+  /** Bu tarihten itibaren (dahil), YYYY-MM-DD. */
+  dateFrom?: string;
+  /** Bu tarihe kadar (dahil), YYYY-MM-DD. */
+  dateTo?: string;
+  /** İdempotency anahtarıyla nokta arama (dedup geri-okuması). */
+  sourceId?: string;
+  first?: number;
+}
+
+/** listTimeEntries'in adapter tarafı — totalMinutes ÇEKİRDEKTE hesaplanır (tek yer). */
+export interface ListTimeEntriesPage {
+  accountId: string;
+  timeEntries: TimeEntryRecord[];
+}
+
 export interface XurrentAdapter {
   readonly mode: XurrentMode;
   whoami(signal?: AbortSignal): Promise<WhoamiResult>;
@@ -44,6 +64,17 @@ export interface XurrentAdapter {
   getTimeTrackingContext(personId: string, signal?: AbortSignal): Promise<TimeTrackingContext>;
   /** Ön kontrol için: hedef tarihte/haftada o kişiye ait mevcut dakika toplamları. */
   usage(personId: string, dateISO: string, signal?: AbortSignal): Promise<{ dayMinutes: number; weekMinutes: number }>;
+  /**
+   * Dedup geri-okuması (contract/reliability.md §5): deterministik sourceID ile
+   * mevcut TimeEntry aranır. Bulunursa kayıt, bulunmazsa null döner.
+   * Yazma-öncesi dedup ve guarded_create'in belirsiz-hata kurtarması buna dayanır.
+   */
+  findTimeEntryBySourceId(sourceID: string, signal?: AbortSignal): Promise<Record<string, unknown> | null>;
+  /**
+   * Yazılmış zaman girişlerini okur (contract #9 — xurrent_list_time_entries).
+   * "query" sınıfıdır: yan etkisiz, retry politikasıyla serbestçe tekrarlanır.
+   */
+  listTimeEntries(args: ListTimeEntriesArgs, signal?: AbortSignal): Promise<ListTimeEntriesPage>;
   /** Planlanan mutation'ları SIRAYLA çalıştırır. Atomik DEĞİLDİR. */
   execute(planned: PlannedMutation[], signal?: AbortSignal): Promise<ExecuteResult>;
   /** İnsan-okunur hedef etiketi (uyarı metinleri ve onay diyaloğu için). */
@@ -53,10 +84,17 @@ export interface XurrentAdapter {
 let cached: { key: string; adapter: XurrentAdapter } | null = null;
 
 export function createXurrentAdapter(cfg: AppConfig): XurrentAdapter {
-  const key = `${cfg.mode}|${cfg.fixturesDir}|${cfg.graphqlUrl}|${cfg.account}`;
+  // api + restUrl anahtara DAHİLDİR: transport değişince adapter da değişmeli.
+  const key = `${cfg.mode}|${cfg.api}|${cfg.fixturesDir}|${cfg.graphqlUrl}|${cfg.restUrl}|${cfg.account}`;
   if (cached && cached.key === key) return cached.adapter;
+  // live modda transport seçimi (.env.example §1): graphql (varsayılan) | rest.
+  // İkisi de AYNI arayüzü konuşur — tool'lar farkı GÖRMEZ (docs/16'nın tezi).
   const adapter: XurrentAdapter =
-    cfg.mode === "live" ? new LiveXurrentAdapter(cfg) : new MockXurrentAdapter(cfg);
+    cfg.mode === "live"
+      ? cfg.api === "rest"
+        ? new RestXurrentAdapter(cfg)
+        : new LiveXurrentAdapter(cfg)
+      : new MockXurrentAdapter(cfg);
   cached = { key, adapter };
   return adapter;
 }

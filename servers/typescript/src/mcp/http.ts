@@ -2,25 +2,37 @@
 /**
  * Streamable HTTP transport girişi.
  *
- * Aynı sunucu, aynı 8 tool — sadece taşıyıcı değişir. Dersin "MCP bir
+ * Aynı sunucu, aynı tool seti — sadece taşıyıcı değişir. Dersin "MCP bir
  * protokoldür" tezinin küçük ama somut bir kanıtı: stdio ve HTTP arasında
  * tool kodunda TEK BİR SATIR değişmez.
  *
- * MCP_PROTOCOL:
- *   2026-07-28  → yalnızca /mcp/v2   (varsayılan; /mcp de buraya yönlenir)
- *   2025-11-25  → yalnızca /mcp/v1   (/mcp de buraya yönlenir)
- *   both        → İKİSİ BİRDEN. stdio'da imkânsız olan şey HTTP'de doğaldır:
- *                 yol adresi (path) iki revizyonu ayırmaya yeter.
+ * YOL TABLOSU (WP6 — bkz. http-gate.ts):
+ *   MCP_PROTOCOL=2026-07-28 → /mcp/v2 + /mcp (ikisi de v2)
+ *   MCP_PROTOCOL=2025-11-25 → /mcp/v1 + /mcp (ikisi de v1)
+ *   MCP_PROTOCOL=both       → /mcp/v1 + /mcp/v2 + /mcp → v2'nin TAKMA ADI
  *
- * STATELESS mod kullanılır: v1'de sessionIdGenerator=undefined, v2'de zaten
- * oturum kavramı YOKTUR. Ders ortamı için en basit ve en dayanıklı seçenek.
+ * OTURUM DURUŞU SÖZLEŞMENİN PARÇASIDIR:
+ *   v1 (2025-11-25) SESSIONFUL'dur: initialize el sıkışması Mcp-Session-Id
+ *   üretir; sonraki istekler bu başlıkla AYNI sunucu örneğine yönlenir.
+ *   Elicitation (sunucu-başlatmalı onay) tam da bu kalıcı eşleşmeye dayanır.
+ *   v2 (2026-07-28) STATELESS'tır: oturum kavramı YOKTUR, her istek kendi
+ *   başına yaşar; onay MRTR ile (requestState) çözülür.
+ *
+ * MCP_API_KEY KAPISI (.env.example §8):
+ *   boş → yalnız loopback'e bağlanılır (varsayılan duruş, kapı yok).
+ *   dolu → 0.0.0.0'a bağlanılır ve HER /mcp* isteği X-MCP-Api-Key başlığında
+ *   aynı değeri taşımak zorundadır (sabit-zamanlı karşılaştırma; aksi 401).
+ *   Her iki era için de geçerlidir. Web chat portu (WEB_PORT) bundan ETKİLENMEZ.
  */
 
+import { randomUUID } from "node:crypto";
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { createMcpHandler } from "@modelcontextprotocol/server";
 import { loadConfig, type AppConfig } from "../config.js";
 import { log } from "../util/log.js";
+import { apiKeyOk, bindHost, resolvePathTarget } from "./http-gate.js";
 import { parametreKoruyucusuTak } from "./params-guard.js";
 import { createV1Server } from "./v1/server.js";
 import { createV2Server } from "./v2/server.js";
@@ -41,27 +53,100 @@ async function readBody(req: IncomingMessage): Promise<{ raw: Buffer; parsed: un
   }
 }
 
-/** v1 (2025-11-25): her istek için TAZE sunucu + transport — oturum sızıntısı olmaz. */
-async function handleV1(cfg: AppConfig, req: IncomingMessage, res: ServerResponse, body: unknown): Promise<void> {
-  const { server } = createV1Server(cfg);
-  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-  res.on("close", () => {
-    void transport.close();
-    void server.close();
-  });
-  await server.connect(transport);
-  // stdio ile AYNI koruyucu — taşıyıcı değişse de spec değişmiyor (uyum J4).
-  parametreKoruyucusuTak(transport as never, {
-    onReject: (metot, id, hata) => log.warn("geçersiz params reddedildi, -32602 döndürüldü", { metot, id, detay: hata.message }),
-    onSendError: (err) => log.error("-32602 yanıtı gönderilemedi", { error: err instanceof Error ? err.message : String(err) }),
-  });
-  await transport.handleRequest(req, res, body);
+/** Açık v1 oturumları: Mcp-Session-Id → (transport + sunucu). */
+interface V1Session {
+  transport: StreamableHTTPServerTransport;
+  close: () => Promise<void>;
 }
 
 /**
- * v2 (2026-07-28): createMcpHandler web-standard Request/Response konuşur.
- * Node'un IncomingMessage/ServerResponse'unu ikisine köprülemek gerekir —
- * Node 22+ global Request/Response taşıdığı için ek bağımlılık gerekmez.
+ * v1 (2025-11-25): SESSIONFUL akış.
+ *
+ *   · initialize (session başlığı YOK) → taze sunucu + transport; SDK
+ *     Mcp-Session-Id üretir ve yanıt başlığına yazar; oturum haritaya girer.
+ *   · Sonraki istekler Mcp-Session-Id ile gelir → AYNI transport'a yönlenir
+ *     (elicitation gibi sunucu-başlatmalı akışların ön koşulu).
+ *   · DELETE oturumu kapatır (SDK yönetir; onclose haritadan düşürür).
+ *
+ * Eski hâli her istekte sessionIdGenerator: undefined ile TAZE transport
+ * kuruyordu — yani v1 fiilen stateless'tı ve el sıkışmanın ürettiği hiçbir
+ * kimlik ikinci isteğe taşınmıyordu. Bu, 2025-11-25 spec'inin oturum modelini
+ * YANLIŞ anlatıyordu; WP6 bunu düzeltir.
+ */
+async function handleV1(
+  cfg: AppConfig,
+  sessions: Map<string, V1Session>,
+  req: IncomingMessage,
+  res: ServerResponse,
+  body: unknown,
+): Promise<void> {
+  const rawSid = req.headers["mcp-session-id"];
+  const sid = Array.isArray(rawSid) ? rawSid[0] : rawSid;
+
+  // Bilinen oturum → aynı transport devam eder (GET/POST/DELETE hepsi buradan).
+  if (sid && sessions.has(sid)) {
+    await sessions.get(sid)!.transport.handleRequest(req, res, body);
+    return;
+  }
+
+  // Yeni oturum YALNIZCA initialize ile açılır (spec: diğer istekler 400/404).
+  if (!sid && isInitializeRequest(body)) {
+    const { server } = createV1Server(cfg);
+    const transport = new StreamableHTTPServerTransport({
+      // ★ WP6'nın özü: v1 artık GERÇEKTEN sessionful — SDK initialize yanıtına
+      // Mcp-Session-Id başlığını bu üreticiyle koyar.
+      sessionIdGenerator: () => randomUUID(),
+      onsessioninitialized: (newSid) => {
+        sessions.set(newSid, {
+          transport,
+          close: async () => {
+            await transport.close();
+            await server.close();
+          },
+        });
+        log.info("v1 oturumu açıldı", { sessionId: newSid, toplam: sessions.size });
+      },
+    });
+    transport.onclose = () => {
+      if (transport.sessionId && sessions.delete(transport.sessionId)) {
+        log.info("v1 oturumu kapandı", { sessionId: transport.sessionId, kalan: sessions.size });
+      }
+    };
+    await server.connect(transport);
+    // stdio ile AYNI koruyucu — taşıyıcı değişse de spec değişmiyor (uyum J4).
+    parametreKoruyucusuTak(transport as never, {
+      onReject: (metot, id, hata) =>
+        log.warn("geçersiz params reddedildi, -32602 döndürüldü", { metot, id, detay: hata.message }),
+      onSendError: (err) =>
+        log.error("-32602 yanıtı gönderilemedi", { error: err instanceof Error ? err.message : String(err) }),
+    });
+    await transport.handleRequest(req, res, body);
+    return;
+  }
+
+  // Oturumsuz initialize-dışı istek (400) ya da tanınmayan oturum (404) —
+  // spec'in stateful modu tam bu iki kodu şart koşar.
+  const code = sid ? 404 : 400;
+  res.writeHead(code, { "Content-Type": "application/json; charset=utf-8" });
+  res.end(
+    JSON.stringify({
+      jsonrpc: "2.0",
+      error: {
+        code: -32000,
+        message: sid
+          ? "Mcp-Session-Id tanınmadı — oturum kapanmış ya da sunucu yeniden başlamış olabilir. initialize ile yeni oturum açın."
+          : "Bu uç SESSIONFUL'dur (2025-11-25): önce initialize gönderin, dönen Mcp-Session-Id başlığını sonraki isteklerde taşıyın.",
+      },
+      id: null,
+    }),
+  );
+}
+
+/**
+ * v2 (2026-07-28): createMcpHandler web-standard Request/Response konuşur ve
+ * STATELESS'tır — oturum başlığı ne beklenir ne üretilir. Node'un
+ * IncomingMessage/ServerResponse'unu ikisine köprülemek gerekir — Node 22+
+ * global Request/Response taşıdığı için ek bağımlılık gerekmez.
  */
 async function handleV2(
   handler: { fetch: (req: Request, opts?: { parsedBody?: unknown }) => Promise<Response> },
@@ -119,34 +204,34 @@ async function main(): Promise<void> {
       })
     : null;
 
+  // v1 oturumları süreç ömrünce yaşar; DELETE ya da transport kapanışı düşürür.
+  const v1Sessions = new Map<string, V1Session>();
+
   const http = createHttpServer((req: IncomingMessage, res: ServerResponse) => {
     void (async () => {
       const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
       const path = url.pathname.replace(/\/+$/, "") || "/";
 
-      // /mcp → yapılandırmadaki tek protokole yönlenir. "both" modunda belirsizdir.
-      let target: "v1" | "v2" | null = null;
-      if (path === PATH_V1) target = "v1";
-      else if (path === PATH_V2) target = "v2";
-      else if (path === PATH_DEFAULT) target = cfg.mcpProtocol === "both" ? null : wantV1 ? "v1" : "v2";
+      // ── MCP_API_KEY kapısı: TÜM /mcp* istekleri, HER İKİ era ──────────────
+      if (cfg.mcpApiKey && !apiKeyOk(cfg.mcpApiKey, req.headers["x-mcp-api-key"])) {
+        res.writeHead(401, { "Content-Type": "application/json; charset=utf-8" });
+        res.end(JSON.stringify({ error: "X-MCP-Api-Key başlığı eksik veya yanlış." }));
+        return;
+      }
 
-      if (target === null || (target === "v1" && !wantV1) || (target === "v2" && !wantV2)) {
-        const open = [wantV1 ? PATH_V1 : null, wantV2 ? PATH_V2 : null].filter(Boolean).join(", ");
+      const target = resolvePathTarget(path, cfg.mcpProtocol);
+      if (target === null) {
+        const open = [wantV1 ? PATH_V1 : null, wantV2 ? PATH_V2 : null, PATH_DEFAULT]
+          .filter(Boolean)
+          .join(", ");
         res.writeHead(404, { "Content-Type": "application/json; charset=utf-8" });
-        res.end(
-          JSON.stringify({
-            error:
-              path === PATH_DEFAULT
-                ? `MCP_PROTOCOL=both iken /mcp belirsizdir — revizyonu açıkça seçin. Açık yollar: ${open}`
-                : `Bilinmeyen yol. Açık MCP uç noktaları: ${open}`,
-          }),
-        );
+        res.end(JSON.stringify({ error: `Bilinmeyen yol. Açık MCP uç noktaları: ${open}` }));
         return;
       }
 
       try {
         const { raw, parsed } = await readBody(req);
-        if (target === "v1") await handleV1(cfg, req, res, parsed);
+        if (target === "v1") await handleV1(cfg, v1Sessions, req, res, parsed);
         else await handleV2(v2Handler!, req, res, raw, parsed);
       } catch (err) {
         log.error("HTTP isteği işlenemedi", { error: err instanceof Error ? err.message : String(err) });
@@ -158,11 +243,22 @@ async function main(): Promise<void> {
     })();
   });
 
-  http.listen(cfg.mcpHttpPort, () => {
-    const base = `http://localhost:${cfg.mcpHttpPort}`;
-    if (wantV1) log.info(`MCP v1 (2025-11-25) dinliyor: ${base}${PATH_V1}`);
-    if (wantV2) log.info(`MCP v2 (2026-07-28) dinliyor: ${base}${PATH_V2}`);
-    if (cfg.mcpProtocol !== "both") log.info(`Kısayol: ${base}${PATH_DEFAULT}`);
+  // Anahtar boş → yalnız loopback (mevcut duruş). Dolu → 0.0.0.0 + başlık zorunlu.
+  const host = bindHost(cfg.mcpApiKey);
+  http.listen(cfg.mcpHttpPort, host, () => {
+    const base = `http://${host === "0.0.0.0" ? "0.0.0.0" : "localhost"}:${cfg.mcpHttpPort}`;
+    if (wantV1) log.info(`MCP v1 (2025-11-25, sessionful) dinliyor: ${base}${PATH_V1}`);
+    if (wantV2) log.info(`MCP v2 (2026-07-28, stateless) dinliyor: ${base}${PATH_V2}`);
+    log.info(
+      cfg.mcpProtocol === "both"
+        ? `Kısayol: ${base}${PATH_DEFAULT} → v2 (güncel spec)`
+        : `Kısayol: ${base}${PATH_DEFAULT}`,
+    );
+    log.info(
+      cfg.mcpApiKey
+        ? "MCP_API_KEY DOLU: 0.0.0.0'a bağlanıldı, her istekte X-MCP-Api-Key zorunlu."
+        : "MCP_API_KEY boş: yalnız loopback (127.0.0.1) dinleniyor.",
+    );
   });
 }
 

@@ -61,14 +61,14 @@ function assertGeminiClean(node, path = "#") {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 1) Sözleşmedeki 8 tool'un HEPSİ çevrilebilmeli
+// 1) Sözleşmedeki 10 tool'un HEPSİ çevrilebilmeli
 // ─────────────────────────────────────────────────────────────────────────────
 
-test("contract/tools.json: 8 tool var", () => {
-  assert.equal(contract.tools.length, 8, "sözleşme 8 tool içermeli");
+test("contract/tools.json: 10 tool var", () => {
+  assert.equal(contract.tools.length, 10, "sözleşme 10 tool içermeli");
 });
 
-test("8 tool'un input şeması Gemini lehçesine çevrilir ve temiz kalır", () => {
+test("10 tool'un input şeması Gemini lehçesine çevrilir ve temiz kalır", () => {
   const entries = [];
   for (const tool of contract.tools) {
     const tr = mcpSchemaToGemini(tool.input, { externalDefs: contract.$defs });
@@ -76,14 +76,14 @@ test("8 tool'un input şeması Gemini lehçesine çevrilir ve temiz kalır", () 
     assert.equal(tr.schema.type, "object", `${tool.name}: kök tip object olmalı`);
     entries.push({ name: tool.name, translation: tr });
   }
-  assert.equal(entries.length, 8);
+  assert.equal(entries.length, 10);
   // Rapor üretilebilmeli — ders artifaktı budur.
   const report = formatTranslationReport(entries);
   assert.match(report, /ŞEMA ÇEVİRİSİ/);
-  assert.match(report, /TOPLAM \d+ düşürme, 8 tool/);
+  assert.match(report, /TOPLAM \d+ düşürme, 10 tool/);
 });
 
-test("8 tool'un output şeması da çevrilir; $ref'ler defs'e içe alınır", () => {
+test("10 tool'un output şeması da çevrilir; $ref'ler defs'e içe alınır", () => {
   for (const tool of contract.tools) {
     const tr = mcpSchemaToGemini(tool.output, { externalDefs: contract.$defs });
     assertGeminiClean(tr.schema, `#(${tool.name} output)`);
@@ -219,7 +219,7 @@ test("çevirici SAF: girdi mutasyona uğramaz ve aynı girdi aynı çıktıyı v
 // 4) Çalışan sunucunun GERÇEKTEN gönderdiği şemalar
 // ─────────────────────────────────────────────────────────────────────────────
 
-test("agent/core.ts'in ürettiği 8 functionDeclaration Gemini'ye uygundur", async () => {
+test("agent/core.ts'in ürettiği 9 functionDeclaration Gemini'ye uygundur (wizard HARİÇ)", async () => {
   const { buildTools } = await import("../../dist/agent/core.js");
   const { loadConfig } = await import("../../dist/config.js");
   const { createToolContext } = await import("../../dist/core/context.js");
@@ -229,8 +229,13 @@ test("agent/core.ts'in ürettiği 8 functionDeclaration Gemini'ye uygundur", asy
   const ctx = createToolContext(cfg, createXurrentAdapter(cfg), async () => ({ action: "decline" }));
   const tools = buildTools(ctx);
 
-  assert.equal(tools.length, 8);
-  const contractNames = contract.tools.map((t) => t.name).sort();
+  // 10 tool'un 9'u çevrilir: timesheet_wizard Gemini'ye BİLEREK verilmez
+  // (kendi kendini çağırma döngüsü — contract/wizard.md §1).
+  assert.equal(tools.length, 9);
+  const contractNames = contract.tools
+    .map((t) => t.name)
+    .filter((n) => n !== "timesheet_wizard")
+    .sort();
   assert.deepEqual(tools.map((t) => t.name).sort(), contractNames, "tool adları sözleşmeyle BİREBİR aynı olmalı");
 
   for (const t of tools) {
@@ -266,4 +271,31 @@ test("parametresiz tool YALNIZCA xurrent_whoami'dir — sessizce çoğalmamalı"
     .filter((t) => !("parameters" in t.declaration))
     .map((t) => t.name);
   assert.deepEqual(parametresizler, ["xurrent_whoami"]);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 5) LLM filtresi — timesheet_wizard Gemini'ye ÇEVRİLMEZ (contract/wizard.md §1)
+// ─────────────────────────────────────────────────────────────────────────────
+
+test("★ LLM filtresi: çeviri listesinde timesheet_wizard YOK, diğer 9 tool (list_time_entries DAHİL) VAR", async () => {
+  const { buildTools } = await import("../../dist/agent/core.js");
+  const { loadConfig } = await import("../../dist/config.js");
+  const { createToolContext } = await import("../../dist/core/context.js");
+  const { createXurrentAdapter } = await import("../../dist/xurrent/index.js");
+
+  const cfg = loadConfig();
+  const ctx = createToolContext(cfg, createXurrentAdapter(cfg), async () => ({ action: "decline" }));
+  const adlar = buildTools(ctx).map((t) => t.name);
+
+  // Kendi kendini çağırma döngüsü: sohbet EDEN bir tool'u sohbet YÜRÜTEN modele
+  // vermek, modelin sihirbazla kendi kendine konuşmasına yol açabilir. Kapalı.
+  assert.ok(!adlar.includes("timesheet_wizard"), "timesheet_wizard functionDeclarations'a SIZMAMALI");
+
+  // Diğer 9 tool (yeni okuma tool'u xurrent_list_time_entries DAHİL) çevrilir.
+  const beklenen = contract.tools.map((t) => t.name).filter((n) => n !== "timesheet_wizard");
+  assert.equal(beklenen.length, 9);
+  for (const ad of beklenen) {
+    assert.ok(adlar.includes(ad), `${ad} çeviri listesinde OLMALI`);
+  }
+  assert.ok(adlar.includes("xurrent_list_time_entries"), "yeni okuma tool'u listede olmalı");
 });

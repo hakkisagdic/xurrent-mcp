@@ -156,12 +156,18 @@ export interface WriteResult {
   planned: PlannedMutation[];
   warnings: string[];
   timeEntry: Record<string, unknown> | null;
+  /**
+   * true → yazma ATLANDI: aynı sourceID'li kayıt zaten vardı ve timeEntry
+   * MEVCUT kaydı gösterir (bkz. contract/reliability.md §5).
+   */
+  deduped?: boolean;
   errors: ValidationError[];
 }
 
 export interface BulkResultRow {
   index: number;
-  status: "created" | "failed" | "skipped";
+  /** "deduped": sourceID geri-okuması kaydı buldu, yazma atlandı (çift kayıt yok). */
+  status: "created" | "failed" | "skipped" | "deduped";
   timeEntryId: string | null;
   errors: ValidationError[];
 }
@@ -175,6 +181,8 @@ export interface BulkResult {
     created: number;
     failed: number;
     skipped: number;
+    /** sourceID geri-okumasıyla "zaten yazılmış" bulunup atlanan kalem sayısı. */
+    deduped?: number;
     totalMinutes: number;
   };
 }
@@ -240,6 +248,84 @@ export interface PlanResult {
   proposals: PlanProposal[];
   unmatchedMeetings: string[];
   totals: { meetingMinutes: number; proposedMinutes: number };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// xurrent_list_time_entries — geri-okuma sözleşmesi ($defs/TimeEntryRecord + TimeEntryPage)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface TimeEntryRecord {
+  id: string;
+  date: string;
+  startedAt: string | null;
+  /** DAKİKA — sözleşmenin tek süre birimi. */
+  timeSpent: number;
+  description: string | null;
+  correction: boolean | null;
+  source: string | null;
+  /** İdempotency anahtarı (xmcp-…) — dedup bu alanla çalışır. */
+  sourceID: string | null;
+  person: { id: string; name: string | null } | null;
+  /** Bağlı ticket — Yol A kayıtlarında null (dersin kalbi, bkz. docs/02). */
+  assignment: { type: string | null; id: string | null; displayId: string | null } | null;
+  effortClass: { id: string; name: string | null } | null;
+}
+
+export interface TimeEntryPage {
+  accountId: string;
+  timeEntries: TimeEntryRecord[];
+  /** Dönen kayıtların toplam dakikası (correction'lar işaretli dahil). */
+  totalMinutes: number;
+}
+
+export interface ListTimeEntriesInput {
+  personId?: string;
+  dateFrom?: string;
+  dateTo?: string;
+  sourceId?: string;
+  first?: number;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// timesheet_wizard — $defs/WizardResult
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type WizardStep =
+  | "start"
+  | "pick_work"
+  | "duration"
+  | "detail"
+  | "strategy"
+  | "confirm"
+  | "write"
+  | "calendar_plan"
+  | "calendar_confirm"
+  | "done";
+
+export interface WizardChoice {
+  id: string;
+  label: string;
+  /** Seçeneğin bedeli/gerekçesi (ör. backdateStrategies.costs). */
+  detail?: string | null;
+}
+
+export interface WizardQuestion {
+  prompt: string;
+  choices?: WizardChoice[];
+  expectsFreeText?: boolean;
+}
+
+export interface WizardResult {
+  step: WizardStep;
+  /** Kullanıcıya gösterilecek Türkçe metin. */
+  reply: string;
+  nextQuestion?: WizardQuestion | null;
+  /** YENİ imzalı durum — done=true iken null. */
+  sessionState?: string | null;
+  done: boolean;
+  /** write adımı gerçekleştiyse yazma sonucu ($defs/WriteResult şekli). */
+  writeResult?: Record<string, unknown> | null;
+  errors: ValidationError[];
 }
 
 /** xurrent_create_time_entry girdisi (sözleşmedeki input şemasının aynısı). */

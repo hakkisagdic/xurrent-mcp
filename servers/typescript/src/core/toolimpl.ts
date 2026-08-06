@@ -28,12 +28,14 @@ import type {
   BulkResultRow,
   FindPersonResult,
   ListOpenWorkResult,
+  ListTimeEntriesInput,
   Meeting,
   PlanProposal,
   PlanResult,
   PlannedMutation,
   RoundingMode,
   TimeAllocation,
+  TimeEntryPage,
   TimeTrackingContext,
   ViewOption,
   WhoamiResult,
@@ -42,6 +44,7 @@ import type {
 } from "../types.js";
 import { todayISO } from "../util/time.js";
 import type { ListOpenWorkArgs } from "../xurrent/index.js";
+import { traceDedup } from "../xurrent/retry.js";
 import { planPlannedMutations } from "../xurrent/strategies.js";
 import { preflight, roundToIncrement } from "../xurrent/validate.js";
 import {
@@ -400,6 +403,41 @@ export function confirmRequestForEntry(ctx: ToolContext, p: PreparedEntry): Conf
 }
 
 /**
+ * ★ YAZMA ÖNCESİ DEDUP'IN ÖN KOŞULU (contract/reliability.md §5):
+ * plan timeEntryCreate ile BAŞLIYORSA planlanan input'taki deterministik
+ * sourceID'yi döner; başka her durumda null.
+ *
+ * ASİMETRİ BİLİNÇLİDİR VE DERSİN KENDİSİDİR: two_step/link_first planları
+ * bir parent update ile başlar ve parent update input'una sourceID YAZILAMAZ —
+ * yani Yol B'nin çift kayıt koruması dedup DEĞİL, retry YASAĞIDIR (no_retry).
+ * Dedup yalnızca Yol A'da (date_first / time_allocation hedefi) mümkündür.
+ */
+function firstCreateSourceId(planned: PlannedMutation[]): string | null {
+  const first = planned[0];
+  if (!first || first.path !== "timeEntryCreate") return null;
+  const inner = (first.input["input"] ?? {}) as Record<string, unknown>;
+  const sid = inner["sourceID"];
+  return typeof sid === "string" && sid.length > 0 ? sid : null;
+}
+
+/**
+ * Yazma öncesi geri-okuma: aynı sourceID'li kayıt VAR MI? Varsa kaydı döner.
+ * Karar (hit=true/false) her iki yönde de stderr'e izlenir — üç dil aynı biçimi
+ * basar, senaryo koşucusu sayar (reliability.md §6).
+ */
+async function preWriteDedup(
+  ctx: ToolContext,
+  planned: PlannedMutation[],
+  signal?: AbortSignal,
+): Promise<Record<string, unknown> | null> {
+  const sid = firstCreateSourceId(planned);
+  if (!sid) return null;
+  const existing = await ctx.xurrent.findTimeEntryBySourceId(sid, signal);
+  traceDedup(sid, existing !== null);
+  return existing;
+}
+
+/**
  * Onay ALINDIKTAN SONRA çalışan kısım. Kararı kim verdiyse verdi — burada
  * yalnızca sonucuna uyulur. ATOMİK DEĞİLDİR.
  */
@@ -426,6 +464,16 @@ export async function finishTimeEntry(
     const policy = resolveUnsupportedConfirm(ctx.cfg);
     if (!policy.allowed) return { ...base, warnings, errors: [{ message: policy.message }] };
     warnings.push(policy.message);
+  }
+
+  // ── Yazma öncesi dedup (yalnız Yol A — bkz. firstCreateSourceId) ──────────
+  const existing = await preWriteDedup(ctx, base.planned, signal);
+  if (existing) {
+    warnings.push(
+      "Aynı sourceID'li kayıt zaten var — yazma ATLANDI (dedup). timeEntry alanı MEVCUT kaydı gösteriyor; " +
+        "bu büyük ihtimalle aynı komutun tekrar çalıştırılmasıdır ve çift kayıt oluşmadı.",
+    );
+    return { ...base, warnings, timeEntry: existing, deduped: true, errors: [] };
   }
 
   const exec = await ctx.xurrent.execute(base.planned, signal);
@@ -478,6 +526,10 @@ export function renderWriteResult(r: WriteResult): string {
   }
   if (r.errors.length) {
     lines.push("", "HATALAR (işlem BAŞARISIZ):", bullet(r.errors.map((e) => e.message), "  ✖ "));
+  } else if (r.deduped === true) {
+    const id = (r.timeEntry as { id?: string } | null)?.id;
+    lines.push("", `DEDUP: Aynı sourceID'li kayıt zaten vardı${id ? ` (TimeEntry id: ${id})` : ""} — yazma ATLANDI.`);
+    lines.push("Çift kayıt oluşmadı; timeEntry alanı MEVCUT kaydı gösteriyor.");
   } else if (!r.dryRun) {
     const id = (r.timeEntry as { id?: string } | null)?.id;
     lines.push("", `Kayıt oluştu${id ? ` — TimeEntry id: ${id}` : ""}.`);
@@ -554,6 +606,8 @@ export async function prepareBulk(ctx: ToolContext, args: BulkArgs, signal?: Abo
           created: 0,
           failed: prepared.filter((p) => p.result.errors.length > 0).length,
           skipped: prepared.filter((p) => p.result.errors.length === 0).length,
+          // dryRun'da geri-okuma YAPILMAZ (hiçbir HTTP isteği çıkmaz) → 0.
+          deduped: 0,
           totalMinutes,
         },
       }
@@ -597,6 +651,7 @@ export async function finishBulk(
       created: 0,
       failed: 0,
       skipped: b.prepared.length,
+      deduped: 0,
       totalMinutes: b.totalMinutes,
     },
   });
@@ -630,6 +685,16 @@ export async function finishBulk(
       continue;
     }
 
+    // ── Kalem başına yazma öncesi dedup (yalnız Yol A planları) ─────────────
+    // Kısmen başarısız bir bulk'ın AYNI komutla güvenle tekrar çalıştırılabilir
+    // olması buna dayanır: yazılmış kalemler "deduped", eksikler "created" olur.
+    const existing = await preWriteDedup(ctx, p.result.planned, signal);
+    if (existing) {
+      const id = typeof existing["id"] === "string" ? (existing["id"] as string) : null;
+      results.push({ index: i, status: "deduped", timeEntryId: id, errors: [] });
+      continue;
+    }
+
     const exec = await ctx.xurrent.execute(p.result.planned, signal);
     if (exec.errors.length > 0) {
       results.push({ index: i, status: "failed", timeEntryId: null, errors: exec.errors });
@@ -650,6 +715,9 @@ export async function finishBulk(
       created: results.filter((r) => r.status === "created").length,
       failed: results.filter((r) => r.status === "failed").length,
       skipped: results.filter((r) => r.status === "skipped").length,
+      // Sayaç 0 olsa da HEP raporlanır: "deduped alanı yok" ile "dedup olmadı"
+      // ayrımını okuyana bırakmayız.
+      deduped: results.filter((r) => r.status === "deduped").length,
       totalMinutes: createdMinutes,
     },
   };
@@ -669,7 +737,8 @@ export function renderBulk(r: BulkResult): string {
   const lines: string[] = [];
   lines.push(r.dryRun ? "DRY-RUN — hiçbir mutation gönderilmedi." : "TOPLU YAZMA — ATOMİK DEĞİL");
   lines.push(
-    `İstenen: ${r.summary.requested} | Oluşan: ${r.summary.created} | Başarısız: ${r.summary.failed} | Atlanan: ${r.summary.skipped}`,
+    `İstenen: ${r.summary.requested} | Oluşan: ${r.summary.created} | Başarısız: ${r.summary.failed} | ` +
+      `Atlanan: ${r.summary.skipped} | Dedup: ${r.summary.deduped ?? 0}`,
   );
   lines.push(`Toplam süre: ${humanMinutes(r.summary.totalMinutes)} (${r.summary.totalMinutes} dk)`);
   lines.push(`Planlanan mutation sayısı: ${r.planned.length}`);
@@ -683,6 +752,13 @@ export function renderBulk(r: BulkResult): string {
     lines.push(
       "",
       "DİKKAT: Kısmi başarı. Bazı kayıtlar oluştu, bazıları oluşmadı. GraphQL istek başına 1 mutation kabul ettiği için transaction YOKTUR.",
+      "KURTARMA YOLU: aynı komutu AYNI girdiyle tekrar çalıştırın — yazılmış kalemler sourceID geri-okumasıyla 'deduped' olur, yalnızca eksikler yazılır.",
+    );
+  }
+  if ((r.summary.deduped ?? 0) > 0) {
+    lines.push(
+      "",
+      `DEDUP: ${r.summary.deduped} kalem zaten yazılmıştı (aynı sourceID) ve ATLANDI — çift kayıt oluşmadı.`,
     );
   }
   return lines.join("\n");
@@ -1040,6 +1116,66 @@ export function renderPlan(r: PlanResult): string {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
+// 9) xurrent_list_time_entries — geri-okumanın resmî gözü
+//
+// Kesin mesajlaşmanın ikinci yarısı: yazma raporuna güvenmek yerine kayıt GERİ
+// OKUNUR (contract/reliability.md §5). sourceId filtresi idempotency anahtarıyla
+// nokta arama yapar — kısmen başarısız bir bulk'tan sonra "hangi kalemler
+// yazılmış" bu tool ile görülür. Eşleme adapter'dadır (mock/live aynı kayıt
+// şeklini üretir); burada yalnızca toplam hesaplanır.
+// ═════════════════════════════════════════════════════════════════════════════
+
+export async function runListTimeEntries(
+  ctx: ToolContext,
+  args: ListTimeEntriesInput,
+  signal?: AbortSignal,
+): Promise<TimeEntryPage> {
+  const page = await ctx.xurrent.listTimeEntries(
+    {
+      personId: args.personId ?? "$me",
+      ...(args.dateFrom ? { dateFrom: args.dateFrom } : {}),
+      ...(args.dateTo ? { dateTo: args.dateTo } : {}),
+      ...(args.sourceId ? { sourceId: args.sourceId } : {}),
+      first: args.first ?? 25,
+    },
+    signal,
+  );
+  return {
+    accountId: page.accountId,
+    timeEntries: page.timeEntries,
+    // Correction kayıtları İŞARETLİ (negatif) girer — toplam bunu yansıtır.
+    totalMinutes: page.timeEntries.reduce((acc, e) => acc + e.timeSpent, 0),
+  };
+}
+
+export function renderListTimeEntries(r: TimeEntryPage): string {
+  const lines: string[] = [];
+  lines.push(`Hesap: ${r.accountId}`);
+  lines.push(`${r.timeEntries.length} zaman girişi — toplam ${humanMinutes(r.totalMinutes)} (${r.totalMinutes} dk)`);
+  lines.push("");
+  for (const e of r.timeEntries) {
+    const time = e.startedAt ? ` ${e.startedAt.slice(11, 16)}` : "";
+    const bag = e.assignment
+      ? `→ ${e.assignment.type ?? "?"} #${e.assignment.displayId ?? e.assignment.id ?? "?"}`
+      : "→ bağsız (assignment=null — Yol A kaydı)";
+    lines.push(
+      `  • ${e.date}${time}  ${e.timeSpent} dk${e.correction ? " [DÜZELTME]" : ""}  ${bag}`,
+      `    ${e.description ?? "(açıklamasız)"}${e.sourceID ? `  ·  sourceID: ${e.sourceID}` : ""}`,
+      `    id: ${e.id}`,
+    );
+  }
+  if (r.timeEntries.length === 0) {
+    lines.push("  (kayıt yok)");
+  }
+  lines.push(
+    "",
+    "Not: Bu tool geri-okuma doğrulamasının resmî gözüdür — 'gerçekten yazıldı mı, kaç kez yazıldı?'",
+    "sorusu yazma raporuna değil, bu listeye bakılarak cevaplanır (contract/reliability.md §5).",
+  );
+  return lines.join("\n");
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
 // TOOL_SPECS — sözleşmenin kod içindeki karşılığı
 //
 // SIRA contract/tools.json SIRASIDIR ve deterministiktir. İki adaptör de bu
@@ -1173,6 +1309,36 @@ export const TOOL_SPECS: readonly ToolSpec[] = [
     annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
     write: false,
   },
+  {
+    name: "xurrent_list_time_entries",
+    title: "Xurrent: zaman girişlerini oku (geri-okuma)",
+    description:
+      "Yazılmış zaman girişlerini okur — geri-okuma doğrulaması ve dedup'ın resmî gözü: " +
+      "'gerçekten yazıldı mı, kaç kez yazıldı?' sorusunun cevabı. " +
+      "sourceId filtresi idempotency anahtarıyla nokta arama yapar; kısmen başarısız bir bulk'tan sonra " +
+      "hangi kalemlerin yazıldığı bu tool ile görülür. Süreler DAKİKA cinsindendir.",
+    inputSchema: S.listTimeEntriesInput,
+    outputSchema: S.listTimeEntriesOutput,
+    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
+    write: false,
+  },
+  {
+    name: "timesheet_wizard",
+    title: "Sihirbaz: LLM'siz zaman girişi sohbeti",
+    description:
+      "Sunucu-güdümlü sohbet: LLM'siz host'ta bile (Copilot Studio, terminal REPL) zaman girişi akışını " +
+      "uçtan uca yürüten deterministik durum makinesi. Host yalnız kullanıcı cümlesini iletir, dönen soruyu gösterir; " +
+      "durum imzalı sessionState'te taşınır ve her çağrıda AYNEN geri gönderilir. Tam sözleşme: contract/wizard.md.",
+    inputSchema: S.wizardInput,
+    outputSchema: S.wizardOutput,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
+    write: true,
+  },
 ] as const;
 
 /** Sözleşme testleri, sihirbaz ve web arayüzü için: tool adlarının kanonik listesi. */
@@ -1268,6 +1434,36 @@ export async function runToolCore(
     case "plan_time_entries_from_calendar": {
       const r = await runPlanFromCalendar(ctx, args as PlanArgs, signal);
       return okOutcome(renderPlan(r), r);
+    }
+
+    case "xurrent_list_time_entries": {
+      const r = await runListTimeEntries(ctx, args as ListTimeEntriesInput, signal);
+      return okOutcome(renderListTimeEntries(r), r);
+    }
+
+    case "timesheet_wizard": {
+      // Dinamik import: wizard çekirdeği BU modülün fonksiyonlarını kullanır
+      // (prepareTimeEntry, finishTimeEntry, prepareBulk...). Statik import
+      // döngü kurardı; dispatch noktasında tembel yükleme döngüyü kırar.
+      //
+      // ONAY NOTU: sihirbazın kendi confirm adımı onayın KENDİSİDİR — çekirdek
+      // hiçbir zaman { kind: "confirm" } dönmez, protokol katmanı ikinci bir
+      // elicitation başlatmaz (contract/wizard.md §1). plannedFingerprint,
+      // onaylanandan farklı bir planın yazılmasını ayrıca engeller.
+      const { runWizard } = await import("./wizard.js");
+      const r = await runWizard(
+        ctx,
+        {
+          ...(typeof args["utterance"] === "string" ? { utterance: args["utterance"] as string } : {}),
+          ...(typeof args["sessionState"] === "string" ? { sessionState: args["sessionState"] as string } : {}),
+        },
+        signal,
+      );
+      // errorSemantics: errors[] boş değilse işlem BAŞARISIZ → isError=true.
+      const structured = r as unknown as Record<string, unknown>;
+      return r.errors.length > 0
+        ? errOutcome(r.reply, structured)
+        : okOutcome(r.reply, structured);
     }
 
     default:

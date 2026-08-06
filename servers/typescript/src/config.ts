@@ -121,6 +121,18 @@ const EnvSchema = z.object({
   XURRENT_ACCOUNT: withDefault(""),
   XURRENT_GRAPHQL_URL: withDefault("https://graphql.xurrent.com"),
 
+  // ── API transport seçimi (bkz. docs/16 + .env.example §1) ─────────────────
+  // graphql (varsayılan) → tek istekte zengin sorgu, hatalar 200+payload.errors.
+  // rest → developer.xurrent.com/v1: snake_case alanlar, 422 hata modeli,
+  //        whoami/context N ayrı istek. İkisi de AYNI tool sözleşmesini servis
+  //        eder — transport bir adaptör detayıdır. Tanınmayan değer sessizce
+  //        graphql'e düşer; validateSemantics uyarı basar.
+  XURRENT_API: z
+    .string()
+    .optional()
+    .transform((v) => (v === "rest" ? "rest" : "graphql") as XurrentApi),
+  XURRENT_REST_URL: withDefault("https://api.xurrent.com/v1"),
+
   XURRENT_DRY_RUN: boolish(false),
   // ÜÇ değer vardır ve üçü de üç dilde AYNI anlama gelir (bkz. types.ts → ConfirmPolicy):
   //   closed (varsayılan) · open (CI) · strict (mock modda da onay ZORUNLU).
@@ -141,6 +153,13 @@ const EnvSchema = z.object({
       v === "link_first" || v === "date_first" ? (v as BackdateStrategy) : ("two_step" as BackdateStrategy),
     ),
   XURRENT_MAX_BACKDATE_DAYS: intish(1),
+
+  // ── Güvenilirlik düğmeleri (contract/reliability.md §7) ───────────────────
+  // Varsayılanlar sözleşmede SABİTTİR; burada değiştirmek üç dili ayrıştırır.
+  XURRENT_RETRY_MAX_ATTEMPTS: intish(5), // toplam deneme (ilk istek dahil); 1 = retry KAPALI
+  XURRENT_RETRY_BASE_MS: intish(500), // backoff tabanı
+  XURRENT_RETRY_CAP_MS: intish(8000), // tek beklemenin tavanı
+  XURRENT_MIN_REQUEST_GAP_MS: intish(110), // adaptör gazı: istekler arası minimum boşluk
 
   CALENDAR_PROVIDER: z
     .string()
@@ -185,6 +204,12 @@ const EnvSchema = z.object({
   WEB_PORT: intish(8787),
   MCP_HTTP_PORT: intish(8788),
 
+  // ── HTTP yüzeyi kapısı (.env.example §8) ──────────────────────────────────
+  // BOŞSA sunucu yalnız loopback'e bağlanır (varsayılan güvenlik duruşu).
+  // DOLUYSA 0.0.0.0'a bağlanır ve her /mcp* isteği X-MCP-Api-Key başlığında
+  // bu değeri taşımak ZORUNDADIR (sabit-zamanlı karşılaştırma, aksi hâlde 401).
+  MCP_API_KEY: withDefault(""),
+
   XURRENT_FIXTURES_DIR: withDefault(""),
   XURRENT_MOCK_PERSIST: boolish(false),
 
@@ -202,7 +227,17 @@ const EnvSchema = z.object({
   // başlatınca eski state'ler geçersiz olur. Bu İSTENEN davranıştır (bkz. README).
   XURRENT_STATE_SECRET: withDefault(""),
   XURRENT_STATE_TTL: intish(300),
+  // timesheet_wizard oturum TTL'i (contract/wizard.md §4): çok adımlı sohbet,
+  // requestState'in 300 saniyesinden bilinçli olarak UZUN tutulur.
+  XURRENT_WIZARD_TTL: intish(1800),
 });
+
+/**
+ * Canlı modda hangi Xurrent API yüzeyinin konuşulacağı.
+ * types.ts'e DEĞİL buraya konuldu: sözleşmenin (contract/tools.json) bir alanı
+ * değildir, saf bir yapılandırma detayıdır — tıpkı graphqlUrl gibi.
+ */
+export type XurrentApi = "graphql" | "rest";
 
 export interface AppConfig {
   repoRoot: string;
@@ -212,6 +247,10 @@ export interface AppConfig {
   token: string;
   account: string;
   graphqlUrl: string;
+  /** live modda transport seçimi: graphql (varsayılan) | rest. Mock modda etkisiz. */
+  api: XurrentApi;
+  /** REST v1 taban adresi (sonda eğik çizgi TAŞIMAZ). Sahte sunucu: http://127.0.0.1:<port>/v1 */
+  restUrl: string;
 
   /** XURRENT_DRY_RUN=1 → HİÇBİR mutation HTTP'ye çıkmaz (tool parametresinden bağımsız). */
   forceDryRun: boolean;
@@ -221,6 +260,15 @@ export interface AppConfig {
 
   backdateStrategy: BackdateStrategy;
   maxBackdateDays: number;
+
+  /** Toplam deneme sayısı (ilk istek DAHİL). 1 = retry kapalı. Bkz. contract/reliability.md §3. */
+  retryMaxAttempts: number;
+  /** Üstel geri çekilme tabanı (ms). wait_k = rastgele(0, min(CAP, BASE·2^(k-1))). */
+  retryBaseMs: number;
+  /** Tek beklemenin tavanı (ms). */
+  retryCapMs: number;
+  /** Adaptör gazı: her HTTP isteği (retry tekrarları DAHİL) arasındaki minimum boşluk (ms). */
+  minRequestGapMs: number;
 
   calendarProvider: CalendarProviderOption;
   icsPath: string;
@@ -247,6 +295,12 @@ export interface AppConfig {
   geminiBaseUrl: string;
   webPort: number;
   mcpHttpPort: number;
+  /**
+   * HTTP transport kapısı (.env.example §8). Boş → yalnız loopback.
+   * Dolu → 0.0.0.0 + her /mcp* isteğinde X-MCP-Api-Key zorunlu.
+   * Xurrent PAT'i ile KARIŞTIRILMAZ: bu anahtar MCP sunucusunun kendisini korur.
+   */
+  mcpApiKey: string;
 
   mockPersist: boolean;
 
@@ -256,6 +310,8 @@ export interface AppConfig {
   stateSecret: string;
   /** requestState geçerlilik süresi (saniye). */
   stateTtlSeconds: number;
+  /** timesheet_wizard sessionState geçerlilik süresi (saniye, varsayılan 1800). */
+  wizardTtlSeconds: number;
 }
 
 let cached: AppConfig | null = null;
@@ -285,6 +341,10 @@ export function loadConfig(force = false): AppConfig {
     token: parsed.XURRENT_TOKEN,
     account: parsed.XURRENT_ACCOUNT,
     graphqlUrl: parsed.XURRENT_GRAPHQL_URL.replace(/\/+$/, "") + "/",
+    api: parsed.XURRENT_API,
+    // Sondaki eğik çizgi ATILIR: adaptör path'leri `${restUrl}/time_entries`
+    // biçiminde ekler; çift çizgi bazı proxy'lerde 404 üretir.
+    restUrl: parsed.XURRENT_REST_URL.replace(/\/+$/, ""),
 
     forceDryRun: parsed.XURRENT_DRY_RUN,
     confirmPolicy: parsed.XURRENT_CONFIRM_POLICY,
@@ -292,6 +352,13 @@ export function loadConfig(force = false): AppConfig {
 
     backdateStrategy: parsed.XURRENT_BACKDATE_STRATEGY,
     maxBackdateDays: parsed.XURRENT_MAX_BACKDATE_DAYS,
+
+    // 1'in altı anlamsızdır (0 deneme = hiç istek yok) → sessizce 1'e ÇEKİLMEZ,
+    // clamp edilir ve validateSemantics uyarı basar.
+    retryMaxAttempts: Math.max(1, parsed.XURRENT_RETRY_MAX_ATTEMPTS),
+    retryBaseMs: Math.max(0, parsed.XURRENT_RETRY_BASE_MS),
+    retryCapMs: Math.max(0, parsed.XURRENT_RETRY_CAP_MS),
+    minRequestGapMs: Math.max(0, parsed.XURRENT_MIN_REQUEST_GAP_MS),
 
     calendarProvider: parsed.CALENDAR_PROVIDER,
     icsPath,
@@ -322,12 +389,14 @@ export function loadConfig(force = false): AppConfig {
     geminiBaseUrl: parsed.GEMINI_BASE_URL.replace(/\/+$/, ""),
     webPort: parsed.WEB_PORT,
     mcpHttpPort: parsed.MCP_HTTP_PORT,
+    mcpApiKey: parsed.MCP_API_KEY,
 
     mockPersist: parsed.XURRENT_MOCK_PERSIST,
 
     mcpProtocol: parsed.MCP_PROTOCOL,
     stateSecret: parsed.XURRENT_STATE_SECRET,
     stateTtlSeconds: parsed.XURRENT_STATE_TTL,
+    wizardTtlSeconds: parsed.XURRENT_WIZARD_TTL,
   };
 
   validateSemantics(cached, env);
@@ -359,6 +428,22 @@ function validateSemantics(cfg: AppConfig, env: Record<string, string | undefine
     );
   }
 
+  // Tanınmayan XURRENT_API değeri sessizce graphql'e düştü — SÖYLE. Öğrenci
+  // "rest'e geçtim ama tek istek görüyorum" şaşkınlığını yaşamamalı.
+  const rawApi = env["XURRENT_API"];
+  if (rawApi && !["graphql", "rest"].includes(rawApi)) {
+    problems.push(
+      `XURRENT_API="${rawApi}" tanınmıyor. Geçerli değerler: graphql (varsayılan), rest. Varsayılana düşüldü.`,
+    );
+  }
+  if (cfg.api === "rest" && cfg.mode === "live") {
+    try {
+      new URL(cfg.restUrl);
+    } catch {
+      problems.push(`XURRENT_REST_URL geçerli bir URL değil: ${cfg.restUrl}`);
+    }
+  }
+
   try {
     new Intl.DateTimeFormat("en-US", { timeZone: cfg.timeZone });
   } catch {
@@ -366,6 +451,21 @@ function validateSemantics(cfg: AppConfig, env: Record<string, string | undefine
   }
 
   if (cfg.maxBackdateDays < 0) problems.push("XURRENT_MAX_BACKDATE_DAYS negatif olamaz.");
+
+  // Retry düğmeleri: geçersiz değer sessizce düzeltildi — SÖYLE.
+  // Dikkat: Number("") === 0'dır — boş/tanımsız değişken "0 verildi" sanılmamalı.
+  const rawAttemptsStr = env["XURRENT_RETRY_MAX_ATTEMPTS"];
+  const rawAttempts = rawAttemptsStr ? Number(rawAttemptsStr) : NaN;
+  if (Number.isFinite(rawAttempts) && rawAttempts < 1) {
+    problems.push(
+      `XURRENT_RETRY_MAX_ATTEMPTS=${rawAttempts} geçersiz (en az 1 olmalı — 1 retry'ı kapatır). 1'e çekildi.`,
+    );
+  }
+  if (cfg.retryCapMs < cfg.retryBaseMs) {
+    problems.push(
+      `XURRENT_RETRY_CAP_MS (${cfg.retryCapMs}) < XURRENT_RETRY_BASE_MS (${cfg.retryBaseMs}) — tavan tabandan küçük; beklemeler hep tavana kırpılacak.`,
+    );
+  }
 
   // Tanınmayan MCP_PROTOCOL değeri sessizce varsayılana düştü — SÖYLE.
   const rawProtocol = env["MCP_PROTOCOL"];
@@ -390,6 +490,7 @@ function validateSemantics(cfg: AppConfig, env: Record<string, string | undefine
     );
   }
   if (cfg.stateTtlSeconds <= 0) problems.push("XURRENT_STATE_TTL pozitif olmalıdır (saniye).");
+  if (cfg.wizardTtlSeconds <= 0) problems.push("XURRENT_WIZARD_TTL pozitif olmalıdır (saniye).");
 
   // GEMINI_BASE_URL bozuksa hata chatbot'un ilk isteğinde "fetch failed" olarak
   // çıkar ve sebebi görünmez. Açılışta söylenmesi daha ucuz.

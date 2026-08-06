@@ -46,6 +46,7 @@ import { runBulk } from "../tools/create-time-entries-bulk.js";
 import { runCreateTimeEntry } from "../tools/create-time-entry.js";
 import { runFindPerson } from "../tools/find-person.js";
 import { runListOpenWork } from "../tools/list-open-work.js";
+import { runListTimeEntries } from "../tools/list-time-entries.js";
 import { runPlanFromCalendar } from "../tools/plan-from-calendar.js";
 import { runTimeTrackingContext } from "../tools/time-tracking-context.js";
 import { runWhoami } from "../tools/whoami.js";
@@ -55,6 +56,7 @@ import {
   createTimeEntryInput,
   findPersonInput,
   listOpenWorkInput,
+  listTimeEntriesInput,
   planInput,
   timeTrackingContextInput,
   whoamiInput,
@@ -149,6 +151,8 @@ export function summarizeToolResult(name: string, result: unknown): string | nul
         return `${r.proposals?.length ?? 0} öneri · ${r.totals?.proposedMinutes ?? 0} dk · ${
           r.proposals?.filter((p: any) => p.needsUserDecision).length ?? 0
         } tanesi kullanıcı kararı bekliyor`;
+      case "xurrent_list_time_entries":
+        return `${r.timeEntries?.length ?? 0} kayıt · toplam ${r.totalMinutes ?? 0} dk`;
       default:
         return null;
     }
@@ -281,6 +285,18 @@ function toolSpecs(): ToolSpec[] {
       planInput,
       (ctx, a) => runPlanFromCalendar(ctx, a),
     ),
+    mk(
+      "xurrent_list_time_entries",
+      "Yazılmış zaman girişlerini okur — geri-okuma ve dedup doğrulamasının resmî gözü.",
+      listTimeEntriesInput,
+      (ctx, a) => runListTimeEntries(ctx, a),
+    ),
+    // ★ timesheet_wizard BİLEREK LİSTEDE YOK (contract/wizard.md §1):
+    //   sihirbaz Gemini functionDeclarations'a ÇEVRİLMEZ. Chatbot'un kendisi
+    //   zaten diyalogu yürütüyor; sihirbazı da tool olarak verirsek model
+    //   "sohbet eden tool"u çağırıp kendi kendine konuşan bir döngü kurabilir.
+    //   Bu dışlama wire-denetimi (tools/fake-gemini/wire-denetimi.mjs) ve
+    //   llm/schema.test.mjs ile ölçülür — sessiz bir tercih değildir.
   ];
 
   if (!reportPrinted) {
@@ -293,7 +309,10 @@ function toolSpecs(): ToolSpec[] {
   return cachedSpecs;
 }
 
-/** Sözleşmedeki 8 tool'u, verilen bağlama bağlanmış hâlde döner. */
+/**
+ * Sözleşmedeki tool'ları, verilen bağlama bağlanmış hâlde döner.
+ * 10 tool'un 9'u çevrilir — timesheet_wizard BİLEREK dışarıdadır (üstteki not).
+ */
 export function buildTools(ctx: ToolContext): AgentTool[] {
   return toolSpecs().map((spec) => ({
     name: spec.name,
