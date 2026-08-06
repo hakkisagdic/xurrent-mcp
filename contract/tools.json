@@ -277,7 +277,7 @@
               "required": ["index", "status"],
               "properties": {
                 "index": { "type": "integer" },
-                "status": { "enum": ["created", "failed", "skipped"] },
+                "status": { "enum": ["created", "failed", "skipped", "deduped"] },
                 "timeEntryId": { "type": ["string", "null"] },
                 "errors": { "type": "array", "items": { "$ref": "#/$defs/ValidationError" } }
               }
@@ -291,6 +291,7 @@
               "created": { "type": "integer" },
               "failed": { "type": "integer" },
               "skipped": { "type": "integer" },
+              "deduped": { "type": "integer", "description": "sourceID geri-okumasıyla 'zaten yazılmış' bulunup atlanan kalem sayısı (bkz. contract/reliability.md §5)" },
               "totalMinutes": { "type": "integer" }
             }
           }
@@ -408,10 +409,144 @@
           }
         }
       }
+    },
+
+    {
+      "name": "xurrent_list_time_entries",
+      "kind": "read",
+      "summary": "Yazılmış zaman girişlerini okur — geri-okuma doğrulaması ve dedup'ın resmî gözü: 'gerçekten yazıldı mı, kaç kez yazıldı?' sorusunun cevabı.",
+      "annotations": { "readOnlyHint": true, "idempotentHint": true, "openWorldHint": true },
+      "teachingNotes": [
+        "Kesin mesajlaşmanın ikinci yarısı budur: yazma raporuna güvenmek yerine kayıt GERİ OKUNUR (bkz. contract/reliability.md §5).",
+        "sourceId filtresi idempotency anahtarıyla arama yapar — kısmen başarısız bir bulk'tan sonra 'hangi kalemler yazılmış' bu tool ile görülür.",
+        "Gerçek TimeEntryFilter'da sourceID filtresinin varlığı DOĞRULANMALI'dır (D14); yoksa kişi+tarih sorgusu + istemci tarafı eşleşmeye düşülür."
+      ],
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "personId": { "type": "string", "default": "$me", "description": "Kişi (opak id ya da $me)" },
+          "dateFrom": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "description": "Bu tarihten itibaren (dahil)" },
+          "dateTo": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "description": "Bu tarihe kadar (dahil)" },
+          "sourceId": { "type": "string", "description": "İdempotency anahtarıyla nokta arama (dedup geri-okuması)" },
+          "first": { "type": "integer", "minimum": 1, "maximum": 100, "default": 25 }
+        }
+      },
+      "output": { "$ref": "#/$defs/TimeEntryPage" }
+    },
+
+    {
+      "name": "timesheet_wizard",
+      "kind": "chat",
+      "summary": "Sunucu-güdümlü sohbet: LLM'siz host'ta bile (Copilot Studio, terminal REPL) zaman girişi akışını uçtan uca yürüten deterministik durum makinesi. Tam sözleşme: contract/wizard.md.",
+      "annotations": { "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": true },
+      "teachingNotes": [
+        "Chatbot olmak için LLM gerekmez: durum makinesi + imzalı sessionState yeter. Host yalnız kullanıcı cümlesini iletir, dönen soruyu gösterir.",
+        "sessionState HMAC'lidir ve payload byte'ları üzerinde imzalanır — kanonikleştirme gerekmediği için TS'te başlayan sohbet Python'da SÜRDÜRÜLEBİLİR (senaryo h bunu kanıtlar).",
+        "Bu tool LLM sağlayıcılarına ÇEVRİLMEZ (Gemini functionDeclarations listesine girmez) — chatbot'un kendi kendini çağırma döngüsü wire-denetimi ile kapatılmıştır.",
+        "Onay yine protokol seviyesindedir: write adımı confirm cevabı ya da MRTR/elicitation olmadan çalışmaz; plannedFingerprint onaylanandan farklı bir planın yazılmasını engeller."
+      ],
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "utterance": { "type": "string", "description": "Kullanıcının son cümlesi (ilk çağrıda boş olabilir)" },
+          "sessionState": { "type": "string", "description": "Önceki yanıttan AYNEN geri gönderilen imzalı opak durum" }
+        }
+      },
+      "output": { "$ref": "#/$defs/WizardResult" }
     }
   ],
 
   "$defs": {
+    "TimeEntryRecord": {
+      "type": "object",
+      "required": ["id", "date", "timeSpent"],
+      "properties": {
+        "id": { "type": "string" },
+        "date": { "type": "string" },
+        "startedAt": { "type": ["string", "null"] },
+        "timeSpent": { "type": "integer", "description": "DAKİKA — sözleşmenin tek süre birimi" },
+        "description": { "type": ["string", "null"] },
+        "correction": { "type": ["boolean", "null"] },
+        "source": { "type": ["string", "null"] },
+        "sourceID": { "type": ["string", "null"], "description": "İdempotency anahtarı (xmcp-…) — dedup bu alanla çalışır" },
+        "person": {
+          "type": ["object", "null"],
+          "properties": {
+            "id": { "type": "string" },
+            "name": { "type": ["string", "null"] }
+          }
+        },
+        "assignment": {
+          "type": ["object", "null"],
+          "description": "Bağlı ticket — Yol A kayıtlarında null (dersin kalbi, bkz. docs/02)",
+          "properties": {
+            "type": { "type": ["string", "null"] },
+            "id": { "type": ["string", "null"] },
+            "displayId": { "type": ["string", "null"] }
+          }
+        },
+        "effortClass": {
+          "type": ["object", "null"],
+          "properties": {
+            "id": { "type": "string" },
+            "name": { "type": ["string", "null"] }
+          }
+        }
+      }
+    },
+
+    "TimeEntryPage": {
+      "type": "object",
+      "required": ["accountId", "timeEntries"],
+      "properties": {
+        "accountId": { "type": "string" },
+        "timeEntries": { "type": "array", "items": { "$ref": "#/$defs/TimeEntryRecord" } },
+        "totalMinutes": { "type": "integer", "description": "Dönen kayıtların toplam dakikası (correction'lar işaretli dahil)" }
+      }
+    },
+
+    "WizardResult": {
+      "type": "object",
+      "required": ["step", "reply", "done", "errors"],
+      "properties": {
+        "step": {
+          "enum": ["start", "pick_work", "duration", "detail", "strategy", "confirm", "write", "calendar_plan", "calendar_confirm", "done"],
+          "description": "Durum makinesinin bu yanıt sonrası adımı (bkz. contract/wizard.md §2)"
+        },
+        "reply": { "type": "string", "description": "Kullanıcıya gösterilecek Türkçe metin" },
+        "nextQuestion": {
+          "type": ["object", "null"],
+          "required": ["prompt"],
+          "properties": {
+            "prompt": { "type": "string" },
+            "choices": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["id", "label"],
+                "properties": {
+                  "id": { "type": "string" },
+                  "label": { "type": "string" },
+                  "detail": { "type": ["string", "null"], "description": "Seçeneğin bedeli/gerekçesi (ör. backdateStrategies.costs)" }
+                }
+              }
+            },
+            "expectsFreeText": { "type": "boolean" }
+          },
+          "description": "İnce host'un tek yapması gereken: prompt'u göster, cevabı utterance olarak geri gönder"
+        },
+        "sessionState": { "type": ["string", "null"], "description": "YENİ imzalı durum — host bir sonraki çağrıda AYNEN geri gönderir; done=true iken null" },
+        "done": { "type": "boolean" },
+        "writeResult": {
+          "anyOf": [{ "$ref": "#/$defs/WriteResult" }, { "type": "null" }],
+          "description": "write adımı gerçekleştiyse yazma sonucu"
+        },
+        "errors": { "type": "array", "items": { "$ref": "#/$defs/ValidationError" } }
+      }
+    },
+
     "Person": {
       "type": "object",
       "required": ["id", "name"],
@@ -510,6 +645,7 @@
         "planned": { "type": "array", "items": { "$ref": "#/$defs/PlannedMutation" }, "description": "two_step'te 2 eleman, diğerlerinde 1" },
         "warnings": { "type": "array", "items": { "type": "string" } },
         "timeEntry": { "type": ["object", "null"] },
+        "deduped": { "type": "boolean", "description": "true ise yazma atlandı: aynı sourceID'li kayıt zaten vardı, timeEntry mevcut kaydı gösterir (bkz. contract/reliability.md §5)" },
         "errors": { "type": "array", "items": { "$ref": "#/$defs/ValidationError" } }
       }
     },
