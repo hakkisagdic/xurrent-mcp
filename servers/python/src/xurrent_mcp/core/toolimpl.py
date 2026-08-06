@@ -272,6 +272,18 @@ def _summary_line(name: str, payload: dict[str, Any]) -> str:
                 f"{undecided} tanesi kullanıcı kararı bekliyor. "
                 f"Önerilen toplam {totals.get('proposedMinutes')} dakika."
             )
+
+        if name == "xurrent_list_time_entries":
+            entries = payload.get("timeEntries") or []
+            return (
+                f"{len(entries)} zaman girişi okundu — toplam "
+                f"{payload.get('totalMinutes')} dakika. Bu geri-okuma, yazma "
+                f"raporuna güvenmek yerine kaydın KENDİSİNE bakar (dedup'ın gözü)."
+            )
+
+        if name == "timesheet_wizard":
+            durum = "bitti" if payload.get("done") else "sürüyor"
+            return f"Sihirbaz adımı: {payload.get('step')} — akış {durum}."
     except Exception:  # noqa: BLE001
         # Ozet metni bir KOLAYLIKTIR; uretilemezse tool cagrisi yine de basarilidir.
         pass

@@ -62,9 +62,14 @@ TZ = "Europe/Istanbul"
 _TODAY_IN_KULLANANLAR = (
     "xurrent_mcp.xurrent.validate",
     "xurrent_mcp.xurrent.strategies",
+    "xurrent_mcp.xurrent.mock",
+    # REST adaptoru two_step 2. adiminda "bugun"un kayitlarini sorgular
+    # (find_latest_time_entry_id) — tarih testte sabitlenmek zorundadir.
+    "xurrent_mcp.xurrent.rest",
     "xurrent_mcp.calendar",
     "xurrent_mcp.tools.calendar_tools",
     "xurrent_mcp.tools.write_tools",
+    "xurrent_mcp.core.wizard",
 )
 
 

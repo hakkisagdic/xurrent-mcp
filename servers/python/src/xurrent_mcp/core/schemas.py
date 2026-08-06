@@ -1,4 +1,4 @@
-"""8 tool'un outputSchema'lari — contract/tools.json'daki "output" alanlarindan
+"""10 tool'un outputSchema'lari — contract/tools.json'daki "output" alanlarindan
 BIREBIR turetilmistir.
 
 NEDEN ELLE YAZILIYOR: dusuk seviye `Server` kullaniyoruz; MCPServer (eski FastMCP)
@@ -151,6 +151,77 @@ VALIDATION_ERROR_DEF: dict[str, Any] = {
     },
 }
 
+TIME_ENTRY_RECORD_DEF: dict[str, Any] = {
+    "type": "object",
+    "required": ["id", "date", "timeSpent"],
+    "properties": {
+        "id": {"type": "string"},
+        "date": {"type": "string"},
+        "startedAt": {"type": ["string", "null"]},
+        "timeSpent": {"type": "integer", "description": "DAKIKA — sozlesmenin tek sure birimi"},
+        "description": {"type": ["string", "null"]},
+        "correction": {"type": ["boolean", "null"]},
+        "source": {"type": ["string", "null"]},
+        "sourceID": {
+            "type": ["string", "null"],
+            "description": "Idempotency anahtari (xmcp-…) — dedup bu alanla calisir",
+        },
+        "person": {
+            "type": ["object", "null"],
+            "properties": {
+                "id": {"type": "string"},
+                "name": {"type": ["string", "null"]},
+            },
+        },
+        "assignment": {
+            "type": ["object", "null"],
+            "description": "Bagli ticket — Yol A kayitlarinda null (dersin kalbi, bkz. docs/02)",
+            "properties": {
+                "type": {"type": ["string", "null"]},
+                "id": {"type": ["string", "null"]},
+                "displayId": {"type": ["string", "null"]},
+            },
+        },
+        "effortClass": {
+            "type": ["object", "null"],
+            "properties": {
+                "id": {"type": "string"},
+                "name": {"type": ["string", "null"]},
+            },
+        },
+    },
+}
+
+# WriteResult govdesi — hem xurrent_create_time_entry ciktisinin koku hem de
+# timesheet_wizard'in $defs'inde kullanilir. Tek kaynaktan beslenmek zorunda.
+WRITE_RESULT_DEF: dict[str, Any] = {
+    "type": "object",
+    "required": ["dryRun", "strategy", "planned", "warnings", "errors"],
+    "properties": {
+        "dryRun": {"type": "boolean"},
+        "strategy": {"enum": ["two_step", "link_first", "date_first"]},
+        "strategyExplanation": {
+            "type": "string",
+            "description": "Secilen stratejinin Turkce gerekcesi ve neyi feda ettigi",
+        },
+        "planned": {
+            "type": "array",
+            "items": {"$ref": "#/$defs/PlannedMutation"},
+            "description": "two_step'te 2 eleman, digerlerinde 1",
+        },
+        "warnings": {"type": "array", "items": {"type": "string"}},
+        "timeEntry": {"type": ["object", "null"]},
+        "deduped": {
+            "type": "boolean",
+            "description": (
+                "true ise yazma atlandi: ayni sourceID'li kayit zaten vardi, "
+                "timeEntry mevcut kaydi gosterir (bkz. contract/reliability.md §5)"
+            ),
+        },
+        "errors": {"type": "array", "items": {"$ref": "#/$defs/ValidationError"}},
+    },
+}
+
 
 # ------------------------------------------------------------------ semalar
 
@@ -276,24 +347,7 @@ TIME_TRACKING_CONTEXT_OUTPUT: dict[str, Any] = {
 # KOKU 2025-11-25'e kadar `type: "object"` olmak ZORUNDA — bu yuzden WriteResult
 # burada koke ACILARAK yaziliyor (ref degil, govde).
 CREATE_TIME_ENTRY_OUTPUT: dict[str, Any] = {
-    "type": "object",
-    "required": ["dryRun", "strategy", "planned", "warnings", "errors"],
-    "properties": {
-        "dryRun": {"type": "boolean"},
-        "strategy": {"enum": ["two_step", "link_first", "date_first"]},
-        "strategyExplanation": {
-            "type": "string",
-            "description": "Secilen stratejinin Turkce gerekcesi ve neyi feda ettigi",
-        },
-        "planned": {
-            "type": "array",
-            "items": {"$ref": "#/$defs/PlannedMutation"},
-            "description": "two_step'te 2 eleman, digerlerinde 1",
-        },
-        "warnings": {"type": "array", "items": {"type": "string"}},
-        "timeEntry": {"type": ["object", "null"]},
-        "errors": {"type": "array", "items": {"$ref": "#/$defs/ValidationError"}},
-    },
+    **WRITE_RESULT_DEF,
     "$defs": {
         "PlannedMutation": PLANNED_MUTATION_DEF,
         "ValidationError": VALIDATION_ERROR_DEF,
@@ -313,7 +367,7 @@ CREATE_TIME_ENTRIES_BULK_OUTPUT: dict[str, Any] = {
                 "required": ["index", "status"],
                 "properties": {
                     "index": {"type": "integer"},
-                    "status": {"enum": ["created", "failed", "skipped"]},
+                    "status": {"enum": ["created", "failed", "skipped", "deduped"]},
                     "timeEntryId": {"type": ["string", "null"]},
                     "errors": {"type": "array", "items": {"$ref": "#/$defs/ValidationError"}},
                 },
@@ -327,6 +381,13 @@ CREATE_TIME_ENTRIES_BULK_OUTPUT: dict[str, Any] = {
                 "created": {"type": "integer"},
                 "failed": {"type": "integer"},
                 "skipped": {"type": "integer"},
+                "deduped": {
+                    "type": "integer",
+                    "description": (
+                        "sourceID geri-okumasiyla 'zaten yazilmis' bulunup atlanan "
+                        "kalem sayisi (bkz. contract/reliability.md §5)"
+                    ),
+                },
                 "totalMinutes": {"type": "integer"},
             },
         },
@@ -414,6 +475,93 @@ PLAN_FROM_CALENDAR_OUTPUT: dict[str, Any] = {
 }
 
 
+# Sozlesmedeki cikti {"$ref": "#/$defs/TimeEntryPage"} — koke acilarak yazildi.
+LIST_TIME_ENTRIES_OUTPUT: dict[str, Any] = {
+    "type": "object",
+    "required": ["accountId", "timeEntries"],
+    "properties": {
+        "accountId": {"type": "string"},
+        "timeEntries": {"type": "array", "items": {"$ref": "#/$defs/TimeEntryRecord"}},
+        "totalMinutes": {
+            "type": "integer",
+            "description": "Donen kayitlarin toplam dakikasi (correction'lar isaretli dahil)",
+        },
+    },
+    "$defs": {"TimeEntryRecord": TIME_ENTRY_RECORD_DEF},
+}
+
+# Sozlesmedeki cikti {"$ref": "#/$defs/WizardResult"} — koke acilarak yazildi.
+WIZARD_OUTPUT: dict[str, Any] = {
+    "type": "object",
+    "required": ["step", "reply", "done", "errors"],
+    "properties": {
+        "step": {
+            "enum": [
+                "start",
+                "pick_work",
+                "duration",
+                "detail",
+                "strategy",
+                "confirm",
+                "write",
+                "calendar_plan",
+                "calendar_confirm",
+                "done",
+            ],
+            "description": "Durum makinesinin bu yanit sonrasi adimi (bkz. contract/wizard.md §2)",
+        },
+        "reply": {"type": "string", "description": "Kullaniciya gosterilecek Turkce metin"},
+        "nextQuestion": {
+            "type": ["object", "null"],
+            "required": ["prompt"],
+            "properties": {
+                "prompt": {"type": "string"},
+                "choices": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["id", "label"],
+                        "properties": {
+                            "id": {"type": "string"},
+                            "label": {"type": "string"},
+                            "detail": {
+                                "type": ["string", "null"],
+                                "description": (
+                                    "Secenegin bedeli/gerekcesi (or. backdateStrategies.costs)"
+                                ),
+                            },
+                        },
+                    },
+                },
+                "expectsFreeText": {"type": "boolean"},
+            },
+            "description": (
+                "Ince host'un tek yapmasi gereken: prompt'u goster, cevabi "
+                "utterance olarak geri gonder"
+            ),
+        },
+        "sessionState": {
+            "type": ["string", "null"],
+            "description": (
+                "YENI imzali durum — host bir sonraki cagrida AYNEN geri gonderir; "
+                "done=true iken null"
+            ),
+        },
+        "done": {"type": "boolean"},
+        "writeResult": {
+            "anyOf": [{"$ref": "#/$defs/WriteResult"}, {"type": "null"}],
+            "description": "write adimi gerceklestiyse yazma sonucu",
+        },
+        "errors": {"type": "array", "items": {"$ref": "#/$defs/ValidationError"}},
+    },
+    "$defs": {
+        "WriteResult": WRITE_RESULT_DEF,
+        "PlannedMutation": PLANNED_MUTATION_DEF,
+        "ValidationError": VALIDATION_ERROR_DEF,
+    },
+}
+
+
 OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
     "xurrent_whoami": WHOAMI_OUTPUT,
     "xurrent_find_person": FIND_PERSON_OUTPUT,
@@ -423,6 +571,8 @@ OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
     "xurrent_create_time_entries_bulk": CREATE_TIME_ENTRIES_BULK_OUTPUT,
     "calendar_list_today": CALENDAR_LIST_TODAY_OUTPUT,
     "plan_time_entries_from_calendar": PLAN_FROM_CALENDAR_OUTPUT,
+    "xurrent_list_time_entries": LIST_TIME_ENTRIES_OUTPUT,
+    "timesheet_wizard": WIZARD_OUTPUT,
 }
 
 __all__ = ["OUTPUT_SCHEMAS"]

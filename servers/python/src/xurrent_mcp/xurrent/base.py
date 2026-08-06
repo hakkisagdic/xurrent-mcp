@@ -59,5 +59,31 @@ class XurrentAdapter(ABC):
         """
 
     @abstractmethod
+    def list_time_entries(
+        self,
+        person_id: str,
+        date_from: str | None,
+        date_to: str | None,
+        source_id: str | None,
+        first: int,
+    ) -> list[dict[str, Any]]:
+        """Yazilmis zaman girislerini okur (xurrent_list_time_entries).
+
+        Donus: contract $defs/TimeEntryRecord seklinde dict listesi.
+        sourceID filtresi dedup geri-okumasinin GENEL halidir; tarih araligi
+        (dateFrom/dateTo, ikisi de DAHIL) timesheet gunune gore suzer.
+        """
+
+    @abstractmethod
+    def find_time_entry_by_source_id(self, source_id: str) -> dict[str, Any] | None:
+        """Dedup geri-okumasi: bu sourceID ile YAZILMIS kayit var mi?
+
+        contract/reliability.md §5 — Yol A yazmalarinin idempotency temelidir:
+        deterministik sourceID var ama Xurrent tarafinda unique kisit YOK.
+        "Zaten yazilmis mi?" sorusunu bu geri-okuma cevaplar. Kayit varsa
+        timeEntry dict'i, yoksa None doner.
+        """
+
+    @abstractmethod
     def target_label(self, target_type: str, target_id: str) -> str | None:
         """Hedef kaydin insan-okunur etiketi (uyari metinlerinde kullanilir)."""

@@ -13,6 +13,13 @@ from pathlib import Path
 from typing import Literal
 
 XurrentMode = Literal["mock", "live"]
+# XURRENT_API — live modda transport secimi (bkz. docs/16 + .env.example §1):
+#   graphql -> varsayilan; tek istekte zengin sorgu, is kurali hatalari
+#              HTTP 200 + payload.errors.
+#   rest    -> developer.xurrent.com/v1; alan adlari snake_case (sourceID
+#              HARIC), validation hatalari HTTP 422, whoami/context N istek.
+# Ikisi de AYNI tool sozlesmesini servis eder — transport bir adaptor detayidir.
+XurrentApi = Literal["graphql", "rest"]
 BackdateStrategy = Literal["two_step", "link_first", "date_first"]
 CalendarProvider = Literal["mock", "ics", "google", "graph", "auto"]
 RoundingMode = Literal["nearest", "up", "down"]
@@ -78,6 +85,10 @@ class Config:
     token: str = ""
     account: str = ""
     graphql_url: str = "https://graphql.xurrent.com"
+    # --- API transport secimi (XURRENT_API + XURRENT_REST_URL) ---
+    # Yalnizca live modda anlamlidir; mock mod her zaman fixtures okur.
+    api: XurrentApi = "graphql"
+    rest_url: str = "https://api.xurrent.com/v1"
 
     dry_run: bool = False
     confirm_policy: ConfirmPolicy = "closed"
@@ -89,9 +100,22 @@ class Config:
     # yeniden baslatinca eski onaylar gecersiz olur, bu ISTENEN davranistir.
     state_secret: str = ""
     state_ttl_seconds: int = 300
+    # timesheet_wizard sessionState TTL'i (contract/wizard.md §4). requestState'in
+    # 300'unden BILEREK uzun: cok adimli bir sohbet 5 dakikada bitmeyebilir.
+    wizard_ttl_seconds: int = 1800
 
     backdate_strategy: BackdateStrategy = "two_step"
     max_backdate_days: int = 1
+
+    # --- guvenilirlik (contract/reliability.md §3, §4, §7) ---
+    # Toplam deneme sayisi, ILK istek dahil. 1 = retry tamamen kapali.
+    retry_max_attempts: int = 5
+    # Tam jitter'li ustel geri cekilme: bekleme_k = rastgele(0, min(CAP, BASE·2^(k-1))).
+    retry_base_ms: int = 500
+    retry_cap_ms: int = 8000
+    # Adaptor gazi: iki HTTP istegi arasindaki minimum bosluk (retry dahil).
+    # Xurrent siniri 20 istek / 2 sn -> varsayilan 110 ms.
+    min_request_gap_ms: int = 110
 
     calendar_provider: CalendarProvider = "mock"
     ics_path: str = ""
@@ -127,6 +151,13 @@ class Config:
 
     web_port: int = 8787
     mcp_http_port: int = 8788
+    # MCP_API_KEY (.env.example §8) — HTTP yuzeyinin kapisi:
+    #   BOS  -> sunucu YALNIZCA loopback'ten (127.0.0.1) dinler; mevcut durus.
+    #   DOLU -> 0.0.0.0'a baglanir ve her /mcp* isteginde X-MCP-Api-Key
+    #           basliginin bu degere esit olmasi ZORUNLUDUR (sabit-zamanli
+    #           karsilastirma; aksi halde 401). Xurrent PAT'i ile KARISTIRMAYIN:
+    #           bu anahtar MCP sunucusunun kendisini korur.
+    mcp_api_key: str = ""
 
     fixtures_dir: Path = field(default_factory=lambda: _repo_root() / "fixtures")
     wizard_steps_path: Path = field(
@@ -155,6 +186,17 @@ class Config:
             out.append(
                 "XURRENT_GRAPHQL_URL icinde 'eu' bolgesi var. 'eu' DIYE BIR BOLGE YOKTUR — "
                 "TLS hatasi alirsiniz. Global (varsayilan) zaten Avrupa'dadir."
+            )
+        # Bolge kurali REST tabaninda da aynidir (.env.example §1).
+        if ".eu." in self.rest_url:
+            out.append(
+                "XURRENT_REST_URL icinde 'eu' bolgesi var. 'eu' DIYE BIR BOLGE YOKTUR — "
+                "Global (varsayilan) zaten Avrupa'dadir."
+            )
+        if self.api == "rest" and not self.is_live:
+            out.append(
+                "XURRENT_API=rest ama XURRENT_MODE=mock — transport secimi yalnizca "
+                "live modda anlamlidir; mock adapter fixtures'tan okumaya devam ediyor."
             )
         if self.max_backdate_days < 0:
             out.append("XURRENT_MAX_BACKDATE_DAYS negatif olamaz; 0 kabul edildi.")
@@ -233,19 +275,38 @@ def load_config() -> Config:
         )
     protocol: McpProtocol = protocol_raw  # type: ignore[assignment]
 
+    # XURRENT_API de sessizce varsayilana DUSMEZ (MCP_PROTOCOL ile ayni gerekce):
+    # "XURRENT_API=rets" yazan biri REST konustugunu SANIR ve sessiz graphql
+    # varsayilani bunu saatlerce gizler.
+    api_raw = _env("XURRENT_API", "graphql").strip().lower()
+    if api_raw not in ("graphql", "rest"):
+        raise ValueError(
+            f"XURRENT_API degeri gecersiz: {api_raw!r}. "
+            "Izinli degerler: 'graphql' (varsayilan), 'rest'."
+        )
+    api: XurrentApi = api_raw  # type: ignore[assignment]
+
     return Config(
         mode=mode,
         token=_env("XURRENT_TOKEN"),
         account=_env("XURRENT_ACCOUNT"),
         graphql_url=_env("XURRENT_GRAPHQL_URL", "https://graphql.xurrent.com").rstrip("/"),
+        api=api,
+        rest_url=_env("XURRENT_REST_URL", "https://api.xurrent.com/v1").rstrip("/"),
         dry_run=_env_bool("XURRENT_DRY_RUN", False),
         confirm_policy=policy,
         source=_env("XURRENT_SOURCE", "xurrent-mcp"),
         mcp_protocol=protocol,
         state_secret=_env("XURRENT_STATE_SECRET"),
         state_ttl_seconds=max(1, _env_int("XURRENT_STATE_TTL", 300)),
+        wizard_ttl_seconds=max(1, _env_int("XURRENT_WIZARD_TTL", 1800)),
         backdate_strategy=strategy,
         max_backdate_days=max(0, _env_int("XURRENT_MAX_BACKDATE_DAYS", 1)),
+        # 1'in altina dusurmek "hic istek atma" demek olurdu — en az 1 deneme.
+        retry_max_attempts=max(1, _env_int("XURRENT_RETRY_MAX_ATTEMPTS", 5)),
+        retry_base_ms=max(0, _env_int("XURRENT_RETRY_BASE_MS", 500)),
+        retry_cap_ms=max(0, _env_int("XURRENT_RETRY_CAP_MS", 8000)),
+        min_request_gap_ms=max(0, _env_int("XURRENT_MIN_REQUEST_GAP_MS", 110)),
         calendar_provider=provider,
         ics_path=_env("CALENDAR_ICS_PATH", str(fixtures_dir / "calendar.ics")),
         ics_url=_env("CALENDAR_ICS_URL"),
@@ -270,6 +331,7 @@ def load_config() -> Config:
         ).rstrip("/"),
         web_port=_env_int("WEB_PORT", 8787),
         mcp_http_port=_env_int("MCP_HTTP_PORT", 8788),
+        mcp_api_key=_env("MCP_API_KEY"),
         fixtures_dir=fixtures_dir,
         wizard_steps_path=_repo_root() / "docs" / "wizard" / "steps.json",
         web_client_dir=_repo_root() / "clients" / "web",

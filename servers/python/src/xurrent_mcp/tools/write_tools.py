@@ -12,11 +12,11 @@ kadar gider. Bu yuzden her yazma tool'unun UC katmanli koruma modeli vardir:
 from __future__ import annotations
 
 import logging
-import time
 from typing import Any
 
 from ..models import ValidationError, to_dict
 from ..timeutil import iso_date, today_in
+from ..xurrent.retry import log_dedup
 from ..xurrent.strategies import STEP1_ENTRY_ID_PLACEHOLDER, build_plan
 from ..xurrent.validate import TimeEntryRequest, precheck
 from .runtime import Runtime
@@ -24,8 +24,9 @@ from .runtime import Runtime
 log = logging.getLogger(__name__)
 
 # GraphQL istek basina 1 mutation kabul eder -> bulk = N ayri HTTP istegi.
-# Rate limit 20 istek / 2 saniye -> istekler arasi en az 110 ms bekleme.
-BULK_REQUEST_DELAY_SECONDS = 0.110
+# ★ Burada time.sleep YOKTUR — gaz (min istek araligi) ADAPTOR seviyesinde
+# yasar (contract/reliability.md §4) ve retry tekrarlari dahil her istegi
+# kapsar. Ayni bekleme iki katmanda yasarsa biri kacinilmaz olarak yanlis olur.
 
 
 def xurrent_create_time_entry(rt: Runtime, args: dict[str, Any]) -> dict[str, Any]:
@@ -51,7 +52,7 @@ def xurrent_create_time_entries_bulk(rt: Runtime, args: dict[str, Any]) -> dict[
 
     planned_all: list[dict[str, Any]] = []
     results: list[dict[str, Any]] = []
-    created = failed = skipped = 0
+    created = failed = skipped = deduped = 0
     total_minutes = 0
 
     for index, raw in enumerate(entries):
@@ -90,6 +91,23 @@ def xurrent_create_time_entries_bulk(rt: Runtime, args: dict[str, Any]) -> dict[
             results.append({"index": index, "status": "skipped", "timeEntryId": None, "errors": []})
             skipped += 1
             total_minutes += req.minutes
+        elif single.get("deduped"):
+            # Yazma-oncesi dedup "zaten yazilmis" dedi (reliability.md §5).
+            # Bulk'in kurtarma yolu tam olarak budur: kismen basarisiz bir bulk
+            # AYNI komutla tekrar calistirilir; yazilmis kalemler deduped,
+            # eksikler created olur — cift kayit OLUSMAZ.
+            entry = single.get("timeEntry") or {}
+            results.append(
+                {
+                    "index": index,
+                    "status": "deduped",
+                    "timeEntryId": entry.get("id"),
+                    "errors": [],
+                }
+            )
+            deduped += 1
+            # totalMinutes'a EKLENMEZ: bu calistirmada yazilan dakika 0'dir;
+            # kaydin dakikasi onceki calistirmada sayilmisti.
         else:
             entry = single.get("timeEntry") or {}
             results.append(
@@ -103,9 +121,6 @@ def xurrent_create_time_entries_bulk(rt: Runtime, args: dict[str, Any]) -> dict[
             created += 1
             total_minutes += req.minutes
 
-        if not dry_run and index < len(entries) - 1:
-            time.sleep(BULK_REQUEST_DELAY_SECONDS)
-
     return {
         "dryRun": dry_run,
         "planned": planned_all,
@@ -115,6 +130,7 @@ def xurrent_create_time_entries_bulk(rt: Runtime, args: dict[str, Any]) -> dict[
             "created": created,
             "failed": failed,
             "skipped": skipped,
+            "deduped": deduped,
             "totalMinutes": total_minutes,
         },
     }
@@ -211,6 +227,7 @@ def _plan_and_maybe_write(rt: Runtime, req: TimeEntryRequest) -> dict[str, Any]:
             "planned": planned_dicts,
             "warnings": warnings,
             "timeEntry": None,
+            "deduped": False,
             "errors": [to_dict(e) for e in errors],
         }
 
@@ -223,8 +240,47 @@ def _plan_and_maybe_write(rt: Runtime, req: TimeEntryRequest) -> dict[str, Any]:
             "planned": planned_dicts,
             "warnings": warnings,
             "timeEntry": None,
+            "deduped": False,
             "errors": [],
         }
+
+    # ---- yazma oncesi dedup (contract/reliability.md §5) ----------------
+    # YALNIZCA plan timeEntryCreate ile basliyorsa (Yol A: date_first veya
+    # time_allocation hedefi) — sourceID sadece orada yazilabiliyor.
+    # ★ two_step/link_first BILEREK dedup ALMAZ: ilk adimlari parent update'tir
+    #   ve o input idempotency anahtari tasiyamaz. Yol B'nin korumasi dedup
+    #   degil, retry YASAGIDIR. Bu asimetri dersin kendisidir.
+    first_step = plan.planned[0]
+    if first_step.path == "timeEntryCreate":
+        source_id = str(first_step.input.get("sourceID") or "")
+        existing = None
+        if source_id:
+            try:
+                existing = rt.adapter.find_time_entry_by_source_id(source_id)
+            except Exception as exc:  # noqa: BLE001
+                # Geri-okuma dustu -> dedup ATLANIR (fail-open): yazmanin kendi
+                # guarded_create korumasi hala devrede. Sessiz gecmiyoruz.
+                warnings.append(
+                    f"Dedup geri-okumasi basarisiz oldu ({exc.__class__.__name__}); "
+                    "yazma dedup KONTROLSUZ devam ediyor."
+                )
+            else:
+                log_dedup(source_id, existing is not None)
+        if existing is not None:
+            warnings.append(
+                "Ayni sourceID'li kayit zaten var — yazma ATLANDI (dedup). "
+                "timeEntry alani MEVCUT kaydi gosterir; yeni bir mutation gonderilmedi."
+            )
+            return {
+                "dryRun": False,
+                "strategy": plan.strategy,
+                "strategyExplanation": plan.explanation,
+                "planned": planned_dicts,
+                "warnings": warnings,
+                "timeEntry": existing,
+                "deduped": True,
+                "errors": [],
+            }
 
     # ---- gercek calistirma -------------------------------------------
     time_entry: dict[str, Any] | None = None
@@ -264,9 +320,6 @@ def _plan_and_maybe_write(rt: Runtime, req: TimeEntryRequest) -> dict[str, Any]:
         if outcome.get("timeEntry"):
             time_entry = outcome["timeEntry"]
 
-        if position < len(plan.planned) - 1:
-            time.sleep(BULK_REQUEST_DELAY_SECONDS)
-
     return {
         "dryRun": False,
         "strategy": plan.strategy,
@@ -274,6 +327,7 @@ def _plan_and_maybe_write(rt: Runtime, req: TimeEntryRequest) -> dict[str, Any]:
         "planned": planned_dicts,
         "warnings": warnings,
         "timeEntry": time_entry,
+        "deduped": False,
         "errors": exec_errors,
     }
 

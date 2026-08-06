@@ -183,12 +183,15 @@ class WriteResult:
     errors: list[ValidationError]
     strategyExplanation: str = ""
     timeEntry: dict[str, Any] | None = None
+    # true ise yazma ATLANDI: ayni sourceID'li kayit zaten vardi ve timeEntry
+    # MEVCUT kaydi gosterir (contract/reliability.md §5).
+    deduped: bool = False
 
 
 @dataclass
 class BulkRowResult:
     index: int
-    status: str  # created | failed | skipped
+    status: str  # created | failed | skipped | deduped
     timeEntryId: str | None = None
     errors: list[ValidationError] = field(default_factory=list)
 
@@ -200,6 +203,8 @@ class BulkSummary:
     failed: int
     skipped: int
     totalMinutes: int
+    # sourceID geri-okumasiyla "zaten yazilmis" bulunup atlanan kalem sayisi.
+    deduped: int = 0
 
 
 # ---------------------------------------------------------------- Zaman baglami

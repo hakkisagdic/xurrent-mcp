@@ -12,6 +12,13 @@ dependencies = [
     # gorunur kalmasi bu projede bilincli bir ders tercihidir.
     "httpx>=0.28.1",
     "pydantic>=2.11.0",
+    # Retry politikasi (contract/reliability.md §8): TS p-retry, C# Polly,
+    # Python tenacity. Ozel wait ile tam jitter + Retry-After tabani kurulur.
+    "tenacity>=9.0.0",
+    # server.py dogrudan `import uvicorn` yapar. Onceden yalnizca mcp'nin
+    # GECISLI bagimliligi olarak geliyordu — mcp bir gun uvicorn'u birakirsa
+    # HTTP transport sessizce kirilirdi. Dogrudan import = dogrudan bagimlilik.
+    "uvicorn>=0.30.0",
 ]
 
 [dependency-groups]

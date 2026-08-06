@@ -1,4 +1,4 @@
-"""8 tool'un sozlesmesi ve kayit defteri.
+"""10 tool'un sozlesmesi ve kayit defteri.
 
 inputSchema, tool adlari ve parametre adlari contract/tools.json ile BIREBIR
 aynidir. scripts/verify-contract.mjs uc sunucunun tools/list ciktisini o dosyaya
@@ -20,16 +20,22 @@ from .read_tools import (
     xurrent_find_person,
     xurrent_get_time_tracking_context,
     xurrent_list_open_work,
+    xurrent_list_time_entries,
     xurrent_whoami,
 )
 from .runtime import ConfirmationState, Runtime
 from .write_tools import xurrent_create_time_entries_bulk, xurrent_create_time_entry
 
+# DIKKAT: wizard import'u diger alt modullerden SONRA gelir — core.wizard
+# tool handler'larini lazy import eder ve bu paket kismen yuklenmisken bile
+# calisir; sirayi bozmak dongusel import uretir.
+from ..core.wizard import timesheet_wizard  # noqa: E402  (bilerek sonda)
+
 
 @dataclass(frozen=True)
 class ToolSpec:
     name: str
-    kind: str  # read | write | preview
+    kind: str  # read | write | preview | chat
     description: str
     input_schema: dict[str, Any]
     annotations: dict[str, bool]
@@ -382,6 +388,88 @@ TOOLS: list[ToolSpec] = [
             },
         },
         handler=plan_time_entries_from_calendar,
+    ),
+    ToolSpec(
+        name="xurrent_list_time_entries",
+        kind="read",
+        description=(
+            "Yazilmis zaman girislerini okur — geri-okuma dogrulamasi ve dedup'in "
+            "resmi gozu: 'gercekten yazildi mi, kac kez yazildi?' sorusunun cevabi."
+        ),
+        annotations=READ_ONLY,
+        teaching_notes=[
+            "Kesin mesajlasmanin ikinci yarisi budur: yazma raporuna guvenmek yerine "
+            "kayit GERI OKUNUR (bkz. contract/reliability.md §5).",
+            "sourceId filtresi idempotency anahtariyla arama yapar — kismen basarisiz "
+            "bir bulk'tan sonra 'hangi kalemler yazilmis' bu tool ile gorulur.",
+            "Gercek TimeEntryFilter'da sourceID filtresinin varligi DOGRULANMALI'dir "
+            "(D14); yoksa kisi+tarih sorgusu + istemci tarafi eslesmeye dusulur.",
+        ],
+        input_schema={
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "personId": {
+                    "type": "string",
+                    "default": "$me",
+                    "description": "Kisi (opak id ya da $me)",
+                },
+                "dateFrom": {
+                    "type": "string",
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                    "description": "Bu tarihten itibaren (dahil)",
+                },
+                "dateTo": {
+                    "type": "string",
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                    "description": "Bu tarihe kadar (dahil)",
+                },
+                "sourceId": {
+                    "type": "string",
+                    "description": "Idempotency anahtariyla nokta arama (dedup geri-okumasi)",
+                },
+                "first": {"type": "integer", "minimum": 1, "maximum": 100, "default": 25},
+            },
+        },
+        handler=xurrent_list_time_entries,
+    ),
+    ToolSpec(
+        name="timesheet_wizard",
+        kind="chat",
+        description=(
+            "Sunucu-gudumlu sohbet: LLM'siz host'ta bile (Copilot Studio, terminal "
+            "REPL) zaman girisi akisini uctan uca yuruten deterministik durum "
+            "makinesi. Tam sozlesme: contract/wizard.md."
+        ),
+        annotations=WRITE,
+        teaching_notes=[
+            "Chatbot olmak icin LLM gerekmez: durum makinesi + imzali sessionState "
+            "yeter. Host yalniz kullanici cumlesini iletir, donen soruyu gosterir.",
+            "sessionState HMAC'lidir ve payload byte'lari uzerinde imzalanir — "
+            "kanonikleştirme gerekmedigi icin TS'te baslayan sohbet Python'da "
+            "SURDURULEBILIR (senaryo h bunu kanitlar).",
+            "Bu tool LLM saglayicilarina CEVRILMEZ (Gemini functionDeclarations "
+            "listesine girmez) — chatbot'un kendi kendini cagirma dongusu "
+            "wire-denetimi ile kapatilmistir.",
+            "Onay yine protokol seviyesindedir: write adimi confirm cevabi ya da "
+            "MRTR/elicitation olmadan calismaz; plannedFingerprint onaylanandan "
+            "farkli bir planin yazilmasini engeller.",
+        ],
+        input_schema={
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "utterance": {
+                    "type": "string",
+                    "description": "Kullanicinin son cumlesi (ilk cagrida bos olabilir)",
+                },
+                "sessionState": {
+                    "type": "string",
+                    "description": "Onceki yanittan AYNEN geri gonderilen imzali opak durum",
+                },
+            },
+        },
+        handler=timesheet_wizard,
     ),
 ]
 

@@ -284,6 +284,60 @@ query LatestTimeEntry($personId: String!, $date: ISO8601Date!) {
 """.strip()
 
 
+# Dedup geri-okumasi (contract/reliability.md §5): "bu sourceID ile kayit
+# YAZILMIS MI?" sorusunun cevabi. Iki yerde kullanilir:
+#   1. Yazma ONCESI: plan timeEntryCreate ile basliyorsa (Yol A) — kayit varsa
+#      yazma ATLANIR ve sonuc `deduped` olarak isaretlenir.
+#   2. Belirsiz hata SONRASI (5xx/ag): kor retry cift kayit yazabilir;
+#      geri-okuma "yazilmis mi?" sorusunu cevaplar.
+# D14: gercek TimeEntryFilter'da sourceID filtresinin varligi DOGRULANMALI;
+# yoksa kisi+tarih sorgusu + istemci tarafi sourceID eslesmesine dusulur.
+TIME_ENTRY_BY_SOURCE_ID_QUERY = """
+query TimeEntryBySourceId($sourceID: String!) {
+  timeEntries(first: 1, filter: { sourceID: { values: [$sourceID] } }) {
+    nodes { id date startedAt timeSpent description source sourceID }
+  }
+}
+""".strip()
+
+
+# xurrent_list_time_entries — geri-okuma dogrulamasi ve dedup'in resmi gozu
+# (contract/reliability.md §5'in ikinci yarisi: yazma raporuna guvenmek yerine
+# kayit GERI OKUNUR). TEK sorgu; degisken adlari sahte sunucuyla BIREBIR ayni:
+# personId / dateFrom / dateTo / sourceID. D14 notu burada da gecerli: gercek
+# TimeEntryFilter'da sourceID filtresinin varligi DOGRULANMALI'dir.
+LIST_TIME_ENTRIES_QUERY = """
+query ListTimeEntries($personId: String, $dateFrom: ISO8601Date, $dateTo: ISO8601Date, $sourceID: String, $first: Int!) {
+  timeEntries(
+    first: $first
+    filter: {
+      person: { values: [$personId] }
+      date: { greaterThanOrEqualTo: $dateFrom, lessThanOrEqualTo: $dateTo }
+      sourceID: { values: [$sourceID] }
+    }
+  ) {
+    nodes {
+      id
+      date
+      startedAt
+      timeSpent
+      description
+      correction
+      source
+      sourceID
+      person { id name }
+      effortClass { id name }
+      assignment {
+        __typename
+        ... on Request { id requestId }
+        ... on Task { id taskId }
+      }
+    }
+  }
+}
+""".strip()
+
+
 MUTATION_BY_PATH = {
     "timeEntryCreate": TIME_ENTRY_CREATE_MUTATION,
     "timeEntryUpdate": TIME_ENTRY_UPDATE_MUTATION,

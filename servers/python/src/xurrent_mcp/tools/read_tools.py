@@ -1,4 +1,5 @@
-"""Okuma tool'lari: whoami, find_person, list_open_work, get_time_tracking_context."""
+"""Okuma tool'lari: whoami, find_person, list_open_work,
+get_time_tracking_context, list_time_entries."""
 
 from __future__ import annotations
 
@@ -75,6 +76,31 @@ def xurrent_list_open_work(rt: Runtime, args: dict[str, Any]) -> dict[str, Any]:
         "accountId": rt.adapter.account_id(),
         "requests": requests_page,
         "tasks": tasks_page,
+    }
+
+
+def xurrent_list_time_entries(rt: Runtime, args: dict[str, Any]) -> dict[str, Any]:
+    """Yazilmis zaman girislerini okur — geri-okuma dogrulamasinin resmi gozu.
+
+    Kesin mesajlasmanin ikinci yarisi budur (contract/reliability.md §5):
+    yazma raporuna guvenmek yerine kayit GERI OKUNUR. sourceId filtresi
+    idempotency anahtariyla nokta arama yapar; kismen basarisiz bir bulk'tan
+    sonra "hangi kalemler yazilmis" sorusunun cevabi bu tool'dur.
+    """
+    person_id = rt.adapter.resolve_person_id(args.get("personId"))
+    first = int(args.get("first") or 25)
+    records = rt.adapter.list_time_entries(
+        person_id,
+        args.get("dateFrom"),
+        args.get("dateTo"),
+        args.get("sourceId"),
+        first,
+    )
+    return {
+        "accountId": rt.adapter.account_id(),
+        "timeEntries": records,
+        # Donen kayitlarin toplam dakikasi — correction'lar isaretli dahil.
+        "totalMinutes": sum(int(r.get("timeSpent") or 0) for r in records),
     }
 
 

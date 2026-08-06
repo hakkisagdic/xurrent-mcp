@@ -39,12 +39,12 @@ def _contract_tools() -> list[dict]:
     return json.loads(CONTRACT.read_text(encoding="utf-8"))["tools"]
 
 
-# ── 1. Sozlesmedeki 8 tool'un hepsi cevrilebilmeli ──────────────────────────
+# ── 1. Sozlesmedeki 10 tool'un hepsi cevrilebilmeli ─────────────────────────
 
 
-def test_contract_has_eight_tools() -> None:
-    assert len(_contract_tools()) == 8
-    assert len(TOOLS) == 8
+def test_contract_has_ten_tools() -> None:
+    assert len(_contract_tools()) == 10
+    assert len(TOOLS) == 10
 
 
 def test_every_contract_tool_translates() -> None:
@@ -60,7 +60,7 @@ def test_every_contract_tool_translates() -> None:
 def test_every_server_tool_translates() -> None:
     """Sunucunun kendi TOOLS kaydi da ayni sekilde cevrilir (sapma testi)."""
     declarations, reports = build_function_declarations(TOOLS)
-    assert len(declarations) == 8
+    assert len(declarations) == 10
     assert set(reports) == {spec.name for spec in TOOLS}
     for decl in declarations:
         assert decl["name"]
@@ -231,7 +231,29 @@ def test_empty_object_tool_omits_parameters() -> None:
     assert with_args["parameters"]["required"] == ["targetType", "targetId", "minutes"]
 
 
-# ── 8. saflik: girdi DEGISTIRILMEZ ──────────────────────────────────────────
+# ── 8. LLM filtresi: timesheet_wizard Gemini'ye CEVRILMEZ ───────────────────
+
+
+def test_wizard_gemini_functiondeclarations_listesine_girmez() -> None:
+    """Kendi kendini cagirma dongusu yapisal olarak kapali (contract/wizard.md §1).
+
+    timesheet_wizard bir chatbot'tur; Gemini'ye tool olarak verilirse model onu
+    cagirir, wizard soru doner, model tekrar cagirir — sonsuz dongu. Filtre
+    ceviri katmaninda yasar; diger 9 tool (list_time_entries DAHIL) cevrilir.
+    """
+    import io
+
+    from xurrent_mcp.agent import gemini_tools
+
+    blocks = gemini_tools(report_to=io.StringIO())
+    names = [d["name"] for d in blocks[0]["functionDeclarations"]]
+    assert "timesheet_wizard" not in names
+    assert "xurrent_list_time_entries" in names
+    assert len(names) == 9
+    assert set(names) == {spec.name for spec in TOOLS} - {"timesheet_wizard"}
+
+
+# ── 9. saflik: girdi DEGISTIRILMEZ ──────────────────────────────────────────
 
 
 def test_translation_does_not_mutate_input() -> None:

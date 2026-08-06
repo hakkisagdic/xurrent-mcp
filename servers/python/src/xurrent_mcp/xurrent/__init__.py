@@ -8,12 +8,22 @@ from .mock import MockXurrentAdapter
 
 
 def build_adapter(config: Config) -> XurrentAdapter:
-    """XURRENT_MODE'a gore adapter secer.
+    """XURRENT_MODE + XURRENT_API'ye gore adapter secer.
 
-    NEDEN gec import: live adapter httpx'i ice aktarir; mock modda calisan
-    ders ortaminda gereksiz yere yuklenmesin.
+    live + graphql -> LiveXurrentAdapter (tek istekte zengin sorgu)
+    live + rest    -> RestXurrentAdapter (snake_case, HTTP 422, N istek)
+    mock           -> MockXurrentAdapter (fixtures; transport secimi anlamsiz)
+
+    Ikisi de AYNI arayuzu sunar — transport bir adaptor detayidir (docs/16).
+
+    NEDEN gec import: live/rest adapter httpx'i ice aktarir; mock modda
+    calisan ders ortaminda gereksiz yere yuklenmesin.
     """
     if config.is_live:
+        if config.api == "rest":
+            from .rest import RestXurrentAdapter
+
+            return RestXurrentAdapter(config)
         from .live import LiveXurrentAdapter
 
         return LiveXurrentAdapter(config)

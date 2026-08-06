@@ -33,14 +33,21 @@ from . import queries
 from .base import XurrentAdapter
 from .mock import STATUS_LABELS_TR
 
+# Hata tipleri ve retry politikasi retry.py'de yasar (contract/reliability.md).
+# XurrentTransportError buradan YENIDEN IHRAC edilir: eski import yolu
+# (`from .live import XurrentTransportError`) calismaya devam eder.
+from .retry import (  # noqa: F401  (yeniden ihrac)
+    OP_CLASS_BY_PATH,
+    XurrentGraphQLError,
+    XurrentHttpError,
+    XurrentTransportError,
+    execute_with_retry,
+    is_uncertain,
+    log_dedup,
+    transport_error_message,
+)
+
 log = logging.getLogger(__name__)
-
-# Rate limit 20 istek / 2 saniye -> istekler arasi en az 110 ms.
-MIN_REQUEST_INTERVAL_SECONDS = 0.110
-
-
-class XurrentTransportError(RuntimeError):
-    """Aglama/HTTP seviyesindeki hata. Is kurali hatalari bundan FARKLIDIR."""
 
 
 class LiveXurrentAdapter(XurrentAdapter):
@@ -72,38 +79,78 @@ class LiveXurrentAdapter(XurrentAdapter):
     # ------------------------------------------------------------ HTTP
 
     def _throttle(self) -> None:
+        """Gaz ADAPTOR seviyesinde yasar (reliability.md §4): retry tekrarlari
+        dahil HER HTTP istegi bu kapidan gecer. Bulk dongusunde ayrica bekleme
+        YOKTUR — gaz tek yerde yasar, iki yerde yasarsa biri yanlis olur."""
+        gap_seconds = self.config.min_request_gap_ms / 1000.0
         elapsed = time.monotonic() - self._last_request_at
-        if elapsed < MIN_REQUEST_INTERVAL_SECONDS:
-            time.sleep(MIN_REQUEST_INTERVAL_SECONDS - elapsed)
+        if elapsed < gap_seconds:
+            time.sleep(gap_seconds - elapsed)
         self._last_request_at = time.monotonic()
 
-    def execute(self, document: str, variables: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Tek bir GraphQL operasyonu calistirir.
-
-        GraphQL istek basina 1 mutation kabul eder -> bulk = N sirali HTTP istegi.
-        """
+    def _request_once(self, document: str, variables: dict[str, Any] | None) -> dict[str, Any]:
+        """TEK HTTP denemesi. Retry karari burada DEGIL, execute()'ta verilir."""
         self._throttle()
         try:
             response = self._client.post(
                 "/", json={"query": document, "variables": variables or {}}
             )
         except httpx.HTTPError as exc:  # sirlar ASLA loglanmaz
-            raise XurrentTransportError(f"Xurrent'a baglanilamadi: {exc.__class__.__name__}") from exc
+            raise XurrentTransportError(
+                f"Xurrent'a baglanilamadi: {exc.__class__.__name__}"
+            ) from exc
 
         if response.status_code >= 400:
-            raise XurrentTransportError(
-                f"Xurrent HTTP {response.status_code}. Token/hesap slug'ini kontrol edin."
+            # 429/5xx digerlerinden AYRI tip tasir: retry politikasi status'a
+            # ve Retry-After'a bakmak zorundadir (reliability.md §1, §3).
+            retry_after: float | None = None
+            raw = response.headers.get("retry-after")
+            if raw is not None:
+                try:
+                    retry_after = float(raw)
+                except ValueError:
+                    retry_after = None  # tarih bicimi vb. — D15, saniye varsayildi
+            raise XurrentHttpError(
+                f"Xurrent HTTP {response.status_code}. Token/hesap slug'ini kontrol edin.",
+                status=response.status_code,
+                retry_after=retry_after,
             )
 
         body = response.json()
         self._capture_rate_limit(response.headers)
 
-        # Top-level GraphQL errors = SEMA/SORGU hatasi. Is kurali hatalari
-        # payload icindeki `errors` dizisinde doner (HTTP 200 ile birlikte).
+        # Top-level GraphQL errors = SEMA/SORGU hatasi -> kesin-reddedildi,
+        # ASLA retry edilmez. Is kurali hatalari payload icindeki `errors`
+        # dizisinde doner (HTTP 200 ile birlikte) ve exception DEGILDIR.
         if body.get("errors"):
             first = body["errors"][0].get("message", "bilinmeyen GraphQL hatasi")
-            raise XurrentTransportError(f"GraphQL hatasi: {first}")
+            raise XurrentGraphQLError(f"GraphQL hatasi: {first}")
         return body.get("data") or {}
+
+    def execute(
+        self,
+        document: str,
+        variables: dict[str, Any] | None = None,
+        *,
+        op_class: str = "query",
+        op_label: str = "query",
+        on_uncertain: Any = None,
+    ) -> dict[str, Any]:
+        """Tek bir GraphQL operasyonu calistirir — retry politikasiyla birlikte.
+
+        GraphQL istek basina 1 mutation kabul eder -> bulk = N sirali HTTP istegi.
+        Retry TRANSPORTUN degil OPERASYONUN ozelligidir; sinif cagirandan gelir
+        (varsayilan "query" = yan etkisiz, serbestce tekrarlanabilir).
+        """
+        return execute_with_retry(
+            lambda: self._request_once(document, variables),
+            op=op_label,
+            op_class=op_class,
+            max_attempts=self.config.retry_max_attempts,
+            base_ms=self.config.retry_base_ms,
+            cap_ms=self.config.retry_cap_ms,
+            on_uncertain=on_uncertain,
+        )
 
     def _capture_rate_limit(self, headers: httpx.Headers) -> None:
         def _num(name: str) -> float | None:
@@ -285,6 +332,13 @@ class LiveXurrentAdapter(XurrentAdapter):
     # ------------------------------------------------------------ mutation
 
     def run_mutation(self, planned: dict[str, Any]) -> dict[str, Any]:
+        """Tek bir planlanmis mutation'i, OPERASYON SINIFINA gore calistirir.
+
+        Sinif haritasi (reliability.md §2, OP_CLASS_BY_PATH):
+          timeEntryCreate  -> guarded_create   (belirsiz hatada ONCE dedup geri-okumasi)
+          timeEntryUpdate  -> idempotent_update (mutlak SET — tekrar zararsiz)
+          *Update (parent) -> no_retry          (timeSpent ARTIMLI — tekrar = cift sayim)
+        """
         path = planned["path"]
         document = queries.MUTATION_BY_PATH.get(path)
         if document is None:
@@ -293,14 +347,79 @@ class LiveXurrentAdapter(XurrentAdapter):
                 "errors": [{"message": f"Bilinmeyen mutation: {path}", "path": ["path"]}],
             }
 
-        data = self.execute(document, {"input": planned.get("input", {})})
+        op_class = OP_CLASS_BY_PATH.get(path, "no_retry")
+        input_payload = planned.get("input", {})
+
+        on_uncertain = None
+        if op_class == "guarded_create":
+            source_id = str(input_payload.get("sourceID") or "")
+
+            def _dedup_read_back() -> dict[str, Any] | None:
+                """Belirsiz hata sonrasi 'yazilmis mi?' sorusu.
+
+                Kayit VARSA: ilk deneme sunucuya ulasip islenmis demektir —
+                mevcut kayit BASARI olarak doner, kor retry'in yazacagi cift
+                kayit onlenir. Kayit YOKSA: tekrar guvenlidir, retry surer.
+                """
+                if not source_id:
+                    return None
+                try:
+                    entry = self.find_time_entry_by_source_id(source_id)
+                except XurrentTransportError:
+                    # Geri-okuma da dustu -> karar veremiyoruz; retry dongusu
+                    # bir sonraki denemede tekrar soracak.
+                    return None
+                log_dedup(source_id, entry is not None)
+                if entry is None:
+                    return None
+                # execute() donus sekliyle ayni: sentezlenmis basari payload'i.
+                return {path: {"errors": [], "timeEntry": entry, "deduped": True}}
+
+            on_uncertain = _dedup_read_back
+
+        try:
+            data = self.execute(
+                document,
+                {"input": input_payload},
+                op_class=op_class,
+                op_label=path,
+                on_uncertain=on_uncertain,
+            )
+        except XurrentTransportError as exc:
+            # Transport hatasi exception olarak YUKARI SIZMAZ: bulk akisi devam
+            # edebilmeli ve hata, sozlesmedeki errors[] seklinde raporlanmali.
+            return {
+                "timeEntry": None,
+                "errors": [
+                    {
+                        "message": self._transport_error_message(path, op_class, exc),
+                        "path": None,
+                    }
+                ],
+            }
+
         payload = data.get(path) or {}
         # Validation hatalari HTTP 200 + errors dolu + timeEntry null olarak doner.
-        return {
+        result: dict[str, Any] = {
             "timeEntry": payload.get("timeEntry"),
             "errors": payload.get("errors") or [],
             "parent": payload.get("request") or payload.get("task") or payload.get("problem"),
         }
+        if payload.get("deduped"):
+            result["deduped"] = True
+        return result
+
+    @staticmethod
+    def _transport_error_message(
+        path: str, op_class: str, exc: XurrentTransportError
+    ) -> str:
+        """retry.transport_error_message'a delege eder.
+
+        NEDEN tasindi: ayni belirsizlik dersi REST adaptorunde de (rest.py)
+        AYNI cumlelerle anlatilmak zorunda — metin operasyon sinifinin
+        ozelligidir, transportun degil (contract/reliability.md §2).
+        """
+        return transport_error_message(path, op_class, exc)
 
     def find_latest_time_entry_id(self, person_id: str) -> str | None:
         """two_step'in 2. adiminda guncellenecek entry'nin id'sini bulur.
@@ -314,6 +433,82 @@ class LiveXurrentAdapter(XurrentAdapter):
         )
         nodes = ((data.get("timeEntries") or {}).get("nodes")) or []
         return str(nodes[0]["id"]) if nodes else None
+
+    def list_time_entries(
+        self,
+        person_id: str,
+        date_from: str | None,
+        date_to: str | None,
+        source_id: str | None,
+        first: int,
+    ) -> list[dict[str, Any]]:
+        """xurrent_list_time_entries — TEK timeEntries sorgusu.
+
+        Degisken adlari sahte sunucuyla BIREBIR ayni olmak zorundadir:
+        personId / dateFrom / dateTo / sourceID (tools/fake-xurrent bunlari
+        dogrudan okur). Query sinifidir — yan etkisiz, retry politikasi serbest.
+        """
+        data = self.execute(
+            queries.LIST_TIME_ENTRIES_QUERY,
+            {
+                "personId": person_id,
+                "dateFrom": date_from,
+                "dateTo": date_to,
+                "sourceID": source_id,
+                "first": first,
+            },
+            op_class="query",
+            op_label="timeEntries",
+        )
+        nodes = ((data.get("timeEntries") or {}).get("nodes")) or []
+        return [self._to_time_entry_record(n) for n in nodes[: max(1, first)]]
+
+    @staticmethod
+    def _to_time_entry_record(node: dict[str, Any]) -> dict[str, Any]:
+        """GraphQL node -> contract $defs/TimeEntryRecord."""
+        person = node.get("person") or None
+        effort = node.get("effortClass") or None
+        assignment = None
+        raw = node.get("assignment")
+        if raw and raw.get("id"):
+            display = raw.get("requestId") or raw.get("taskId")
+            assignment = {
+                "type": raw.get("__typename"),
+                "id": str(raw.get("id")),
+                "displayId": str(display) if display is not None else None,
+            }
+        return {
+            "id": str(node.get("id")),
+            "date": node.get("date"),
+            "startedAt": node.get("startedAt"),
+            "timeSpent": int(node.get("timeSpent") or 0),
+            "description": node.get("description"),
+            "correction": node.get("correction"),
+            "source": node.get("source"),
+            "sourceID": node.get("sourceID"),
+            "person": (
+                {"id": str(person.get("id")), "name": person.get("name")} if person else None
+            ),
+            "assignment": assignment,
+            "effortClass": (
+                {"id": str(effort.get("id")), "name": effort.get("name")} if effort else None
+            ),
+        }
+
+    def find_time_entry_by_source_id(self, source_id: str) -> dict[str, Any] | None:
+        """Dedup geri-okumasi (reliability.md §5).
+
+        Query sinifidir — yan etkisiz, kendisi de retry politikasindan gecer.
+        D14: gercek TimeEntryFilter'da sourceID filtresinin varligi henuz
+        DOGRULANMADI; sahte sunucu destekliyor, canli tenant'ta teyit sart.
+        """
+        if not source_id:
+            return None
+        data = self.execute(
+            queries.TIME_ENTRY_BY_SOURCE_ID_QUERY, {"sourceID": source_id}
+        )
+        nodes = ((data.get("timeEntries") or {}).get("nodes")) or []
+        return nodes[0] if nodes else None
 
     def target_label(self, target_type: str, target_id: str) -> str | None:
         return None  # canli modda ek sorgu maliyetinden kacinilir

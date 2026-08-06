@@ -68,10 +68,21 @@ INSTRUCTIONS = (
 )
 
 
-def build_server(config: Config | None = None) -> tuple[Server, Runtime]:
-    """MCP Server ornegini ve paylasilan Runtime'i kurar."""
-    runtime = Runtime.create(config)
-    cfg = runtime.config
+def build_server(
+    config: Config | None = None, runtime: Runtime | None = None
+) -> tuple[Server, Runtime]:
+    """MCP Server ornegini ve paylasilan Runtime'i kurar.
+
+    runtime PARAMETRESI NEDEN VAR: MCP_PROTOCOL=both HTTP modunda /mcp/v1 ve
+    /mcp/v2 icin IKI Server ornegi kurulur (farkli protokol duruslari) ama
+    adapter/cache durumu TEK olmalidir — iki uc nokta ayni mock store'a
+    yazmazsa "v1'de yazdim, v2'de goremiyorum" tutarsizligi dogar.
+    """
+    runtime = runtime or Runtime.create(config)
+    # cfg SERVER DURUSUNU secer (ornegin both -> v1 ornegi icin 2025-11-25);
+    # runtime.config ise tool davranisini yonetir. Ikisi ayri kaynaklardan
+    # gelebilir — bkz. run_http.
+    cfg = config or runtime.config
 
     # requestState imzalayicisi SUNUCU OMRU boyunca yasar: nonce seti burada
     # tutulur ve tek kullanimi zorlar.
@@ -150,8 +161,9 @@ def _reject_both_on_stdio(cfg: Config) -> None:
         raise SystemExit(
             "MCP_PROTOCOL=both stdio transport'ta GECERSIZDIR: stdio'da baglantinin "
             "protokol erasi ILK ISTEKLE kilitlenir, tek surec tek protokol konusur. "
-            "Ya HTTP kullanin (xurrent-mcp --http — /mcp uc noktasi her iki erayi da "
-            "kabul eder) ya da MCP_PROTOCOL degerini '2026-07-28' veya '2025-11-25' yapin."
+            "Ya HTTP kullanin (xurrent-mcp --http — /mcp/v1 sessionful 2025-11-25, "
+            "/mcp/v2 stateless 2026-07-28, /mcp = v2 takma adi) ya da MCP_PROTOCOL "
+            "degerini '2026-07-28' veya '2025-11-25' yapin."
         )
 
 
@@ -195,12 +207,37 @@ async def run_stdio(config: Config | None = None) -> None:
 
 
 async def run_http(config: Config | None = None, port: int | None = None) -> None:
-    """Streamable HTTP transport (MCP_HTTP_PORT)."""
-    import uvicorn
+    """Streamable HTTP transport (MCP_HTTP_PORT) — yol tablosu mcp/http.py'de.
 
-    server, runtime = build_server(config)
-    app = server.streamable_http_app()
-    listen_port = port or runtime.config.mcp_http_port
-    log.info("MCP Streamable HTTP: http://127.0.0.1:%s/mcp", listen_port)
-    uvicorn_config = uvicorn.Config(app, host="127.0.0.1", port=listen_port, log_level="warning")
+    Tek era -> /mcp (2026-07-28 stateless, 2025-11-25 sessionful).
+    both    -> /mcp/v1 (sessionful) + /mcp/v2 (stateless) + /mcp (v2 takma adi).
+
+    MCP_API_KEY bossa yalnizca loopback dinlenir; doluysa 0.0.0.0'a baglanilir
+    ve her /mcp* istegi X-MCP-Api-Key basligini tasimak zorundadir (mcp/http.py).
+    """
+    import uvicorn
+    from dataclasses import replace
+
+    from .mcp.http import build_http_app, yol_tablosu
+
+    cfg = config or load_config()
+    _runtime = Runtime.create(cfg)
+
+    def _fabrika(protocol: str) -> Server:
+        # Ayni Runtime, era basina AYRI Server durusu (v1'de discover kapali).
+        server, _ = build_server(replace(cfg, mcp_protocol=protocol), runtime=_runtime)  # type: ignore[arg-type]
+        return server
+
+    app, host = build_http_app(cfg, _fabrika)
+    listen_port = port or cfg.mcp_http_port
+    for yol, era in yol_tablosu(cfg.mcp_protocol):
+        log.info(
+            "MCP Streamable HTTP: http://%s:%s%s (%s, %s)",
+            host,
+            listen_port,
+            yol,
+            "2025-11-25 sessionful" if era == "v1" else "2026-07-28 stateless",
+            "API anahtari ZORUNLU" if cfg.mcp_api_key else "yalnizca loopback",
+        )
+    uvicorn_config = uvicorn.Config(app, host=host, port=listen_port, log_level="warning")
     await uvicorn.Server(uvicorn_config).serve()

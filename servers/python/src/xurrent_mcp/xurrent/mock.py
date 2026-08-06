@@ -28,7 +28,7 @@ from ..models import (
     WorkItem,
     WorkPage,
 )
-from ..timeutil import iso, iso_date, materialize, today_in
+from ..timeutil import iso, iso_date, local_datetime, materialize, today_in
 from .base import XurrentAdapter
 
 log = logging.getLogger(__name__)
@@ -385,6 +385,130 @@ class MockXurrentAdapter(XurrentAdapter):
             return any(t["id"] == target_id for t in self._tasks_doc["tasks"])
         # ProjectTask / Problem icin mock veri yok — ders senaryosunda kullanilmiyor.
         return True
+
+    def list_time_entries(
+        self,
+        person_id: str,
+        date_from: str | None,
+        date_to: str | None,
+        source_id: str | None,
+        first: int,
+    ) -> list[dict[str, Any]]:
+        """Fixture kayitlari + bu surecte olusan kayitlar, TimeEntryRecord seklinde.
+
+        Filtre semantigi sahte sunucuyla (tools/fake-xurrent) BIREBIR ayni:
+        personId esitligi, dateFrom/dateTo araligi (ikisi de DAHIL), sourceID
+        nokta aramasi. Fixture kayitlarinin sourceID'si null oldugu icin
+        sourceID filtresi yalnizca bu surecte yazilan kayitlari bulabilir —
+        dedup geri-okumasinin birebir kendisi.
+        """
+        today = today_in(self.tz)
+        rows: list[dict[str, Any]] = []
+
+        for entry in self._entries_doc["timeEntries"]:
+            day = today + timedelta(days=int(entry.get("dayOffset", 0)))
+            record = self._fixture_record(entry, day)
+            rows.append(record)
+
+        with self._lock:
+            created = [self._created_record(e) for e in self._created]
+        rows.extend(created)
+
+        def _keep(r: dict[str, Any]) -> bool:
+            if person_id and (r.get("person") or {}).get("id") != person_id:
+                return False
+            if date_from and str(r.get("date") or "") < date_from:
+                return False
+            if date_to and str(r.get("date") or "") > date_to:
+                return False
+            if source_id and r.get("sourceID") != source_id:
+                return False
+            return True
+
+        return [r for r in rows if _keep(r)][: max(1, first)]
+
+    def _fixture_record(self, entry: dict[str, Any], day: Any) -> dict[str, Any]:
+        assignment = None
+        if entry.get("assignmentId"):
+            assignment = self._assignment_ref(
+                str(entry.get("assignmentType") or ""), str(entry["assignmentId"])
+            )
+        started = entry.get("startedAtLocal")
+        return {
+            "id": str(entry["id"]),
+            "date": iso_date(day),
+            "startedAt": (
+                iso(local_datetime(day, started, self.tz)) if started else None
+            ),
+            "timeSpent": int(entry.get("timeSpent", 0)),
+            "description": entry.get("description"),
+            "correction": bool(entry.get("correction", False)),
+            "source": entry.get("source"),
+            "sourceID": entry.get("sourceID"),
+            "person": self._person_ref(entry.get("personId")),
+            "assignment": assignment,
+            "effortClass": self._effort_class_ref(entry.get("effortClassId")),
+        }
+
+    def _created_record(self, entry: dict[str, Any]) -> dict[str, Any]:
+        assignment = None
+        raw = entry.get("assignment")
+        if raw and raw.get("id"):
+            assignment = self._assignment_ref(str(raw.get("type") or ""), str(raw["id"]))
+        return {
+            "id": str(entry["id"]),
+            "date": entry.get("date"),
+            "startedAt": entry.get("startedAt"),
+            "timeSpent": int(entry.get("timeSpent", 0)),
+            "description": entry.get("description"),
+            "correction": bool(entry.get("correction", False)),
+            "source": entry.get("source"),
+            "sourceID": entry.get("sourceID"),
+            "person": self._person_ref(entry.get("personId")),
+            "assignment": assignment,
+            "effortClass": self._effort_class_ref(entry.get("effortClassId")),
+        }
+
+    def _person_ref(self, person_id: Any) -> dict[str, Any] | None:
+        if not person_id:
+            return None
+        return {"id": str(person_id), "name": self._person_name(str(person_id))}
+
+    def _effort_class_ref(self, effort_id: Any) -> dict[str, Any] | None:
+        if not effort_id:
+            return None
+        row = next(
+            (e for e in self._effort_doc["effortClasses"] if e["id"] == effort_id), None
+        )
+        return {"id": str(effort_id), "name": row.get("name") if row else None}
+
+    def _assignment_ref(self, kind: str, target_id: str) -> dict[str, Any]:
+        display: str | None = None
+        if kind == "Request":
+            row = next(
+                (r for r in self._requests_doc["requests"] if r["id"] == target_id), None
+            )
+            display = str(row["requestId"]) if row else None
+        elif kind == "Task":
+            row = next((t for t in self._tasks_doc["tasks"] if t["id"] == target_id), None)
+            display = str(row["taskId"]) if row else None
+        return {"type": kind or None, "id": target_id, "displayId": display}
+
+    def find_time_entry_by_source_id(self, source_id: str) -> dict[str, Any] | None:
+        """Dedup geri-okumasi — bellek ici store uzerinde.
+
+        NEDEN mock'ta da var: yazma-oncesi dedup TOOL katmaninda yasar ve mock
+        modda da calismak zorundadir; birim testler dedup'i ancak boyle ag
+        olmadan dogrulayabilir. (Fixture kayitlarinin sourceID'si null'dur;
+        eslesme yalnizca bu surecte olusan kayitlarda mumkundur.)
+        """
+        if not source_id:
+            return None
+        with self._lock:
+            entry_id = self._by_source_id.get(source_id)
+            if entry_id is None:
+                return None
+            return next((e for e in self._created if e["id"] == entry_id), None)
 
     def target_label(self, target_type: str, target_id: str) -> str | None:
         if target_type == "request":

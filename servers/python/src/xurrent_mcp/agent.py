@@ -115,6 +115,16 @@ def _describe(spec: ToolSpec) -> str:
     return f"{spec.description}\n\nDIKKAT EDILECEKLER:\n{notes}"
 
 
+# LLM saglayicisina CEVRILMEYEN tool'lar (contract/wizard.md §1).
+#
+# timesheet_wizard'in kendisi bir chatbot'tur: Gemini'ye tool olarak verilirse
+# model "kullaniciyla konusmak" icin onu cagirir, wizard soru doner, model onu
+# tekrar cagirir — chatbot'un kendi kendini cagirma dongusu. Dongu, tool'u
+# functionDeclarations listesine HIC koymayarak yapisal olarak kapatilir;
+# wire-denetimi (tools/fake-gemini) bunu telin uzerinde dogrular.
+LLM_EXCLUDED_TOOLS = frozenset({"timesheet_wizard"})
+
+
 def gemini_tools(
     specs: list[ToolSpec] | None = None, *, report_to: Any = None
 ) -> list[dict[str, Any]]:
@@ -126,7 +136,8 @@ def gemini_tools(
 
     Rapor stderr'e basilir — stdout SADECE JSON-RPC icindir.
     """
-    declarations, reports = build_function_declarations(specs or TOOLS, describe=_describe)
+    pool = [s for s in (specs or TOOLS) if s.name not in LLM_EXCLUDED_TOOLS]
+    declarations, reports = build_function_declarations(pool, describe=_describe)
     stream = report_to if report_to is not None else sys.stderr
     print(format_translation_report(reports), file=stream)
     return [{"functionDeclarations": declarations}]
