@@ -9,7 +9,9 @@
  *
  * ★ NE KANITLAR: HTTP katmanı, auth header'ları, GraphQL sorgu metinlerinin
  *   sunucu tarafından tanınması, errors şekillerinin doğru ele alınması,
- *   two_step'in iki isteği, artımlı timeSpent, rate limit throttling.
+ *   two_step'in iki isteği, artımlı timeSpent, rate limit throttling,
+ *   429 fırtınasında retry politikası (f) ve kısmi bulk'ın dedup'la güvenli
+ *   tekrar-çalıştırılması (g) — bkz. contract/reliability.md.
  *
  * ★ NE KANITLAMAZ: gerçek Xurrent'ın şemasının bizimkiyle aynı olduğunu.
  *   Bkz. README.md.
@@ -48,9 +50,9 @@ const META = {
 // ── sahte sunucu ────────────────────────────────────────────────────────────
 let fake, fakeLog = "";
 
-function startFake() {
+function startFake(extraArgs = []) {
   return new Promise((res, rej) => {
-    fake = spawn("node", [path.join(HERE, "server.mjs"), "--port", String(PORT)], {
+    fake = spawn("node", [path.join(HERE, "server.mjs"), "--port", String(PORT), ...extraArgs], {
       cwd: REPO, stdio: ["ignore", "ignore", "pipe"],
     });
     fake.stderr.on("data", (d) => { fakeLog += d.toString(); });
@@ -59,6 +61,30 @@ function startFake() {
       if (fakeLog.includes("dinleniyor")) { clearTimeout(t); clearInterval(wait); res(); }
     }, 100);
   });
+}
+
+function stopFake() {
+  try { fake.kill(); } catch {}
+  return new Promise((z) => setTimeout(z, 200));
+}
+
+/** Sahte sunucuya DOĞRUDAN GraphQL isteği — senaryoların "bağımsız gözü". */
+async function fakeQuery(query, variables = {}) {
+  const r = await fetch(URL_, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: "Bearer senaryo-gozu",
+      "x-xurrent-account": "ornek-bt",
+    },
+    body: JSON.stringify({ query, variables }),
+  });
+  return r.json();
+}
+
+/** Kaos bayraklarını süreç öldürmeden değiştirir (bkz. server.mjs /_kaos). */
+async function kaosAyarla(patch) {
+  await fetch(`${URL_}/_kaos`, { method: "POST", body: JSON.stringify(patch) });
 }
 
 /** Sahte sunucunun gördüğü istek sayısı — stderr satırlarından sayılır. */
@@ -80,12 +106,18 @@ function callTool(dil, tool, args, extraEnv = {}) {
         XURRENT_DRY_RUN: "0",
         XURRENT_CONFIRM_POLICY: "open",   // senaryolarda onay kanalı yok
         MCP_PROTOCOL: "2026-07-28",
+        ...apiEnv,                        // rest koşusunda XURRENT_API + XURRENT_REST_URL
         ...extraEnv,
       },
       stdio: ["pipe", "pipe", "pipe"],
     });
     let buf = "";
-    const t = setTimeout(() => { try { p.kill(); } catch {} res({ timeout: true }); }, 120000);
+    // Sunucunun stderr'i toplanır: [retry]/[dedup] izleri buradan sayılır
+    // (contract/reliability.md §6 — izler stdout'a YAZILAMAZ, stdio MCP kanalıdır).
+    let errBuf = "";
+    p.stderr.on("data", (d) => { errBuf += d.toString(); });
+    const bitir = (sonuc) => res({ stderr: errBuf, ...sonuc });
+    const t = setTimeout(() => { try { p.kill(); } catch {} bitir({ timeout: true }); }, 120000);
     p.stdout.on("data", (d) => {
       buf += d;
       let i;
@@ -93,15 +125,21 @@ function callTool(dil, tool, args, extraEnv = {}) {
         const l = buf.slice(0, i).trim(); buf = buf.slice(i + 1);
         if (!l) continue;
         clearTimeout(t); try { p.kill(); } catch {}
-        try { return res({ msg: JSON.parse(l) }); } catch { return res({ raw: l }); }
+        try { return bitir({ msg: JSON.parse(l) }); } catch { return bitir({ raw: l }); }
       }
     });
-    p.on("error", (e) => { clearTimeout(t); res({ err: e.message }); });
+    p.on("error", (e) => { clearTimeout(t); bitir({ err: e.message }); });
     p.stdin.write(JSON.stringify({
       jsonrpc: "2.0", id: 1, method: "tools/call",
       params: { _meta: META, name: tool, arguments: args },
     }) + "\n");
   });
+}
+
+/** Sunucu stderr'indeki [retry] izlerini sayar; reason filtresi opsiyonel. */
+function retryIzleri(r, reason = null) {
+  const satirlar = (r.stderr ?? "").split("\n").filter((l) => l.includes("[retry]"));
+  return reason ? satirlar.filter((l) => l.includes(`reason=${reason}`)) : satirlar;
 }
 
 const sc = (r) => r.msg?.result?.structuredContent;
@@ -156,15 +194,20 @@ function tarihTZ(gunFarki = 0) {
 // ── sonuç toplama ───────────────────────────────────────────────────────────
 let pass = 0, fail = 0;
 const rows = [];
+// Aktif koşunun API'si ve check öneki — REST koşusunda "[rest]" etiketi düşer.
+let apiEnv = {};
+let checkOnek = "";
 function check(dil, ad, ok, detay) {
   ok ? pass++ : fail++;
-  rows.push({ dil, ad, ok, detay });
-  console.log(`  ${ok ? C.g + "✔" : C.r + "✘"}${C.x} ${ad.padEnd(46)} ${C.d}${detay}${C.x}`);
+  const tamAd = checkOnek + ad;
+  rows.push({ dil, ad: tamAd, ok, detay });
+  console.log(`  ${ok ? C.g + "✔" : C.r + "✘"}${C.x} ${tamAd.padEnd(46)} ${C.d}${detay}${C.x}`);
 }
 
 // ── senaryolar ──────────────────────────────────────────────────────────────
-async function kos(dil) {
-  console.log(`\n${C.b}══ ${dil.toUpperCase()} — live mod, sahte Xurrent'a karşı ══${C.x}`);
+async function kos(dil, opts = {}) {
+  const api = opts.api ?? "graphql";
+  console.log(`\n${C.b}══ ${dil.toUpperCase()} — live mod (${api}), sahte Xurrent'a karşı ══${C.x}`);
 
   // a) PARİTE — live sonuçları mock ile birebir aynı mı?
   {
@@ -247,6 +290,73 @@ async function kos(dil) {
     check(dil, "e) bulk throttling (8 kayıt, 429 yok)", olusan === 8,
       `created=${olusan}/8 failed=${s?.summary?.failed ?? "?"}`);
   }
+
+  // f) KAOS: 429 fırtınası — retry politikası devrede mi? (contract/reliability.md)
+  // 429 "kesin-işlenmedi" sınıfıdır: istemci Retry-After'a uyup tekrarlamalı,
+  // akış BAŞARIYLA bitmeli ve kayıt ÇİFTLENMEMELİDİR.
+  // (REST koşusunda atlanır: retry katmanı transport-üstü aynı katmandır,
+  //  kanıtı GraphQL koşusunda bir kez verilir; süre bütçesi — bkz. docs/15.)
+  if (!opts.sadeceTemel) {
+    await kaosAyarla({ k429: 3 });
+    const r = await callTool(dil, "xurrent_create_time_entry", {
+      targetType: "time_allocation", targetId: "TW9jay9UaW1lQWxsb2NhdGlvbi8x",
+      minutes: 30, description: "kaos 429 firtinasi", dryRun: false,
+    });
+    const s = sc(r);
+    const izler = retryIzleri(r, "429");
+    check(dil, "f) 429 fırtınası: retry ile yazma başarılı",
+      !isErr(r) && (s?.errors?.length ?? 0) === 0 && izler.length >= 1,
+      !isErr(r) && (s?.errors?.length ?? 0) === 0
+        ? `errors=[] · [retry reason=429] izi=${izler.length}`
+        : `${nedenBasarisiz(r)} · [retry] izi=${izler.length}`);
+
+    // Bağımsız göz: senaryo koşucusu fake'e DOĞRUDAN bakar — istemcinin
+    // raporuna güvenmek, karneyi öğrenciye yazdırmaktır.
+    const q = await fakeQuery(
+      "query Goz { timeEntries(filter: {date: $date}) { nodes { id description } } }",
+      { date: tarihTZ(0) });
+    const adet = (q.data?.timeEntries?.nodes ?? [])
+      .filter((n) => n.description === "kaos 429 firtinasi").length;
+    check(dil, "f) çift kayıt yok (tam-bir-kez)", adet === 1,
+      `aynı kayıttan ${adet} adet (beklenen 1)`);
+  }
+
+  // g) KAOS: kısmi bulk → AYNI komutun tekrarı eksiği tamamlar, çifti önler.
+  // Bulk atomik değildir; kurtarma yolu "tekrar çalıştır"dır ve bunun güvenli
+  // olması sourceID dedup geri-okumasına dayanır (reliability.md §5).
+  if (!opts.sadeceTemel) {
+    await kaosAyarla({ kirDesc: "kirik-kalem" });
+    const entries = Array.from({ length: 4 }, (_, i) => ({
+      targetType: "time_allocation", targetId: "TW9jay9UaW1lQWxsb2NhdGlvbi8x",
+      minutes: 30, description: i === 2 ? "kirik-kalem g" : `tekrar kalem ${i + 1}`,
+    }));
+    // Amaç retry değil KURTARMA: denemeyi 2'ye indirip kırık kalemi hızlı düşür.
+    const env = { XURRENT_RETRY_MAX_ATTEMPTS: "2" };
+
+    const r1 = await callTool(dil, "xurrent_create_time_entries_bulk",
+      { entries, dryRun: false, stopOnError: false }, env);
+    const s1 = sc(r1);
+    check(dil, "g) kaoslu bulk: 3 yazıldı, 1 düştü",
+      s1?.summary?.created === 3 && s1?.summary?.failed === 1,
+      `created=${s1?.summary?.created} failed=${s1?.summary?.failed} (beklenen 3/1)`);
+
+    await kaosAyarla({ kirDesc: null });
+    const r2 = await callTool(dil, "xurrent_create_time_entries_bulk",
+      { entries, dryRun: false, stopOnError: false }, env);
+    const s2 = sc(r2);
+    check(dil, "g) tekrar: eksik tamamlandı, kalanlar deduped",
+      s2?.summary?.created === 1 && (s2?.summary?.deduped ?? 0) === 3,
+      `created=${s2?.summary?.created} deduped=${s2?.summary?.deduped ?? 0} (beklenen 1/3)`);
+
+    const q = await fakeQuery(
+      "query Goz { timeEntries(filter: {date: $date}) { nodes { id description } } }",
+      { date: tarihTZ(0) });
+    const nodes = q.data?.timeEntries?.nodes ?? [];
+    const adetler = entries.map((e) => nodes.filter((n) => n.description === e.description).length);
+    check(dil, "g) çift kayıt yok (4 kalem × 1)",
+      adetler.length === 4 && adetler.every((a) => a === 1),
+      `adetler=[${adetler.join(",")}] (beklenen hepsi 1)`);
+  }
 }
 
 // ── ana akış ────────────────────────────────────────────────────────────────
@@ -265,6 +375,9 @@ console.log(`kod yolunun wire seviyesinde çalıştığını gösterir. Bkz. too
 // koşuda tam olarak bu oldu: C# 2 senaryoda düştü, izole çalıştırınca ikisini de
 // geçti. Testin kendisi bozuktu, kod değil.
 for (const dil of Object.keys(DILLER)) {
+  // 1) GraphQL koşusu — tam set (a–g)
+  apiEnv = {};
+  checkOnek = "";
   await startFake();
   try {
     await kos(dil);
@@ -273,6 +386,70 @@ for (const dil of Object.keys(DILLER)) {
     await new Promise((z) => setTimeout(z, 200));
     fakeLog = "";
   }
+
+  // 2) REST koşusu — temel set (a–e). AYNI tool sözleşmesi, İKİNCİ transport:
+  // parite kanıtı "transport bir adaptör detayıdır" tezinin ta kendisi (docs/16).
+  apiEnv = { XURRENT_API: "rest", XURRENT_REST_URL: `${URL_}/v1` };
+  checkOnek = "[rest] ";
+  await startFake();
+  try {
+    await kos(dil, { api: "rest", sadeceTemel: true });
+  } finally {
+    try { fake.kill(); } catch {}
+    await new Promise((z) => setTimeout(z, 200));
+    fakeLog = "";
+    apiEnv = {};
+    checkOnek = "";
+  }
+}
+
+// h) ÇAPRAZ-DİL DEVİR — sohbet TS'te başlar, Python'da sürer, C#'ta biter.
+//
+// timesheet_wizard'ın sessionState'i HMAC'i payload BYTE'LARI üzerinde hesaplar
+// (contract/wizard.md §4): kanonikleştirme gerekmez, bu yüzden bir dilin
+// ürettiği state başka dile verilebilir. Sır ÜÇ süreçte de aynı olmak zorunda —
+// boş bırakılsaydı her süreç rastgele üretir ve devir sessizce çökerdi.
+if (!only) {
+  console.log(`\n${C.b}══ H — çapraz-dil devir (ts → py → cs) ══${C.x}`);
+  await startFake();
+  const ORTAK = { XURRENT_STATE_SECRET: "senaryo-h-ortak-sirri-0123456789ab" };
+  try {
+    const r1 = await callTool("ts", "timesheet_wizard", {}, ORTAK);
+    const s1 = sc(r1);
+    check("h", "h) TS: sohbet başladı (step=start)",
+      s1?.step === "start" && !!s1?.sessionState && s1?.done === false,
+      `step=${s1?.step} state=${s1?.sessionState ? "var" : "YOK"}`);
+
+    const r2 = await callTool("ts", "timesheet_wizard",
+      { utterance: "1", sessionState: s1?.sessionState }, ORTAK);
+    const s2 = sc(r2);
+    check("h", "h) TS: iş seçildi (step=pick_work)",
+      s2?.step === "pick_work" && !!s2?.sessionState,
+      `step=${s2?.step}`);
+
+    const r3 = await callTool("py", "timesheet_wizard",
+      { utterance: "2 saat", sessionState: s2?.sessionState }, ORTAK);
+    const s3 = sc(r3);
+    check("h", "h) PY: TS'in state'ini kabul etti (step=duration)",
+      s3?.step === "duration" && !!s3?.sessionState,
+      `step=${s3?.step} (start'a düşmedi = imza çapraz-dil doğrulandı)`);
+    check("h", "h) PY: 120 dk çevirimi söylendi",
+      (s3?.reply ?? "").includes("120"),
+      (s3?.reply ?? "").includes("120") ? "reply 120 içeriyor" : `reply: ${String(s3?.reply).slice(0, 80)}`);
+
+    const r4 = await callTool("cs", "timesheet_wizard",
+      { utterance: "dün 14:00 VPN bakımı", sessionState: s3?.sessionState }, ORTAK);
+    const s4 = sc(r4);
+    check("h", "h) CS: PY'nin state'ini kabul etti (step=detail)",
+      s4?.step === "detail" && (s4?.nextQuestion?.choices?.length ?? 0) === 3,
+      `step=${s4?.step} strateji-seçenekleri=${s4?.nextQuestion?.choices?.length ?? 0} (beklenen 3)`);
+  } finally {
+    try { fake.kill(); } catch {}
+    await new Promise((z) => setTimeout(z, 200));
+    fakeLog = "";
+  }
+} else {
+  console.log(`\n${C.d}(h çapraz-dil devir senaryosu --dil ile atlandı: iki dil gerekir)${C.x}`);
 }
 
 console.log(`\n${C.b}═══ ÖZET ═══${C.x}`);

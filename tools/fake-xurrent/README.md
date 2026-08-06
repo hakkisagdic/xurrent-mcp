@@ -72,6 +72,38 @@ Asıl değeri burada: sahte **veri** değil, sahte **davranış**.
 Rate limit ve auth reddi `stderr`'e ayrıca loglanır; istemcinin throttle etmediğini
 başka türlü fark etmek zor.
 
+## Kaos modu
+
+Arızalar **sabit değil, bayrakla açılır** ve oranlı kaos `--tohum` ile
+**deterministiktir** (fake-gemini'nin `zar` modundaki desenin aynısı — kırmızı bir
+koşu tekrarlanamıyorsa hata ayıklanamaz). Amaç, istemcinin retry/dedup politikasını
+([contract/reliability.md](../../contract/reliability.md)) kanıtlamak:
+
+| Bayrak | Davranış |
+|---|---|
+| `--kaos-429 <n>` | Sonraki *n* istek **429** + `retry-after: 1` alır — retry kanıtı (senaryo f) |
+| `--kaos-500 <n>` | Sonraki *n* istek **500** alır |
+| `--kaos-500-oran <p>` | Her istek *p* olasılıkla 500 alır (0..1) |
+| `--gecikme-ms <ms>` | Her yanıt bu kadar geciktirilir |
+| `--kaos-kir-desc <s>` | `description`'ı *s* içeren **her** `timeEntryCreate` 500 alır — retry'ın KURTARAMAYACAĞI kalıcı kırık kalem (senaryo g) |
+| `--tohum <n>` | Oranlı kaosun PRNG tohumu |
+
+Kaos, auth kontrollerinden **sonra**, rate-check'ten **önce** uygulanır: 429 kaosu
+"istek işlenmeden reddedildi" sınıfını taklit eder.
+
+Çalışma anında değiştirme — `POST /_kaos` (yalnızca sahte sunucuda var olan test
+yüzeyi): süreç öldürülmeden bayrakları günceller. Neden gerekli: yazmalar bellekte
+yaşar; senaryo (g)'nin "kaoslu bulk → kaossuz tekrar" akışında süreci yeniden
+başlatmak store'u sıfırlar ve dedup kanıtını imkânsız kılardı.
+
+```bash
+curl -X POST http://127.0.0.1:4000/_kaos -d '{"kirDesc": null, "k429": 3}'
+```
+
+`timeEntries` sorgusu `sourceID` değişkenini de filtreler — dedup geri-okumasının
+(reliability.md §5) dayandığı yol. Gerçek `TimeEntryFilter`'da bu filtrenin varlığı
+**DOĞRULANMALI**'dır (D14).
+
 ## Nasıl çalışır
 
 Tam bir GraphQL motoru **değildir**. Gelen sorgunun **root field**'ını tanıyıp doğru

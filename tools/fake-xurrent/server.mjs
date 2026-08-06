@@ -24,6 +24,15 @@
  *
  * Kullanım:
  *   node tools/fake-xurrent/server.mjs [--port 4000] [--quiet]
+ *
+ * KAOS MODU (bilinçli, tohumlu arıza enjeksiyonu — bkz. contract/reliability.md):
+ *   --kaos-429 <n>        sonraki n istek 429 + retry-after:1 alır (retry kanıtı)
+ *   --kaos-500 <n>        sonraki n istek 500 alır
+ *   --kaos-500-oran <p>   her istek p olasılıkla 500 alır (0..1, --tohum ile deterministik)
+ *   --gecikme-ms <ms>     her yanıt bu kadar geciktirilir
+ *   --kaos-kir-desc <s>   description'ı <s> içeren HER timeEntryCreate 500 alır —
+ *                         retry'ın KURTARAMAYACAĞI kalıcı kırık kalem (senaryo g)
+ *   --tohum <n>           oranlı kaosun PRNG tohumu (fake-gemini'deki desenin aynısı)
  */
 
 import http from "node:http";
@@ -41,6 +50,33 @@ const PORT = Number(args[args.indexOf("--port") + 1]) || Number(process.env.FAKE
 const QUIET = args.includes("--quiet");
 
 const log = (...a) => { if (!QUIET) console.error("[sahte-xurrent]", ...a); };
+
+// ── kaos modu ───────────────────────────────────────────────────────────────
+// Arızalar SABİT DEĞİL, bayrakla açılır; oranlı kaos tohumla DETERMİNİSTİKTİR.
+// Amaç: istemcinin retry/dedup politikasını (contract/reliability.md) kanıtlamak.
+const numArg = (name, def = 0) => {
+  const i = args.indexOf(name);
+  const n = i >= 0 ? Number(args[i + 1]) : NaN;
+  return Number.isFinite(n) ? n : def;
+};
+const KAOS = {
+  k429: numArg("--kaos-429"),
+  k500: numArg("--kaos-500"),
+  oran500: numArg("--kaos-500-oran"),
+  gecikmeMs: numArg("--gecikme-ms"),
+  kirDesc: args.includes("--kaos-kir-desc") ? args[args.indexOf("--kaos-kir-desc") + 1] : null,
+};
+
+// mulberry32 — fake-gemini'nin "zar" modundaki desenin aynısı: aynı tohum,
+// aynı arıza dizisi. Math.random kullansaydık kırmızı koşu TEKRARLANAMAZDI.
+let prngState = (numArg("--tohum", 1) >>> 0) || 1;
+function prng() {
+  prngState = (prngState + 0x6d2b79f5) >>> 0;
+  let t = prngState;
+  t = Math.imul(t ^ (t >>> 15), t | 1);
+  t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+}
 
 // ── fixtures ────────────────────────────────────────────────────────────────
 const read = (f) => JSON.parse(fs.readFileSync(path.join(FIXTURES, f), "utf8"));
@@ -175,6 +211,7 @@ const ec = (id) => {
 const timeEntryNode = (t) => ({
   id: t.id, date: t.date, timeSpent: t.timeSpent, startedAt: t.startedAt,
   description: t.description, correction: t.correction,
+  source: t.source ?? null, sourceID: t.sourceID ?? null,
   person: { id: t.personId, name: F.people.people.find((p) => p.id === t.personId)?.name ?? null },
   effortClass: ec(t.effortClassId),
   timeAllocation: t.timeAllocationId
@@ -230,6 +267,207 @@ function validateWrite({ timeSpent, correction, description, personId, date }) {
              `${TS_SET.workday} dakika ve allowWorkdayOvertime kapalı.`;
   }
   return null;
+}
+
+// ── REST v1 yüzeyi ──────────────────────────────────────────────────────────
+// Aynı fixture durumu, aynı davranış kuralları — İKİNCİ bir wire biçimi.
+// GraphQL ile bilinçli farklar (dersin konusu, bkz. docs/16):
+//   · Alan adları snake_case'tir (started_at, time_spent) — sourceID HARİÇ
+//     (Xurrent REST dokümantasyonu da sourceID yazar).
+//   · Validation hatası HTTP 422 + {errors:[...]} döner — GraphQL'in
+//     "HTTP 200 + payload.errors" modelinin tam tersi.
+//   · whoami/context tek istekte alınamaz: /me, /account, /timesheet_settings,
+//     /effort_classes, /time_allocations ayrı ayrıdır (1 sorgu vs N istek).
+// ⚠️ Gerçek REST yanıt şekilleri dokümantasyondan ÇIKARIMDIR; alan adları ve
+//    hata gövdesi biçimi DOĞRULANMALI'dır (docs/08).
+
+const personRest = (p) => ({
+  id: p.id, name: p.name, primary_email: p.primaryEmail, job_title: p.jobTitle,
+  time_zone: p.timeZone, disabled: p.disabled,
+  organization: p.organization ? { id: p.organization.id, name: p.organization.name } : null,
+});
+
+const requestRest = (r) => ({
+  id: r.id, subject: r.subject, status: r.status,
+  next_target_at: r.targetAtOffsetDays != null ? instant(r.targetAtOffsetDays, "17:00") : null,
+  updated_at: instant(r.updatedAtOffsetDays, "12:00"),
+  team: { name: r.team },
+  member: { id: r.memberId, name: F.people.people.find((p) => p.id === r.memberId)?.name ?? null },
+  time_spent: r.timeSpentTotalMinutes ?? 0,
+  // REST'te görünen numara "id" ile aynı kavram değildir; UI numarası ayrı alan.
+  source_display_id: r.requestId,
+});
+
+const taskRest = (t) => ({
+  id: t.id, subject: t.subject, status: t.status,
+  completion_target_at: t.targetAtOffsetDays != null ? instant(t.targetAtOffsetDays, "17:00") : null,
+  updated_at: instant(t.updatedAtOffsetDays, "12:00"),
+  team: { name: t.team },
+  member: { id: t.assigneeId, name: F.people.people.find((p) => p.id === t.assigneeId)?.name ?? null },
+  workflow: t.workflowId ? { id: t.workflowId, subject: t.workflowSubject } : null,
+  time_spent: t.timeSpentTotalMinutes ?? 0,
+  source_display_id: t.taskId,
+});
+
+const timeEntryRest = (t) => ({
+  id: t.id, date: t.date, started_at: t.startedAt, time_spent: t.timeSpent,
+  description: t.description, correction: t.correction,
+  source: t.source ?? null, sourceID: t.sourceID ?? null,
+  person: { id: t.personId, name: F.people.people.find((p) => p.id === t.personId)?.name ?? null },
+  effort_class: ec(t.effortClassId),
+  time_allocation: t.timeAllocationId
+    ? (() => { const a = F.allocations.timeAllocations.find((x) => x.id === t.timeAllocationId);
+               return a ? { id: a.id, name: a.name } : null; })()
+    : null,
+  assignment: t.assignment ? { type: t.assignment.type, id: t.assignment.id } : null,
+});
+
+function handleRest(method, segs, q, body) {
+  const notFound = (m) => ({ code: 404, body: { errors: [{ message: m }] } });
+  // ★ REST hata modeli: 422 + errors gövdesi. GraphQL'deki "200 + payload.errors"
+  // dersinin ikizi — istemci HTTP koduna BAKMAK zorundadır.
+  const unprocessable = (m, attr = null) => ({ code: 422, body: { errors: [{ message: m, attribute: attr }] } });
+  const pid = (v) => (v === "$me" || !v ? ME.id : v);
+  const kaynak = segs[0];
+
+  if (method === "GET") {
+    if (kaynak === "me") return { code: 200, body: personRest(ME) };
+    if (kaynak === "account") return { code: 200, body: F.people.account };
+    if (kaynak === "people") {
+      const email = q.get("primary_email");
+      const found = F.people.people.filter((p) => !email || p.primaryEmail === email);
+      return { code: 200, body: found.map(personRest) };
+    }
+    if (kaynak === "requests" && !segs[1]) {
+      const m = pid(q.get("member"));
+      return { code: 200, body: F.requests.requests
+        .filter((r) => r.memberId === m && OPEN_REQUEST_STATUSES.has(r.status)).map(requestRest) };
+    }
+    if (kaynak === "tasks" && !segs[1]) {
+      const a = pid(q.get("assignee"));
+      return { code: 200, body: F.tasks.tasks
+        .filter((t) => t.assigneeId === a && OPEN_TASK_STATUSES.has(t.status)).map(taskRest) };
+    }
+    if (kaynak === "timesheet_settings") {
+      const s = TS_SET;
+      return { code: 200, body: [{
+        id: s.id, name: s.name, unit: s.unit, workday: s.workday, workweek: s.workweek,
+        time_increment: s.timeIncrement, percentage_increment: s.percentageIncrement,
+        allow_workday_overtime: s.allowWorkdayOvertime, allow_workweek_overtime: s.allowWorkweekOvertime,
+        allocation_time_tracking: s.allocationTimeTracking, assignment_time_tracking: s.assignmentTimeTracking,
+        require_note: s.requireNote, require_time_entry_description: s.requireTimeEntryDescription,
+        request_effort_class: ec(s.defaults.requestEffortClassId),
+        task_effort_class: ec(s.defaults.taskEffortClassId),
+        project_task_effort_class: ec(s.defaults.projectTaskEffortClassId),
+        problem_effort_class: ec(s.defaults.problemEffortClassId),
+        time_allocation_effort_class: ec(s.defaults.timeAllocationEffortClassId),
+      }] };
+    }
+    if (kaynak === "effort_classes") {
+      // disabled olanlar BİLEREK dahil — eleme GraphQL'deki gibi CLIENT tarafında.
+      return { code: 200, body: F.effortClasses.effortClasses.map((e) => ({
+        id: e.id, name: e.name, position: e.position,
+        cost_multiplier: e.costMultiplier, disabled: e.disabled })) };
+    }
+    if (kaynak === "time_allocations") {
+      return { code: 200, body: F.allocations.timeAllocations.map((a) => ({
+        id: a.id, name: a.name, group: a.group, description_required: a.descriptionRequired })) };
+    }
+    if (kaynak === "time_entries") {
+      const person = q.get("person") ? pid(q.get("person")) : null;
+      const from = q.get("date_from");
+      const to = q.get("date_to");
+      const exact = q.get("date");
+      const bySource = q.get("sourceID");
+      const rows = store
+        .filter((t) => (!person || t.personId === person)
+          && (!from || t.date >= from)
+          && (!to || t.date <= to)
+          && (!exact || t.date === exact)
+          && (!bySource || t.sourceID === bySource))
+        .slice().reverse().slice(0, 100);
+      return { code: 200, body: rows.map(timeEntryRest) };
+    }
+    return notFound(`Bilinmeyen REST kaynağı: GET /v1/${segs.join("/")}`);
+  }
+
+  if (method === "POST" && kaynak === "time_entries" && !segs[1]) {
+    const input = {
+      timeSpent: body.time_spent, correction: !!body.correction,
+      description: body.description, personId: body.person_id, date: body.date,
+    };
+    const bad = validateWrite(input);
+    if (bad) return unprocessable(bad, "time_spent");
+    const entry = {
+      id: mintId("TimeEntry"),
+      personId: body.person_id || ME.id,
+      date: body.date || todayLocal(),
+      startedAt: body.started_at ?? null,
+      timeSpent: body.time_spent,
+      description: body.description ?? null,
+      effortClassId: body.effort_class_id ?? TS_SET.defaults.timeAllocationEffortClassId,
+      correction: !!body.correction,
+      timeAllocationId: body.time_allocation_id ?? null,
+      // ★ GraphQL ile AYNI kısıt: REST'te de time entry bir ticket'a bağlanamaz.
+      assignment: null,
+      source: body.source ?? null,
+      sourceID: body.sourceID ?? null,
+    };
+    store.push(entry);
+    return { code: 201, body: timeEntryRest(entry) };
+  }
+
+  if (method === "PATCH" && kaynak === "time_entries" && segs[1]) {
+    const t = store.find((x) => x.id === segs[1]);
+    if (!t) return notFound(`TimeEntry bulunamadı: ${segs[1]}`);
+    if (body.time_spent != null) {
+      const bad = validateWrite({ timeSpent: body.time_spent, correction: !!body.correction,
+        description: body.description, personId: t.personId, date: body.date });
+      if (bad) return unprocessable(bad, "time_spent");
+      t.timeSpent = body.time_spent;
+    }
+    // two_step'in dayanağı REST'te de aynı: assignment'a DOKUNULMAZ.
+    if (body.date != null) t.date = body.date;
+    if (body.started_at != null) t.startedAt = body.started_at;
+    if (body.person_id != null) t.personId = body.person_id;
+    if (body.description != null) t.description = body.description;
+    if (body.effort_class_id != null) t.effortClassId = body.effort_class_id;
+    if (body.source != null) t.source = body.source;
+    if (body.sourceID != null) t.sourceID = body.sourceID;
+    return { code: 200, body: timeEntryRest(t) };
+  }
+
+  if (method === "PATCH" && (kaynak === "requests" || kaynak === "tasks") && segs[1]) {
+    // ⚠️ Yol B'nin REST karşılığı: PATCH ile time_spent göndermek. Gerçek REST'te
+    // bu parametrenin adı/varlığı DOĞRULANMAMIŞTIR (docs/08) — davranış GraphQL
+    // requestUpdate/taskUpdate ile bilinçli olarak AYNI tutuldu.
+    const rows = kaynak === "requests" ? F.requests.requests : F.tasks.tasks;
+    const parent = rows.find((r) => r.id === segs[1]);
+    if (!parent) return notFound(`${kaynak === "requests" ? "Request" : "Task"} bulunamadı: ${segs[1]}`);
+    if (body.time_spent != null) {
+      const bad = validateWrite({ timeSpent: body.time_spent, correction: false,
+        description: body.time_entry_description, personId: ME.id, date: todayLocal() });
+      if (bad) return unprocessable(bad, "time_spent");
+      const entry = {
+        id: mintId("TimeEntry"),
+        personId: ME.id,                     // ★ kontrol EDİLEMEZ — authenticated user
+        date: todayLocal(),                  // ★ kontrol EDİLEMEZ — bugün
+        startedAt: null,
+        timeSpent: body.time_spent,          // ★ ARTIMLI
+        description: body.time_entry_description ?? null,
+        effortClassId: body.time_spent_effort_class_id ?? TS_SET.defaults.requestEffortClassId,
+        correction: false,
+        timeAllocationId: null,
+        assignment: { type: kaynak === "requests" ? "Request" : "Task", id: parent.id },
+        source: null, sourceID: null,
+      };
+      store.push(entry);
+      parent.timeSpentTotalMinutes = (parent.timeSpentTotalMinutes ?? 0) + body.time_spent;
+    }
+    return { code: 200, body: kaynak === "requests" ? requestRest(parent) : taskRest(parent) };
+  }
+
+  return notFound(`Bilinmeyen REST yolu: ${method} /v1/${segs.join("/")}`);
 }
 
 // ── root field yönlendirmesi ────────────────────────────────────────────────
@@ -404,14 +642,20 @@ function handle(query, variables) {
     // günlerin kayıtlarını "bugün" sanmasına ve workday tavanına yanlış yerden
     // çarpmasına yol açar — bu sahte sunucunun ilk sürümündeki gerçek hataydı.
     const from = v.dateFrom;
+    const to = v.dateTo;       // xurrent_list_time_entries aralık sorgusu (dahil)
     const exact = v.date;
+    // sourceID filtresi: dedup geri-okuması (reliability.md §5). Gerçek
+    // TimeEntryFilter'da bu filtrenin varlığı DOĞRULANMALI'dır (D14).
+    const bySource = v.sourceID;
     const rows = store
       .filter((t) => (!pid || t.personId === pid)
         && (!from || t.date >= from)
-        && (!exact || t.date === exact))
+        && (!to || t.date <= to)
+        && (!exact || t.date === exact)
+        && (!bySource || t.sourceID === bySource))
       .slice()
       .reverse()
-      .slice(0, exact ? 100 : 5);
+      .slice(0, exact || bySource || to ? 100 : 5);
     return { data: { timeEntries: { nodes: rows.map(timeEntryNode) } } };
   }
 
@@ -431,7 +675,7 @@ function handle(query, variables) {
 
 // ── HTTP ────────────────────────────────────────────────────────────────────
 const server = http.createServer((req, res) => {
-  const send = (code, body, extra = {}) => {
+  const sendNow = (code, body, extra = {}) => {
     const json = JSON.stringify(body);
     res.writeHead(code, {
       "content-type": "application/json",
@@ -443,9 +687,39 @@ const server = http.createServer((req, res) => {
     });
     res.end(json);
   };
+  // --gecikme-ms tüm yanıtlara uygulanır (zaman aşımı/yavaşlık senaryoları).
+  const send = (code, body, extra = {}) =>
+    KAOS.gecikmeMs > 0 ? void setTimeout(() => sendNow(code, body, extra), KAOS.gecikmeMs)
+                       : sendNow(code, body, extra);
 
-  // Xurrent'ta introspection dışında her şey POST'tur.
-  if (req.method !== "POST") return send(405, gqlError("Yalnızca POST desteklenir."));
+  // İKİ YÜZEY: /v1/* REST'tir (GET/POST/PATCH), geri kalanı GraphQL (yalnız POST).
+  const u = new URL(req.url, "http://yerel");
+  const isRest = u.pathname === "/v1" || u.pathname.startsWith("/v1/");
+
+  if (!isRest && req.url !== "/_kaos" && req.method !== "POST")
+    return send(405, gqlError("GraphQL yüzeyinde yalnızca POST desteklenir. REST yüzeyi /v1 altındadır."));
+
+  // ── /_kaos: TEST YÜZEYİ (gerçek Xurrent'ta yoktur) ──
+  // Kaos bayraklarını süreç ÖLDÜRÜLMEDEN değiştirir. Neden gerekli: sahte sunucu
+  // yazmaları bellekte tutar; senaryo (g) "kaoslu bulk → kaossuz tekrar" akışında
+  // süreci yeniden başlatmak store'u sıfırlar ve dedup kanıtını imkânsız kılar.
+  if (req.url === "/_kaos") {
+    let raw = "";
+    req.on("data", (c) => { raw += c; });
+    req.on("end", () => {
+      try {
+        const patch = JSON.parse(raw || "{}");
+        for (const k of ["k429", "k500", "oran500", "gecikmeMs", "kirDesc"]) {
+          if (k in patch) KAOS[k] = patch[k];
+        }
+        log("kaos güncellendi".padEnd(24), JSON.stringify(KAOS));
+        sendNow(200, { data: { kaos: KAOS } });
+      } catch {
+        sendNow(400, gqlError("Kaos gövdesi geçerli JSON değil."));
+      }
+    });
+    return;
+  }
 
   // ── auth: gerçek sunucunun reddettiği durumlar ──
   const auth = req.headers["authorization"];
@@ -453,6 +727,24 @@ const server = http.createServer((req, res) => {
     return send(401, gqlError("Authorization header eksik veya hatalı. Beklenen: 'Bearer <token>'."));
   if (!req.headers["x-xurrent-account"])
     return send(400, gqlError("X-Xurrent-Account header zorunludur (hesap slug'ı, numerik değil)."));
+
+  // ── kaos: auth'tan SONRA, rate-check'ten ÖNCE ──
+  // 429 kaosu "istek işlenmeden reddedildi" sınıfını taklit eder — istemci
+  // Retry-After'a uyup tekrarlamalı, kayıt ÇİFTLENMEMELİDİR (senaryo f).
+  if (KAOS.k429 > 0) {
+    KAOS.k429--;
+    log("429 KAOS".padEnd(24), `kalan=${KAOS.k429}`);
+    return send(429, gqlError("Kaos: rate limit."), { "retry-after": "1" });
+  }
+  if (KAOS.k500 > 0) {
+    KAOS.k500--;
+    log("500 KAOS".padEnd(24), `kalan=${KAOS.k500}`);
+    return send(500, gqlError("Kaos: sunucu iç hatası."));
+  }
+  if (KAOS.oran500 > 0 && prng() < KAOS.oran500) {
+    log("500 KAOS(oran)".padEnd(24), `p=${KAOS.oran500}`);
+    return send(500, gqlError("Kaos: sunucu iç hatası (oranlı)."));
+  }
 
   const rl = rateCheck();
   if (!rl.ok) {
@@ -465,11 +757,45 @@ const server = http.createServer((req, res) => {
   let raw = "";
   req.on("data", (c) => { raw += c; if (raw.length > 2e6) req.destroy(); });
   req.on("end", () => {
+    // ── REST yüzeyi ──
+    if (isRest) {
+      let restBody = {};
+      if (raw) {
+        try { restBody = JSON.parse(raw); }
+        catch { return send(400, { errors: [{ message: "Gövde geçerli JSON değil." }] }); }
+      }
+      // --kaos-kir-desc REST karşılığı: aynı bayrak iki yüzeyde de kırar.
+      if (KAOS.kirDesc && req.method === "POST" && u.pathname === "/v1/time_entries"
+          && String(restBody.description ?? "").includes(KAOS.kirDesc)) {
+        log("500 KAOS(kir-desc)".padEnd(24), `REST ${KAOS.kirDesc}`);
+        return send(500, { errors: [{ message: `Kaos: '${KAOS.kirDesc}' kalemi kalıcı kırık.` }] });
+      }
+      try {
+        const segs = u.pathname.replace(/^\/v1\/?/, "").split("/").filter(Boolean);
+        const out = handleRest(req.method, segs, u.searchParams, restBody);
+        log(`REST ${req.method} /v1/${segs.join("/")}`.padEnd(24), out.code < 400 ? "ok" : String(out.code));
+        return send(out.code, out.body);
+      } catch (e) {
+        log("REST iç hata:", e?.message);
+        return send(500, { errors: [{ message: `Sahte sunucu iç hatası: ${e?.message}` }] });
+      }
+    }
+
+    // ── GraphQL yüzeyi ──
     let body;
     try { body = JSON.parse(raw); } catch { return send(400, gqlError("Gövde geçerli JSON değil.")); }
 
     const query = String(body.query ?? "");
     if (!query) return send(400, gqlError("query alanı zorunludur."));
+
+    // --kaos-kir-desc: eşleşen timeEntryCreate HER SEFERİNDE 500 alır.
+    // Retry bu kalemi KURTARAMAZ — kısmi bulk + tekrar-çalıştırma dersinin
+    // (senaryo g) kalıcı kırık kalemi budur.
+    if (KAOS.kirDesc && /timeEntryCreate/.test(query)
+        && String(body.variables?.input?.description ?? "").includes(KAOS.kirDesc)) {
+      log("500 KAOS(kir-desc)".padEnd(24), KAOS.kirDesc);
+      return send(500, gqlError(`Kaos: '${KAOS.kirDesc}' kalemi kalıcı kırık.`));
+    }
 
     // GraphQL istek başına 1 mutation kabul eder.
     const mutationCount = (query.match(/\bmutation\b/g) ?? []).length;

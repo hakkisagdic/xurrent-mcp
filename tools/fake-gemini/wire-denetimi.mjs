@@ -46,7 +46,11 @@ http.createServer((req, res) => {
       ok("systemInstruction ayri alanda", typeof b.systemInstruction?.parts?.[0]?.text === "string");
       ok("contents icinde 'system' rolu YOK", !b.contents.some(c => c.role === "system"));
       ok("roller yalnizca user|model", b.contents.every(c => c.role === "user" || c.role === "model"), JSON.stringify(b.contents.map(c => c.role)));
-      ok("tools[0].functionDeclarations var (8 tool)", b.tools?.[0]?.functionDeclarations?.length === 8, String(b.tools?.[0]?.functionDeclarations?.length));
+      ok("tools[0].functionDeclarations var (9 tool)", b.tools?.[0]?.functionDeclarations?.length === 9, String(b.tools?.[0]?.functionDeclarations?.length));
+      // timesheet_wizard SOHBET EDEN bir tool'dur; Gemini'ye verilirse model
+      // kendi kendine konusan bir donguye girebilir (contract/wizard.md 1).
+      ok("'timesheet_wizard' bildirimi YOK (kendi kendini cagirma dongusu kapali)", !b.tools[0].functionDeclarations.some(d => d.name === "timesheet_wizard"));
+      ok("'xurrent_list_time_entries' bildirimi VAR (okuma tool'u cevrilir)", b.tools[0].functionDeclarations.some(d => d.name === "xurrent_list_time_entries"));
       const json = JSON.stringify(b.tools[0].functionDeclarations);
       ok("gonderilen semada '$' ile baslayan anahtar YOK", !/"\$[a-zA-Z]/.test(json));
       for (const kw of ["additionalProperties", "pattern", "minimum", "maximum", "maxLength", "minItems", "maxItems", "oneOf", "anyOf", "allOf", "const", "format", "default"])
