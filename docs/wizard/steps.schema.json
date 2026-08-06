@@ -93,7 +93,7 @@
     },
     "ToolArgs": {
       "type": "object",
-      "description": "tools/call argümanları. String değerlerde {{today}}, {{yesterday}} ve {{tzOffset}} yer tutucuları çalışma anında çözülür.",
+      "description": "tools/call argümanları. String değerlerde {{today}}, {{yesterday}} ve {{tzOffset}} yer tutucuları çalışma anında çözülür. callToolSequence içinde ek olarak {{prev.<nokta.yolu>}} desteklenir: bir ÖNCEKİ çağrının structuredContent'inden değer okur (örn. timesheet_wizard diyaloğunda {{prev.sessionState}}) — yalnız tam eşleşme, metin içine gömme yok.",
       "additionalProperties": true
     },
     "Step": {

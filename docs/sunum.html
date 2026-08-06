@@ -287,7 +287,7 @@
   </p>
 
   <div class="pyramid">
-    <div class="layer"><span class="lname">birim</span><span class="lwhat">612 test · saf mantık: stratejiler, doğrulama, takvim, eşleştirme, imza. <em>Kenar durumları yakalar.</em></span></div>
+    <div class="layer"><span class="lname">birim</span><span class="lwhat">1131 test · saf mantık: stratejiler, doğrulama, takvim, eşleştirme, imza, retry/dedup, sihirbaz makinesi. <em>Kenar durumları yakalar.</em></span></div>
     <div class="layer"><span class="lname">sözleşme</span><span class="lwhat">Üç sunucunun <code>tools/list</code> ve <code>tools/call</code> çıktısı tek JSON'a karşı. <em>Diller arası sapmayı yakalar.</em></span></div>
     <div class="layer"><span class="lname">protokol</span><span class="lwhat">Ham JSON-RPC, negatif testler dahil. <em>Spec ihlallerini yakalar — SDK'nın sakladıklarını da.</em></span></div>
     <div class="layer"><span class="lname">wire</span><span class="lwhat">Giden isteğin gövdesi iddiaya sokulur. <em>"Çalışıyor ama yanlış konuşuyor"u yakalar.</em></span></div>
@@ -500,18 +500,26 @@ client ──<b> tools/call </b><i>(id:2)</i> ──▶ server</div>
   <p class="eyebrow plain">Durum</p>
   <h2>Ölçülmüş, iddia edilmemiş</h2>
   <div class="metrics">
-    <div class="metric"><span class="n">843</span><span class="l">birim test</span></div>
-    <div class="metric"><span class="n">17/17</span><span class="l">sihirbaz × 3 dil</span></div>
-    <div class="metric"><span class="n">21/21</span><span class="l">live kod yolu</span></div>
-    <div class="metric"><span class="n">30/30</span><span class="l">Gemini wire</span></div>
+    <div class="metric"><span class="n">1131</span><span class="l">birim test</span></div>
+    <div class="metric"><span class="n">24/24</span><span class="l">sihirbaz × 3 dil</span></div>
+    <div class="metric"><span class="n">62/62</span><span class="l">live kod yolu (GraphQL + REST + kaos)</span></div>
+    <div class="metric"><span class="n">31/31</span><span class="l">Gemini wire</span></div>
     <div class="metric"><span class="n">252</span><span class="l">uyum maddesi</span></div>
     <div class="metric"><span class="n">0</span><span class="l">açık ihlal</span></div>
   </div>
   <p>
-    Tek komut hepsini koşar: <code>node scripts/test-all.mjs</code>.
+    Tek komut hepsini koşar: <code>node scripts/test-all.mjs</code> — 20 adım.
     Başladığımızda 12 MUST ihlali vardı; hepsi kapatıldı. Sonra 4 SHOULD kaldı;
     onlar da kapandı. <code>bilinen-ihlaller.json</code> bir mazeret listesi değil
     <strong>borç defteriydi</strong> — ve <strong>artık boş</strong>.
+  </p>
+  <p>
+    Sözleşme 10 tool'a çıktı: yazılanı geri okuyan <code>xurrent_list_time_entries</code>
+    ve LLM'siz sohbeti sunucuya taşıyan <code>timesheet_wizard</code> (bir dilde başlayan
+    sohbet ötekinde sürer — ölçüldü). Retry/dedup politikası kaos senaryolarıyla,
+    REST v1 lehçesi parite koşusuyla, çift-çağ HTTP yüzeyi + API anahtarı kapısı
+    el sıkışma smoke'uyla kanıtlı. Copilot Studio konektörü üretilir; tenant
+    gerektiren yarısı <code>DOĞRULANMALI</code> listesindedir.
   </p>
   <div class="note">
     <span class="label">Dürüstlük</span>

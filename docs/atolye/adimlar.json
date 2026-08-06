@@ -1,8 +1,9 @@
 {
+  "$schema": "./adimlar.schema.json",
   "version": "1.0.0",
   "title": "xurrent-mcp — atölye: bu proje nasıl üretildi",
   "subtitle": "Sihirbaz uygulamanın NE YAPTIĞINI öğretir. Atölye NASIL ÜRETİLDİĞİNİ.",
-  "tahminiDakika": 60,
+  "tahminiDakika": 75,
   "fazlar": [
     {
       "id": "kesif",
@@ -33,6 +34,11 @@
       "id": "yayin",
       "baslik": "Yayın",
       "ozet": "Mantıksal commit'ler, sır taraması, ve neyin doğrulanmadığını yazma disiplini."
+    },
+    {
+      "id": "genisleme",
+      "baslik": "Genişleme — sözleşme büyürken tez değişmedi",
+      "ozet": "Güvenilirlik katmanı, iki yeni tool, ikinci transport, dış yüzeyler. Her biri önce sözleşmeye yazıldı, sonra üç dile birden uygulandı."
     }
   ],
   "adimlar": [
@@ -882,6 +888,203 @@
       ],
       "tuzak": null,
       "docs": "README.md"
+    },
+    {
+      "id": "17-guvenilirlik-katmani",
+      "faz": "genisleme",
+      "baslik": "Güvenilirlik: retry operasyonun özelliğidir, transportun değil",
+      "anlat": [
+        "Rate limit gerçeğiyle yüzleşme zamanı: fake sunucu 429 + retry-after üretiyordu ve üç istemci de bunu YOK SAYIYORDU. Refleks 'retry kütüphanesi tak' idi; ölçüm başka bir şey söyledi: requestUpdate/taskUpdate'in timeSpent'i ARTIMLIDIR ve idempotency anahtarı kabul etmez — belirsiz bir hatada kör tekrar, aynı süreyi iki kez sayar.",
+        "Politika önce contract/reliability.md'ye yazıldı: 429 herkes için tekrarlanabilir (istek işlenmedi); 5xx/ağ belirsizdir ve karar operasyona bakar — sorgular ve timeEntryUpdate tekrarlanır, timeEntryCreate önce sourceID geri-okumasıyla dedup edilir, parent update ASLA otomatik tekrarlanmaz.",
+        "Sonra üç dil aynı politikayı üç farklı kütüphaneyle uyguladı: p-retry, tenacity, Polly v8. stderr izi ([retry] ... reason=... waitMs=...) üç dilde BİREBİR aynı biçimde — senaryo koşucusu izleri sayarak politikayı doğrular.",
+        "Kanıt için fake sunucuya kaos modu eklendi (--kaos-429, --kaos-kir-desc, --tohum ile deterministik) ve iki senaryo yazıldı: (f) 429 fırtınasında yazma yine başarılı ve kayıt TEK; (g) kısmen kırılan bulk, AYNI komutla tekrar çalıştırılınca eksik tamamlanır, çift oluşmaz."
+      ],
+      "prompt": "Sunuculara güvenilirlik katmanı ekleyeceğiz. ÖNCE contract/reliability.md yaz:\nhata sınıflandırması (429 = kesin-işlenmedi; 5xx/ağ = belirsiz; iş kuralı =\nasla), operasyon sınıfları (sorgu / timeEntryCreate / timeEntryUpdate / parent\nupdate) ve her sınıfın belirsiz hatadaki kaderi. timeSpent'in ARTIMLI olduğunu\nve parent update'in idempotency anahtarı almadığını politikanın merkezine koy.\n\nSonra üç dilde uygula: p-retry (TS), tenacity (Python), Polly v8 (C#) — ama\npolitika sabitleri ve stderr iz biçimi ([retry] op=... attempt=k/n reason=...\nwaitMs=...) üçünde de birebir aynı olsun. Fake sunucuya bayrakla açılan,\ntohumla deterministik kaos modu ekle ve iki senaryo yaz: 429 fırtınası\naltında tam-bir-kez yazma; kısmen kırılan bulk'ın dedup'la güvenli tekrarı.",
+      "karar": {
+        "soru": "Retry katmanı nereye konur?",
+        "secenekler": [
+          {
+            "etiket": "HTTP taşıma katmanına, her isteğe aynı politika",
+            "artisi": "Tek nokta; en az kod",
+            "eksisi": "requestUpdate'i de tekrarlar — belirsiz hatada ÇİFT SAYIM. Veri bozan bir kolaylık"
+          },
+          {
+            "etiket": "Operasyon sınıflarına göre, sözleşmesi ayrı dosyada",
+            "artisi": "Tekrar kararı operasyonun doğasına bakar; üç dil aynı sözleşmeyi uygular; iz biçimi ölçülebilir",
+            "eksisi": "Daha çok kavram: sınıf tablosu, dedup geri-okuması, iz formatı"
+          },
+          {
+            "etiket": "Retry'ı hiç eklememek, 429'u kullanıcıya göstermek",
+            "artisi": "En dürüst basitlik",
+            "eksisi": "8 kayıtlık bulk gerçek dünyada rate limit'e çarpar; 'tekrar dene' yükü kullanıcıya kalır"
+          }
+        ],
+        "secilen": "Operasyon sınıflarına göre, sözleşmesi ayrı dosyada",
+        "neden": "Aynı HTTP hatası bir operasyonda güvenle tekrarlanır, başkasında çift kayıt üretir — karar koddan önce sözleşmeye yazılmalıydı. Kütüphane üç dilde farklı, politika tek: 'dil bir detaydır' tezinin güvenilirlik ayağı ancak böyle ölçülebilir kalıyor."
+      },
+      "uretilenDosyalar": [
+        "contract/reliability.md",
+        "servers/typescript/src/xurrent/retry.ts",
+        "servers/python/src/xurrent_mcp/xurrent/retry.py",
+        "servers/csharp/Xurrent/RetryPolicy.cs"
+      ],
+      "dogrulama": {
+        "komut": "node tools/fake-xurrent/senaryolar.mjs --dil ts",
+        "beklenen": "f) ve g) senaryoları dahil tümü yeşil; [retry reason=429] izi sayılmış"
+      },
+      "ogrenim": [
+        "Retry transportun değil operasyonun özelliğidir. 'Kesin mesajlaşma' satın alınmaz: en-az-bir-kez teslim + deterministik anahtarla tekilleştirme kurulur; bulk'ın kurtarması 'aynı komutu tekrar çalıştır' olur."
+      ],
+      "tuzak": "Kaosun deterministik olmaması. İlk akla gelen Math.random ile %20 hata enjekte etmekti — kırmızı bir koşu TEKRARLANAMAYINCA hata ayıklanamaz. fake-gemini'nin tohumlu zar deseni buraya taşındı: aynı tohum, aynı arıza dizisi.",
+      "docs": "docs/15-guvenilirlik.md"
+    },
+    {
+      "id": "18-sihirbaz-tool-u",
+      "faz": "genisleme",
+      "baslik": "Sözleşmeye iki tool: geri-okuma ve LLM'siz sohbet",
+      "anlat": [
+        "İki boşluk vardı: yazma raporuna güveniyorduk (geri-okuma tool'u yoktu) ve sohbet yeteneği host'un LLM'ine mahkûmdu (Copilot Studio gibi yüzeylerde onay akışını biz yönetemiyorduk).",
+        "xurrent_list_time_entries basitti: kişi + tarih aralığı + sourceID filtresi. timesheet_wizard ise bir TASARIM işiydi: sunucu-güdümlü deterministik durum makinesi, LLM'siz. Kullanıcı cümlesi + imzalı sessionState girer; Türkçe yanıt + yapılandırılmış soru + yeni sessionState çıkar.",
+        "Makine önce contract/wizard.md'ye yazıldı: adımlar, geçişler, cevap ayrıştırma kuralları ('2 saat' → 120 ve bu çevirim SÖYLENİR), sessionState wire biçimi. Kritik ayrıntı: HMAC payload BYTE'LARI üzerinde hesaplanır — kanonikleştirme gerekmez, bu yüzden TS'in ürettiği state Python'a verilebilir.",
+        "Spec'teki iki belirsizlik (step alanının anlamı, detail cevabının birleşik ayrıştırması) üç dil FARKLI yorumlamadan önce sözleşmeye sabitlendi. Senaryo (h) tek sohbeti ts → py → cs sırasıyla üç sunucuda yürütür: bir dilde başlayan sohbet ötekinde sürer."
+      ],
+      "prompt": "Sözleşmeye iki tool ekleyeceğiz. Önce contract/tools.json'a tanımları yaz:\nxurrent_list_time_entries (kişi + tarih aralığı + sourceId filtreli geri-okuma)\nve timesheet_wizard (sunucu-güdümlü sohbet durum makinesi).\n\nSihirbaz için ayrı bir sözleşme dosyası yaz (contract/wizard.md): adımlar ve\ngeçişler, Türkçe cevap ayrıştırma kuralları ('2 saat' → 120 dakika ve çevirim\nkullanıcıya söylenir; 'dün 14:00 VPN bakımı' tek cümleden tarih+saat+açıklama),\nHMAC imzalı sessionState'in wire biçimi (imza payload byte'ları üzerinde —\nkanonikleştirme gerekmesin ki diller arası devir çalışsın), onaylanan plandan\nsapmayı engelleyen plannedFingerprint.\n\nSonra üç dilde uygula. Sihirbaz LLM sağlayıcısına ÇEVRİLMEZ (kendi kendini\nçağırma döngüsü) — wire denetimine bunun iddiasını ekle. Çapraz-dil devri için\nsenaryo yaz: sohbet TS'te başlasın, Python'da sürsün, C#'ta bitsin.",
+      "karar": {
+        "soru": "Chatbot yeteneği nerede yaşamalı?",
+        "secenekler": [
+          {
+            "etiket": "Host'un LLM'inde (mevcut durum)",
+            "artisi": "Sunucu basit kalır; Claude/Gemini zaten iyi orkestre eder",
+            "eksisi": "LLM'siz yüzeylerde (Copilot Studio konektörü, düz terminal) sohbet YOK; onay akışı host'un insafına kalır"
+          },
+          {
+            "etiket": "Sunucuda deterministik durum makinesi (timesheet_wizard)",
+            "artisi": "Her yüzeyde aynı diyalog; onay atlatılamaz; test edilebilir — LLM çıktısı değil durum makinesi",
+            "eksisi": "Serbest metin anlayışı kural tabanlı — sohbet 'akıllı' değil, GÜVENİLİR"
+          },
+          {
+            "etiket": "Her yüzeye ayrı bot yazmak",
+            "artisi": "Yüzeye özel deneyim",
+            "eksisi": "N yüzey × 3 dil bakım maliyeti; onay mantığı kopyalanır ve ayrışır"
+          }
+        ],
+        "secilen": "Sunucuda deterministik durum makinesi (timesheet_wizard)",
+        "neden": "Sohbet yeteneği ürünün değil SÖZLEŞMENİN özelliği olmalıydı. Durum makinesi + imzalı durum, 'stateless sunucu' mimarisiyle de uyumlu: oturum yok, her tur kendi kanıtını taşıyor. LLM istendiğinde üstüne yine konabilir — tersi doğru değil."
+      },
+      "uretilenDosyalar": [
+        "contract/wizard.md",
+        "servers/typescript/src/core/wizard.ts",
+        "servers/python/src/xurrent_mcp/core/wizard.py",
+        "servers/csharp/Core/TimesheetWizard.cs"
+      ],
+      "dogrulama": {
+        "komut": "node tools/fake-xurrent/senaryolar.mjs",
+        "beklenen": "h) çapraz-dil devir kontrolleri yeşil: TS'in state'ini Python, Python'unkini C# kabul eder"
+      },
+      "ogrenim": [
+        "İnce host'ta chatbot olmak için LLM gerekmez: durum makinesi + imzalı oturum durumu yeter. İmza byte üzerinde atılırsa kanonikleştirme derdi olmaz ve durum diller arasında taşınır — 'stateless olmak, state'i taşıyıcıya emanet etmek demek' dersinin sohbet hâli."
+      ],
+      "tuzak": "Sihirbazı Gemini'ye çevrilen tool listesinde bırakmak. Chatbot, sohbet tool'unu çağırınca içinde İKİNCİ bir sohbet açılıyor — öz-çağrı döngüsü. Çözüm filtre + wire denetimine 'timesheet_wizard functionDeclarations listesinde YOK' iddiası: hata bir daha SESSİZCE dönemez.",
+      "docs": "contract/wizard.md"
+    },
+    {
+      "id": "19-rest-ve-resmi-sdk",
+      "faz": "genisleme",
+      "baslik": "İkinci transport: REST v1 — ve resmî SDK'nın ölçülmesi",
+      "anlat": [
+        "Kurumsal gerçek: bazı ortamlarda yalnız REST'e izin verilir. Sözleşme doğru katmandaysa bu bir yeniden yazım değil adaptör işidir — önce sahte sunucuya /v1 REST yüzeyi eklendi (snake_case alanlar, HTTP 422 hata modeli, Yol B'nin PATCH karşılığı), sonra üç dile birer RestXurrentAdapter yazıldı.",
+        "Senaryo koşucusu artık her dili iki kez sürer: GraphQL geçişi (a–g) ve [rest] geçişi (a–e). İki geçiş AYNI sayıları üretmek zorunda — 'transport bir adaptör detayıdır' iddiasının ölçümü budur.",
+        "Resmî Xurrent.GraphQL .NET SDK'sı da İSTENDİĞİ için ölçüldü: 30 dakikalık sonda, endpoint override'ının OLMADIĞINI gösterdi (apiBaseUrl bir domain soneki; sahte sunucuya yönlendirilemiyor). Karar ağacının üçüncü dalı uygulandı: SDK, C#'a üçüncü seçenek olarak eklendi (XURRENT_API=graphql-sdk), girdi-kurma katmanı birim testli, canlı davranış DOĞRULANMALI.",
+        "Sonda iki ders bulgusu daha verdi: SDK'nın UpdateInput tiplerinde timeEntryDescription alanı yok (API'nin tamamını taşımıyor) ve SDK kendi retry'ını yönetiyor (üstüne Polly sarmak çift sayım riski — sarılMADI, sınır belgelendi)."
+      ],
+      "prompt": "Xurrent'ın REST v1 API'sini ikinci transport olarak ekleyeceğiz. Önce sahte\nsunucuya /v1 yüzeyi ekle: snake_case alanlar (sourceID hariç — REST'te de\ncamel), validation hataları HTTP 422 + errors gövdesi, PATCH /requests/:id\nile artımlı time_spent (Yol B'nin REST karşılığı). GraphQL davranışıyla\nbirebir aynı kısıtlar: POST /time_entries ticket'a bağlayamaz.\n\nSonra üç dile RestXurrentAdapter yaz — AYNI adaptör arayüzü, AYNI retry\npolitikası (422 asla tekrarlanmaz), AYNI izler. Senaryo koşucusuna [rest]\ngeçişi ekle: temel senaryolar iki transportta aynı sayıları üretmeli.\n\nC# için resmî Xurrent.GraphQL NuGet paketini ÖNCE SONDA ET (30 dk bütçe):\nendpoint'i sahte sunucuya yönlendirilebiliyor mu? Sonuca göre üç dallı karar:\ntam geçiş / üçüncü seçenek olarak ekle / yalnız belgele. Bulduğun her SDK\nkısıtını ders notu olarak yaz.",
+      "karar": {
+        "soru": "Resmî .NET SDK'sı el yazması GraphQL istemcisinin yerini almalı mı?",
+        "secenekler": [
+          {
+            "etiket": "Tam geçiş: el yazması silinir, SDK tek yol olur",
+            "artisi": "Vendor desteği; tip güvenliği bedava",
+            "eksisi": "Endpoint override'ı yok → sahte sunucuya karşı koşan TÜM senaryolar kör kalır; test edilebilirlik kaybı"
+          },
+          {
+            "etiket": "Üçüncü seçenek: XURRENT_API=graphql-sdk, varsayılan el yazması kalır",
+            "artisi": "SDK gerçek; kapı yeşil kalır; 'vendor SDK vs el yazması' karşıtlığı ölçülebilir ders olur",
+            "eksisi": "C#'ta üç canlı yol bakımı; SDK yolu yalnız girdi-kurma seviyesinde test edilebiliyor"
+          },
+          {
+            "etiket": "SDK'yı hiç eklememek, yalnız belgelemek",
+            "artisi": "Sıfır bakım",
+            "eksisi": "'Resmî SDK kullanılsın' isteği karşılanmaz; kısıtlar iddia olarak kalır, ölçüm olmaz"
+          }
+        ],
+        "secilen": "Üçüncü seçenek: XURRENT_API=graphql-sdk, varsayılan el yazması kalır",
+        "neden": "Sonda ölçtü: SDK sahte sunucuya yönlendirilemiyor. Test edilebilirliği ders kapısından feda etmek yerine SDK üçüncü yol oldu — kısıtları (eksik alan, kendi retry'ı, endpoint kilidi) artık iddia değil, teste bağlanmış gözlem."
+      },
+      "uretilenDosyalar": [
+        "servers/typescript/src/xurrent/rest.ts",
+        "servers/python/src/xurrent_mcp/xurrent/rest.py",
+        "servers/csharp/Xurrent/RestAdapter.cs",
+        "servers/csharp/Xurrent/SdkLiveAdapter.cs"
+      ],
+      "dogrulama": {
+        "komut": "node tools/fake-xurrent/senaryolar.mjs --dil py",
+        "beklenen": "GraphQL geçişi (a–g) VE [rest] geçişi (a–e) aynı koşuda yeşil"
+      },
+      "ogrenim": [
+        "Sözleşme doğru katmandaysa ikinci transport bir adaptör dosyasıdır. SDK bir bağımlılıktır ve sınırlarıyla satın alınır: sözleşmeniz SDK tipine değil API'ye yazılmalı; test edilebilirlik bir özellik talebidir — kendi adaptörünüzde base URL'i parametre yapın."
+      ],
+      "tuzak": "İki hata modelini tek sanmak. GraphQL iş kuralı hatasını HTTP 200 + payload.errors ile, REST 422 + gövde ile döner. 422'yi 'HTTP hatası' sayıp retry'a sokmak aynı reddi beş kez tekrarlar; 'başarı' sayıp geçmek sessiz veri kaybıdır. Adaptörün asıl işi lehçe çevirisidir.",
+      "docs": "docs/16-rest-ve-sdk.md"
+    },
+    {
+      "id": "20-yuzeyler-ve-cli",
+      "faz": "genisleme",
+      "baslik": "Dış yüzeyler: HTTP kapısı, Copilot Studio, plugin sözleşmesi, xmcp",
+      "anlat": [
+        "Üç sunucunun HTTP yüzeyi uyumsuzdu: farklı yollar, farklı oturum duruşları. Tek tablo sözleşme oldu: /mcp/v1 oturumlu 2025 çağı, /mcp/v2 stateless 2026 çağı, MCP_API_KEY doluysa X-MCP-Api-Key kapısı + 0.0.0.0, boşsa yalnız loopback. CI'ya el sıkışma smoke adımı eklendi: v1 Mcp-Session-Id veriyor mu, v2 10 tool listeliyor mu, anahtarsız istek 401 alıyor mu — üç dilde.",
+        "Copilot Studio bugün OTURUMLU Streamable HTTP konuşur — çift-çağ mimarisi tam bu an içindir: Microsoft'un chatbot yüzeyi /mcp/v1'e bağlanır, sohbetin aklı yine timesheet_wizard'dadır. Konektör YAML'ı elle yazılmaz, üretilir (host her demoda değişir); taahhütlü kopya yer tutucu host taşır ve --kontrol CI'da senkronu denetler.",
+        "Plugin sorusu 'çalışma anında kod yükleme' değil 'sözleşme' olarak cevaplandı: plugins/<ad>/manifest.json + şema + doğrulayıcı. Yerleşik pluginler (takvimler, backend'ler) env ile seçilir; paket pluginler (copilot-studio) artefaktlarını dış sisteme verir. Yanlış env adı yazan manifest CI'da kırmızıdır.",
+        "Son parça xmcp: ham JSON-RPC konuşan, iki çağı da bilen, Ink TUI'li bir istemci. xmcp chat --script ile sohbet CI'da başsız test edilir; --exec ile sözleşmeyi implemente eden HERHANGİ bir sunucu takılır — istemci de dilden bağımsızdır."
+      ],
+      "prompt": "Dış yüzeyleri bağlayacağız. Dört iş:\n\n1) Üç sunucunun HTTP transport'unu TEK yol tablosuna getir: /mcp/v1 oturumlu\n(2025-11-25, initialize + Mcp-Session-Id), /mcp/v2 stateless (2026-07-28),\nMCP_API_KEY kapısı (boşsa yalnız loopback; doluysa sabit-zamanlı karşılaştırma,\nyanlış anahtara 401). CI'ya üç dilde el sıkışma smoke testi ekle.\n\n2) Copilot Studio konektör paketi: swagger 2.0 + x-ms-agentic-protocol:\nmcp-streamable-1.0, ÜRETİCİ betikle (host parametrik, taahhütlü kopya yer\ntutucu host taşır, --kontrol senkron denetler). Kurulum yürüyüşünü dev tunnel\nüzerinden yaz; Xurrent PAT'inin sunucuda kaldığını güvenlik modeline koy.\n\n3) Plugin modelini sözleşmeye bağla: manifest şeması + doğrulayıcı; mevcut\ntakvim/backend fabrikaları yerleşik plugin olarak manifest'lensin.\n\n4) xmcp: ham JSON-RPC ile iki çağı da konuşan bir CLI istemcisi — tools/call/\nprobe/conformance fiilleri + timesheet_wizard'ı süren Ink TUI chat.\nchat --script ile başsız test edilebilsin.",
+      "karar": {
+        "soru": "'Plugin mimarisi' ne demek olacak?",
+        "secenekler": [
+          {
+            "etiket": "Çalışma anında kod yükleme (üç dilde plugin loader)",
+            "artisi": "Gerçek eklenti deneyimi",
+            "eksisi": "3 dil × yükleme mekanizması + güvenlik yüzeyi + sürümleme; ders değeri düşük, bakım yüksek"
+          },
+          {
+            "etiket": "Konfigürasyonla seçilen adaptör + manifest sözleşmesi",
+            "artisi": "Zaten var olan fabrika dikişleri sözleşmeye bağlanır; doğrulayıcı CI'da; sıfır yeni saldırı yüzeyi",
+            "eksisi": "'Plugin' kelimesinin beklentisini şema + doğrulayıcıyla karşılıyorsunuz — kod yükleme yok"
+          },
+          {
+            "etiket": "Hiç adlandırmamak — env anahtarları yeterli",
+            "artisi": "Sıfır iş",
+            "eksisi": "Hangi env'in neyi açtığı, neyin belgeli olduğu dağınık kalır; yeni yüzey eklemenin tarifi olmaz"
+          }
+        ],
+        "secilen": "Konfigürasyonla seçilen adaptör + manifest sözleşmesi",
+        "neden": "Projenin genel tezi mimariye uygulandı: asıl beceri kod yazmak değil doğru sözleşmeyi tarif etmek. Tek satır 'framework' kodu yazılmadı; bir şema, bir doğrulayıcı, bir üretici yazıldı — ve yanlış env adı artık sessiz bir kusur değil, CI kırmızısı."
+      },
+      "uretilenDosyalar": [
+        "plugins/manifest.schema.json",
+        "plugins/copilot-studio/connector.yaml",
+        "scripts/gen-connector.mjs",
+        "scripts/validate-plugins.mjs",
+        "clients/cli/xmcp.mjs"
+      ],
+      "dogrulama": {
+        "komut": "node scripts/test-all.mjs --sadece pluginler,konektor,kabuk-http",
+        "beklenen": "7 manifest geçerli · connector.yaml üreticiyle senkron · üç dilde v1 oturum + v2 10 tool + anahtarsız 401"
+      },
+      "ogrenim": [
+        "Çift-çağ mimarisi nostalji değil entegrasyon gerçeğidir: güncel spec stateless'ken Copilot Studio oturumlu konuşur — köprü, aynı çekirdeğin iki kabuğudur. Kapı anahtarı (MCP_API_KEY) ile hizmet kimliği (Xurrent PAT) ayrı katmanlardır; dış yüzey ikisini asla aynı anda görmez."
+      ],
+      "tuzak": "Anahtarsız tunnel açmak. Dev tunnel'ı --allow-anonymous ile açıp MCP_API_KEY'i boş bırakmak, mock modda bile tool listenizi internete verir. Bu yüzden kapı 'boşsa yalnız loopback' kuralıyla FAIL-CLOSED tasarlandı: unutkanlık, açık kapı değil kapalı kapı üretir.",
+      "docs": "docs/17-plugin-ve-copilot.md"
     }
   ]
 }

@@ -4,19 +4,41 @@
   "title": "xurrent-mcp — AI destekli geliştirme dersi",
   "subtitle": "Bir MCP sunucusu ve chatbot'u sıfırdan anlamak",
   "estimatedMinutes": 45,
-
   "_howItWorks": "Sihirbaz bir MCP CLIENT'tır. --server ts|py|cs ile üç sunucudan herhangi birine bağlanır ve aşağıdaki adımları sırayla yürütür. Her adımda önce anlatır, sonra GERÇEK bir tool çağrısı yapar, sonra çıktıyı yorumlar. Ders boyunca hiçbir çıktı önceden yazılmamıştır — hepsi canlı üretilir.",
-
   "chapters": [
-    { "id": "giris", "title": "Giriş: problem ve protokol" },
-    { "id": "okuma", "title": "Okuma tool'ları: veriyi görmek" },
-    { "id": "kisit", "title": "Kısıtı keşfetmek" },
-    { "id": "yazma", "title": "Yazma: dry-run, onay, strateji" },
-    { "id": "takvim", "title": "Takvim: gerçek dünyanın dağınıklığı" },
-    { "id": "protokol", "title": "Protokol değişti: breaking change'i yaşamak" },
-    { "id": "kapanis", "title": "Kapanış: protokol vaadi" }
+    {
+      "id": "giris",
+      "title": "Giriş: problem ve protokol"
+    },
+    {
+      "id": "okuma",
+      "title": "Okuma tool'ları: veriyi görmek"
+    },
+    {
+      "id": "kisit",
+      "title": "Kısıtı keşfetmek"
+    },
+    {
+      "id": "yazma",
+      "title": "Yazma: dry-run, onay, strateji"
+    },
+    {
+      "id": "takvim",
+      "title": "Takvim: gerçek dünyanın dağınıklığı"
+    },
+    {
+      "id": "protokol",
+      "title": "Protokol değişti: breaking change'i yaşamak"
+    },
+    {
+      "id": "sohbet",
+      "title": "Sohbet ve geri-okuma: LLM'siz chatbot"
+    },
+    {
+      "id": "kapanis",
+      "title": "Kapanış: protokol vaadi"
+    }
   ],
-
   "steps": [
     {
       "id": "01-neden-mcp",
@@ -37,7 +59,6 @@
       ],
       "docs": "docs/00-genel-bakis.md"
     },
-
     {
       "id": "02-tools-list",
       "chapter": "giris",
@@ -50,7 +71,11 @@
       ],
       "listTools": true,
       "expect": [
-        { "check": "toolCount", "equals": 8, "explain": "Sözleşmede 8 tool var: 4 okuma, 2 yazma, 1 takvim, 1 önizleme." }
+        {
+          "check": "toolCount",
+          "equals": 10,
+          "explain": "Sözleşmede 10 tool var: 5 okuma, 2 yazma, 1 takvim, 1 önizleme, 1 sohbet."
+        }
       ],
       "reveal": [
         "Dikkat et: yazma tool'larında 'readOnlyHint: false' var. Claude Code bu ipucunu izin isterken kullanır.",
@@ -58,7 +83,6 @@
       ],
       "docs": "docs/03-mcp-tasarimi.md"
     },
-
     {
       "id": "03-whoami",
       "chapter": "okuma",
@@ -67,10 +91,21 @@
         "Her entegrasyonun ilk sorusu aynıdır: 'ben kimim ve nereye bağlıyım?'",
         "Xurrent'ta bu tek bir GraphQL sorgusuyla cevaplanır ve maliyeti 1 puandır. Aynı sorgu rate limit durumunu da döner — bağlantıyı doğrulamanın en ucuz yolu."
       ],
-      "callTool": { "name": "xurrent_whoami", "args": {} },
+      "callTool": {
+        "name": "xurrent_whoami",
+        "args": {}
+      },
       "expect": [
-        { "path": "mode", "equals": "mock", "explain": "Mock modda çalışıyoruz — token yok, internet yok, fixtures/ klasöründen okunuyor." },
-        { "path": "person.name", "exists": true, "explain": "Authenticated user çözüldü." }
+        {
+          "path": "mode",
+          "equals": "mock",
+          "explain": "Mock modda çalışıyoruz — token yok, internet yok, fixtures/ klasöründen okunuyor."
+        },
+        {
+          "path": "person.name",
+          "exists": true,
+          "explain": "Authenticated user çözüldü."
+        }
       ],
       "reveal": [
         "person.id değerine bak: opak bir base64 string. Bu Xurrent'ın GraphQL global node ID'sidir.",
@@ -78,7 +113,6 @@
       ],
       "docs": "docs/01-xurrent-api.md#kimlik"
     },
-
     {
       "id": "04-acik-isler",
       "chapter": "okuma",
@@ -88,10 +122,23 @@
         "Xurrent'ta iki ayrı kayıt tipi var: Request (talep) ve Task (görev). İkisini de çekmemiz gerekiyor.",
         "Burada üç tuzak var ve üçü de SESSİZ hata üretir — yani yanlış yaparsan hata almazsın, sadece eksik veri alırsın. En kötü hata türü."
       ],
-      "callTool": { "name": "xurrent_list_open_work", "args": { "personId": "$me" } },
+      "callTool": {
+        "name": "xurrent_list_open_work",
+        "args": {
+          "personId": "$me"
+        }
+      },
       "expect": [
-        { "path": "requests.totalCount", "equals": 3, "explain": "3 açık Request. 4. kayıt (70120) 'completed' olduğu için elendi." },
-        { "path": "tasks.totalCount", "equals": 3, "explain": "3 açık Task. 4. kayıt (4390) 'approved' olduğu için elendi — 'completed' DEĞİL." }
+        {
+          "path": "requests.totalCount",
+          "equals": 3,
+          "explain": "3 açık Request. 4. kayıt (70120) 'completed' olduğu için elendi."
+        },
+        {
+          "path": "tasks.totalCount",
+          "equals": 3,
+          "explain": "3 açık Task. 4. kayıt (4390) 'approved' olduğu için elendi — 'completed' DEĞİL."
+        }
       ],
       "reveal": [
         "TUZAK 1 — Filtre asimetrisi: RequestFilter'da atanan kişi alanı 'member', TaskFilter'da 'assignee'. TaskFilter'da 'member' YOKTUR. Karıştırırsan boş liste alırsın, hata almazsın.",
@@ -110,7 +157,6 @@
       },
       "docs": "docs/01-xurrent-api.md#acik-isler"
     },
-
     {
       "id": "05-zaman-baglami",
       "chapter": "kisit",
@@ -121,10 +167,23 @@
         "Varsayılanı 60'tır. Yani varsayılan yapılandırmalı bir hesapta 45 dakikalık bir giriş REDDEDİLİR.",
         "Bu, Xurrent entegrasyonlarındaki en yaygın sessiz hatadır. Bu yüzden bu tool'u her yazmadan önce çalıştırıyoruz."
       ],
-      "callTool": { "name": "xurrent_get_time_tracking_context", "args": { "personId": "$me" } },
+      "callTool": {
+        "name": "xurrent_get_time_tracking_context",
+        "args": {
+          "personId": "$me"
+        }
+      },
       "expect": [
-        { "path": "timeIncrement", "equals": 30, "explain": "Bu demo hesabında 30 dakika. Yani 45 dakikalık toplantı olduğu gibi yazılamaz." },
-        { "path": "effortClasses.length", "equals": 3, "explain": "4 effort class var ama biri disabled — client tarafında elendi." }
+        {
+          "path": "timeIncrement",
+          "equals": 30,
+          "explain": "Bu demo hesabında 30 dakika. Yani 45 dakikalık toplantı olduğu gibi yazılamaz."
+        },
+        {
+          "path": "effortClasses.length",
+          "equals": 3,
+          "explain": "4 effort class var ama biri disabled — client tarafında elendi."
+        }
       ],
       "reveal": [
         "effortClasses'ta 3 kayıt var, fixture'da 4 tane. Eksik olan 'Eski tarife' — disabled=true.",
@@ -133,7 +192,6 @@
       ],
       "docs": "docs/02-zaman-girisi-modeli.md#timeincrement"
     },
-
     {
       "id": "06-iki-yol",
       "chapter": "kisit",
@@ -149,13 +207,37 @@
       ],
       "callTool": null,
       "table": {
-        "headers": ["", "Yol A: timeEntryCreate", "Yol B: requestUpdate/taskUpdate"],
+        "headers": [
+          "",
+          "Yol A: timeEntryCreate",
+          "Yol B: requestUpdate/taskUpdate"
+        ],
         "rows": [
-          ["Ticket'a bağlar mı?", "HAYIR — assignment=null", "EVET — tek yol"],
-          ["date (T-1) kontrolü", "VAR", "YOK — sunucu 'bugün' atar"],
-          ["startedAt (başlangıç saati)", "VAR", "YOK"],
-          ["personId (başkası adına)", "VAR", "YOK — authenticated user"],
-          ["İstek sayısı", "1", "1"]
+          [
+            "Ticket'a bağlar mı?",
+            "HAYIR — assignment=null",
+            "EVET — tek yol"
+          ],
+          [
+            "date (T-1) kontrolü",
+            "VAR",
+            "YOK — sunucu 'bugün' atar"
+          ],
+          [
+            "startedAt (başlangıç saati)",
+            "VAR",
+            "YOK"
+          ],
+          [
+            "personId (başkası adına)",
+            "VAR",
+            "YOK — authenticated user"
+          ],
+          [
+            "İstek sayısı",
+            "1",
+            "1"
+          ]
         ]
       },
       "reveal": [
@@ -175,7 +257,6 @@
       },
       "docs": "docs/02-zaman-girisi-modeli.md#iki-yol"
     },
-
     {
       "id": "07-dry-run",
       "chapter": "yazma",
@@ -198,8 +279,16 @@
         }
       },
       "expect": [
-        { "path": "dryRun", "equals": true, "explain": "Hiçbir şey yazılmadı." },
-        { "path": "planned.length", "equals": 2, "explain": "two_step stratejisi 2 mutation planladı: requestUpdate + timeEntryUpdate." }
+        {
+          "path": "dryRun",
+          "equals": true,
+          "explain": "Hiçbir şey yazılmadı."
+        },
+        {
+          "path": "planned.length",
+          "equals": 2,
+          "explain": "two_step stratejisi 2 mutation planladı: requestUpdate + timeEntryUpdate."
+        }
       ],
       "reveal": [
         "planned dizisindeki iki adıma dikkat et. 1/2 requestUpdate, 2/2 timeEntryUpdate.",
@@ -208,7 +297,6 @@
       ],
       "docs": "docs/03-mcp-tasarimi.md#dry-run"
     },
-
     {
       "id": "08-strateji-karsilastirma",
       "chapter": "yazma",
@@ -221,17 +309,38 @@
         {
           "label": "two_step",
           "name": "xurrent_create_time_entry",
-          "args": { "targetType": "request", "targetId": "TW9jay9SZXF1ZXN0LzcwMjQ4", "minutes": 120, "date": "{{yesterday}}", "backdateStrategy": "two_step", "dryRun": true }
+          "args": {
+            "targetType": "request",
+            "targetId": "TW9jay9SZXF1ZXN0LzcwMjQ4",
+            "minutes": 120,
+            "date": "{{yesterday}}",
+            "backdateStrategy": "two_step",
+            "dryRun": true
+          }
         },
         {
           "label": "link_first",
           "name": "xurrent_create_time_entry",
-          "args": { "targetType": "request", "targetId": "TW9jay9SZXF1ZXN0LzcwMjQ4", "minutes": 120, "date": "{{yesterday}}", "backdateStrategy": "link_first", "dryRun": true }
+          "args": {
+            "targetType": "request",
+            "targetId": "TW9jay9SZXF1ZXN0LzcwMjQ4",
+            "minutes": 120,
+            "date": "{{yesterday}}",
+            "backdateStrategy": "link_first",
+            "dryRun": true
+          }
         },
         {
           "label": "date_first",
           "name": "xurrent_create_time_entry",
-          "args": { "targetType": "request", "targetId": "TW9jay9SZXF1ZXN0LzcwMjQ4", "minutes": 120, "date": "{{yesterday}}", "backdateStrategy": "date_first", "dryRun": true }
+          "args": {
+            "targetType": "request",
+            "targetId": "TW9jay9SZXF1ZXN0LzcwMjQ4",
+            "minutes": 120,
+            "date": "{{yesterday}}",
+            "backdateStrategy": "date_first",
+            "dryRun": true
+          }
         }
       ],
       "reveal": [
@@ -242,13 +351,16 @@
       ],
       "quiz": {
         "question": "Yönetim 'her ticket'a ne kadar zaman harcandı' raporunu istiyor. Hangi strateji UYGUN DEĞİL?",
-        "options": ["two_step", "link_first", "date_first"],
+        "options": [
+          "two_step",
+          "link_first",
+          "date_first"
+        ],
         "answer": 2,
         "explain": "date_first entry'yi ticket'a bağlamaz (assignment=null). Ticket bazlı raporda bu kayıtlar hiç görünmez. Tarih doğruluğu uğruna raporlamayı kaybetmiş olursun."
       },
       "docs": "docs/02-zaman-girisi-modeli.md#stratejiler"
     },
-
     {
       "id": "09-takvim-oku",
       "chapter": "takvim",
@@ -259,13 +371,38 @@
         "Takviminde doğum günü var. Öğle arası var. Reddettiğin bir retro var. İki toplantı çakışıyor. Biri 45 dakika ve senin hesabın 30'un katlarını kabul ediyor.",
         "Ham veriyi çekmek kolay; ANLAMLI veriye çevirmek asıl iş."
       ],
-      "callTool": { "name": "calendar_list_today", "args": { "provider": "mock" } },
+      "callTool": {
+        "name": "calendar_list_today",
+        "args": {
+          "provider": "mock"
+        }
+      },
       "expect": [
-        { "path": "totals.rawCount", "equals": 8, "explain": "Takvimde 8 ham etkinlik var." },
-        { "path": "totals.count", "equals": 5, "explain": "Bunların 5'i gerçek toplantı." },
-        { "path": "totals.filteredOut", "equals": 3, "explain": "3 tanesi elendi ve HER BİRİ farklı bir kural öğretiyor." },
-        { "path": "totals.busyMinutes", "equals": 225, "explain": "Çakışmalar bir kez sayıldı." },
-        { "path": "totals.naiveSumMinutes", "equals": 255, "explain": "Naif toplam 30 dakika fazla — çünkü iki toplantı çakışıyor." }
+        {
+          "path": "totals.rawCount",
+          "equals": 8,
+          "explain": "Takvimde 8 ham etkinlik var."
+        },
+        {
+          "path": "totals.count",
+          "equals": 5,
+          "explain": "Bunların 5'i gerçek toplantı."
+        },
+        {
+          "path": "totals.filteredOut",
+          "equals": 3,
+          "explain": "3 tanesi elendi ve HER BİRİ farklı bir kural öğretiyor."
+        },
+        {
+          "path": "totals.busyMinutes",
+          "equals": 225,
+          "explain": "Çakışmalar bir kez sayıldı."
+        },
+        {
+          "path": "totals.naiveSumMinutes",
+          "equals": 255,
+          "explain": "Naif toplam 30 dakika fazla — çünkü iki toplantı çakışıyor."
+        }
       ],
       "reveal": [
         "Elenen 3 etkinliğin skipReason alanına bak — her biri Türkçe gerekçesini söylüyor.",
@@ -286,7 +423,6 @@
       },
       "docs": "docs/04-takvim.md"
     },
-
     {
       "id": "10-plan-uret",
       "chapter": "takvim",
@@ -297,9 +433,19 @@
         "Neden? Çünkü eşleşme heuristiği ASLA %100 doğru olamaz. 'Standup' hangi ticket'a yazılacak? Bilemez. Sorması gerekir."
       ],
       "_providerNotu": "provider AÇIKÇA veriliyor. Verilmezse şema varsayılanı 'auto' devreye girer ve zincir (graph→google→ics→mock) fixtures/calendar.ics dosyası VARSA onu seçer. O dosya üretildiği güne aittir; ertesi gün aynı adım 0 öneri döndürür ve ders, kimsenin dokunmadığı bir yerden kırılır. Bir ders adımı ortam yapılandırmasına bağlı olmamalıdır — adım 09 da aynı sebeple mock veriyor.",
-      "callTool": { "name": "plan_time_entries_from_calendar", "args": { "personId": "$me", "provider": "mock" } },
+      "callTool": {
+        "name": "plan_time_entries_from_calendar",
+        "args": {
+          "personId": "$me",
+          "provider": "mock"
+        }
+      },
       "expect": [
-        { "path": "proposals.length", "equals": 5, "explain": "5 gerçek toplantı için 5 öneri." }
+        {
+          "path": "proposals.length",
+          "equals": 5,
+          "explain": "5 gerçek toplantı için 5 öneri."
+        }
       ],
       "reveal": [
         "Üç eşleşme yolunu da göreceksin:",
@@ -311,7 +457,6 @@
       ],
       "docs": "docs/04-takvim.md#eslestirme"
     },
-
     {
       "id": "11-gercek-yazma",
       "chapter": "yazma",
@@ -334,7 +479,11 @@
       },
       "confirmable": true,
       "expect": [
-        { "path": "errors.length", "equals": 0, "explain": "Hata yok — kayıt oluştu." }
+        {
+          "path": "errors.length",
+          "equals": 0,
+          "explain": "Hata yok — kayıt oluştu."
+        }
       ],
       "reveal": [
         "Kayıt oluştu. Şimdi xurrent_list_open_work'ü tekrar çalıştırırsan Request #70248'in toplam süresinin arttığını görürsün.",
@@ -343,7 +492,6 @@
       ],
       "docs": "docs/03-mcp-tasarimi.md#onay"
     },
-
     {
       "id": "12-spec-degisti",
       "chapter": "protokol",
@@ -357,15 +505,47 @@
       ],
       "callTool": null,
       "table": {
-        "headers": ["", "2025-11-25 (v1)", "2026-07-28 (v2)"],
+        "headers": [
+          "",
+          "2025-11-25 (v1)",
+          "2026-07-28 (v2)"
+        ],
         "rows": [
-          ["Bağlantı", "initialize el sıkışması", "yok — stateless"],
-          ["Session", "Mcp-Session-Id header", "yok"],
-          ["Keşif", "initialize sonucu", "server/discover (zorunlu RPC)"],
-          ["Kullanıcıya soru", "sunucu elicitation/create İSTEĞİ gönderir", "sunucu InputRequiredResult SONUCU döner"],
-          ["Devamı", "sunucu cevabı bekler", "client isteği YENİ id ile TEKRARLAR"],
-          ["Sunucu state'i", "bellekte", "imzalı requestState içinde, client'ta taşınır"],
-          ["Sonuç zarfı", "düz Result", "resultType zorunlu"]
+          [
+            "Bağlantı",
+            "initialize el sıkışması",
+            "yok — stateless"
+          ],
+          [
+            "Session",
+            "Mcp-Session-Id header",
+            "yok"
+          ],
+          [
+            "Keşif",
+            "initialize sonucu",
+            "server/discover (zorunlu RPC)"
+          ],
+          [
+            "Kullanıcıya soru",
+            "sunucu elicitation/create İSTEĞİ gönderir",
+            "sunucu InputRequiredResult SONUCU döner"
+          ],
+          [
+            "Devamı",
+            "sunucu cevabı bekler",
+            "client isteği YENİ id ile TEKRARLAR"
+          ],
+          [
+            "Sunucu state'i",
+            "bellekte",
+            "imzalı requestState içinde, client'ta taşınır"
+          ],
+          [
+            "Sonuç zarfı",
+            "düz Result",
+            "resultType zorunlu"
+          ]
         ]
       },
       "reveal": [
@@ -388,7 +568,6 @@
       },
       "docs": "contract/protocol.md"
     },
-
     {
       "id": "13-iki-kabuk",
       "chapter": "protokol",
@@ -408,13 +587,20 @@
           "description": "Protokol karsilastirma",
           "dryRun": true
         },
-        "protocols": ["2025-11-25", "2026-07-28"]
+        "protocols": [
+          "2025-11-25",
+          "2026-07-28"
+        ]
       },
       "expect": [
-        { "check": "protocolsAgree", "equals": true, "explain": "İki protokolde de tool çıktısı BİREBİR aynı. Değişen sadece onayın sorulma biçimiydi." }
+        {
+          "check": "protocolsAgree",
+          "equals": true,
+          "explain": "İki protokolde de tool çıktısı BİREBİR aynı. Değişen sadece onayın sorulma biçimiydi."
+        }
       ],
       "reveal": [
-        "Sözleşme (contract/tools.json) hiç değişmedi. 8 tool, aynı parametreler, aynı çıktı alanları, aynı sayılar.",
+        "Sözleşme (contract/tools.json) hiç değişmedi. 10 tool, aynı parametreler, aynı çıktı alanları, aynı sayılar.",
         "Şimdi bu dersin en dürüst kısmı: bu projede biz de yanlış bir mimari karar verdik ve ölçüm düzeltti.",
         "İlk plan şuydu: 'her dilde iki SDK sürümü yan yana kurulmalı; C#'ta aynı paket ID olduğu için Core + V1 + V2 diye üç proje gerekir.'",
         "Sonra ham JSON-RPC ile ölçtük:",
@@ -429,9 +615,108 @@
       ],
       "docs": "contract/protocol.md#repo-yapısı-paylaşılan-çekirdek-iki-adaptör"
     },
-
     {
-      "id": "14-protokol-vaadi",
+      "id": "14-geri-okuma",
+      "chapter": "sohbet",
+      "title": "Yazılanı geri oku — raporu değil kaydı doğrula",
+      "narrate": [
+        "11. adımda yazdık ve sunucunun 'yazdım' raporuna güvendik. Kesin mesajlaşmanın kuralı: karneyi öğrenciye yazdırma — kaydı GERİ OKU.",
+        "xurrent_list_time_entries tam bunun için var: kişi + tarih aralığı + sourceId (idempotency anahtarı) filtreleriyle yazılmış kayıtları sunucudan okur.",
+        "Kısmen başarısız bir bulk'tan sonra 'hangi kalemler gerçekten yazıldı?' sorusunun cevabı da budur (contract/reliability.md §5)."
+      ],
+      "callTool": {
+        "name": "xurrent_list_time_entries",
+        "args": {
+          "personId": "$me",
+          "first": 25
+        }
+      },
+      "expect": [
+        {
+          "path": "accountId",
+          "exists": true,
+          "explain": "Hangi hesaptan okunduğu her zaman görünür."
+        },
+        {
+          "path": "timeEntries",
+          "exists": true,
+          "explain": "Kayıt listesi döndü (tohum kayıtlar + bu oturumda yazılanlar)."
+        },
+        {
+          "path": "totalMinutes",
+          "exists": true,
+          "explain": "Dönen kayıtların toplam dakikası — 'bu hafta ne yazmışım' sorusunun ham verisi."
+        }
+      ],
+      "reveal": [
+        "Yol A kayıtlarında sourceID dolu; Yol B'ninkini two_step'in 2. adımı doldurur — dedup'ın neden yalnız Yol A'da mümkün olduğunu kayıtların üzerinde görüyorsun.",
+        "assignment alanı Yol A kayıtlarında null: docs/02'nin dersi burada veri olarak karşında."
+      ],
+      "docs": "docs/15-guvenilirlik.md"
+    },
+    {
+      "id": "15-sihirbaz-sohbet",
+      "chapter": "sohbet",
+      "title": "LLM'siz chatbot: timesheet_wizard",
+      "narrate": [
+        "Şimdi ilginç bir soru: bu sunucu, LLM'i OLMAYAN bir host'ta (Copilot Studio, düz bir terminal) chatbot olabilir mi?",
+        "timesheet_wizard bunun cevabı: sunucu-güdümlü deterministik durum makinesi. Host yalnızca kullanıcı cümlesini iletir, dönen soruyu gösterir.",
+        "Durum, HMAC imzalı opak sessionState'te taşınır — her tur AYNEN geri gönderilir. Aşağıdaki üç çağrı bir sohbetin ilk üç turudur."
+      ],
+      "callToolSequence": [
+        {
+          "label": "tur 1 — merhaba",
+          "name": "timesheet_wizard",
+          "args": {}
+        },
+        {
+          "label": "tur 2 — '1'",
+          "name": "timesheet_wizard",
+          "args": {
+            "utterance": "1",
+            "sessionState": "{{prev.sessionState}}"
+          }
+        },
+        {
+          "label": "tur 3 — '2 saat'",
+          "name": "timesheet_wizard",
+          "args": {
+            "utterance": "2 saat",
+            "sessionState": "{{prev.sessionState}}"
+          }
+        }
+      ],
+      "expect": [
+        {
+          "path": "step",
+          "equals": "duration",
+          "explain": "Üçüncü turda makine süre cevabını işledi: '2 saat' → 120 dakika (çevirim reply'da AÇIKÇA söylenir)."
+        },
+        {
+          "path": "done",
+          "equals": false,
+          "explain": "Sohbet sürüyor; sıradaki soru detay (tarih/saat/açıklama)."
+        },
+        {
+          "path": "sessionState",
+          "exists": true,
+          "explain": "Her tur yeni imzalı durum döner — sunucu tarafında oturum YOK (stateless)."
+        },
+        {
+          "path": "nextQuestion.prompt",
+          "exists": true,
+          "explain": "İnce host'un tek işi: bu soruyu göster, cevabı utterance olarak geri gönder."
+        }
+      ],
+      "reveal": [
+        "sessionState'in HMAC'i payload BYTE'LARI üzerinde hesaplanır — kanonikleştirme gerekmez. Bu yüzden TS'in ürettiği state Python'a verilebilir: senaryo (h) tam bunu yapıyor (ts → py → cs, tek sohbet).",
+        "Onay yine protokol seviyesinde: confirm adımı geçilmeden write çalışmaz; onaylanan plandan sapmayı plannedFingerprint engeller.",
+        "Bu tool Gemini'ye ÇEVRİLMEZ — chatbot'un kendi kendini çağırma döngüsü wire-denetimi ile kapalıdır."
+      ],
+      "docs": "contract/wizard.md"
+    },
+    {
+      "id": "16-protokol-vaadi",
       "chapter": "kapanis",
       "title": "Kapanış: şimdi sunucuyu değiştir",
       "narrate": [
@@ -443,7 +728,10 @@
         "Çünkü sözleşme contract/tools.json'da, veri fixtures/ klasöründe, ders bu steps.json dosyasında. Üç sunucu da sadece birer implementasyon.",
         "AI destekli geliştirmede asıl beceri kod yazmak değil — DOĞRU SÖZLEŞMEYİ tarif etmek. Sözleşme netse implementasyon dili gerçekten bir detaydır."
       ],
-      "callTool": { "name": "xurrent_whoami", "args": {} },
+      "callTool": {
+        "name": "xurrent_whoami",
+        "args": {}
+      },
       "reveal": [
         "Son bir not: bu projede en çok zaman alan iş kod yazmak değildi, API'nin GERÇEKTE ne yapabildiğini keşfetmekti.",
         "'timeEntryCreate bir ticket'a bağlanamaz' bulgusu tüm mimariyi belirledi. Bu bulguyu kaçırıp kod yazmaya başlasaydık, iki gün sonra baştan yazardık.",
@@ -452,7 +740,6 @@
       "docs": "docs/08-riskler-ve-sss.md"
     }
   ],
-
   "placeholders": {
     "{{today}}": "Bugünün tarihi, YYYY-MM-DD",
     "{{yesterday}}": "Dünün tarihi, YYYY-MM-DD",

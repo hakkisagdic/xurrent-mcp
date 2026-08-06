@@ -41,34 +41,39 @@ adım kırmızı yanmaz, `ATLANDI` olur ve tek bir kök neden gösterilir.
 
 ---
 
-### Ölçülmüş koşu — 2026-08-03, node 24, macOS
+### Ölçülmüş koşu — 2026-08-05, node 24, macOS
 
 Sayılar tahmin değil; aşağıdaki tablo gerçek bir koşunun çıktısıdır.
 
 | adım | süre | durum | kanıt |
 |---|---|---|---|
-| `derle-ts` | 1.3s | GEÇTİ | tsc temiz · `dist/mcp/stdio.js` üretildi |
-| `derle-py` | 0.0s | GEÇTİ | `uv sync` tamam |
+| `derle-ts` | 1.4s | GEÇTİ | tsc temiz · `dist/mcp/stdio.js` üretildi |
+| `derle-py` | 0.1s | GEÇTİ | `uv sync` tamam |
 | `derle-cs` | 0.7s | GEÇTİ | derleme başarılı · uyarı yok |
-| `birim-ts` | 0.2s | GEÇTİ | 172 geçti |
-| `birim-py` | 0.3s | GEÇTİ | pytest: 255 geçti |
-| `birim-cs` | 1.9s | GEÇTİ | `XurrentMcp.Tests` + `sema-testi` |
-| `sozlesme` | 1.6s | GEÇTİ | 3/3 sunucu · 8 tool |
-| `mcp-uyum` | 26s | **KALDI** | 6 koşu · 240 madde geçti · 8 MUST ihlali (`J5`, `J4`, `M4`) |
-| `adimlar` | 0.0s | GEÇTİ | 14 adım şemaya uygun |
+| `birim-ts` | 0.4s | GEÇTİ | 304 geçti |
+| `birim-py` | 1.0s | GEÇTİ | pytest: 395 geçti |
+| `birim-cs` | 2.0s | GEÇTİ | 432 geçti (`XurrentMcp.Tests` + `sema-testi`) |
+| `sozlesme` | 1.6s | GEÇTİ | 3/3 sunucu · **10 tool** |
+| `mcp-uyum` | 25s | GEÇTİ | 6 koşu · 252 madde geçti · **MUST ihlali yok** |
+| `adimlar` | 0.0s | GEÇTİ | 16 adım şemaya uygun |
+| `adimlar-atolye` | 0.0s | GEÇTİ | atölye adım dosyası şemaya uygun |
 | `prompt-defteri` | 0.0s | GEÇTİ | docs/11 ↔ `adimlar.json` güncel |
-| `sihirbaz-ts` | 0.7s | GEÇTİ | 17 geçti, 0 başarısız, 0 atlandı |
-| `sihirbaz-py` | 1.9s | GEÇTİ | 17 geçti, 0 başarısız, 0 atlandı |
-| `sihirbaz-cs` | 4.5s | GEÇTİ | 17 geçti, 0 başarısız, 0 atlandı |
-| `senaryolar` | 15s | GEÇTİ | 21 geçti, 0 başarısız |
-| `atolye` | 0.0s | GEÇTİ | 16 adım · 16 geçti |
-| `wire-denetimi` | 0.5s | GEÇTİ | 29 iddia · 29 geçti |
+| `pluginler` | 0.0s | GEÇTİ | 7 manifest şemaya ve anlamsal kurallara uygun |
+| `konektor` | 0.0s | GEÇTİ | connector.yaml ↔ üretici senkron |
+| `sihirbaz-ts` | 0.7s | GEÇTİ | 24 geçti, 0 başarısız, 0 atlandı |
+| `sihirbaz-py` | 1.7s | GEÇTİ | 24 geçti, 0 başarısız, 0 atlandı |
+| `sihirbaz-cs` | 4.3s | GEÇTİ | 24 geçti, 0 başarısız, 0 atlandı |
+| `senaryolar` | 67s | GEÇTİ | 62 geçti (GraphQL a–g + `[rest]` a–e + çapraz-dil h) |
+| `atolye` | 0.1s | GEÇTİ | 16 adım · 16 geçti |
+| `kabuk-http` | 3.1s | GEÇTİ | 3 dilde: v1 oturum ✓ v2 10 tool ✓ anahtarsız 401 ✓ |
+| `wire-denetimi` | 0.5s | GEÇTİ | 31 iddia · 31 geçti |
 
-**15 geçti · 1 kaldı · 0 atlandı (55 sn)** — `--hizli` ile 12 adım, **7,4 sn**.
+**20 geçti · 0 kaldı · 0 atlandı (~110 sn).**
 
-Tek kırmızı olan `mcp-uyum`, aşağıdaki *Bilinen ihlaller defteri* bölümünde
-açıklanıyor: sekiz ihlalin yedisi deftere kayıtlı (`J4`, `J5` — SDK kaynaklı),
-biri **bilerek kayıtsız** (`M4` — bizim C# kodumuzda ve düzeltilebilir).
+> Tarihî not: 2026-08-03 tarihli İLK koşuda `mcp-uyum` 8 MUST ihlaliyle
+> kırmızıydı ve tablo 16 adımdı. İhlallerin hepsi kapatıldı (docs/12'deki
+> BULGU bölümleri), borç defteri boşaldı ve boş kaldı; sözleşme 10 tool'a,
+> doğrulama 20 adıma çıktı. Kırmızıdan yeşile giden yol dersin kendisidir.
 
 ---
 
@@ -76,7 +81,7 @@ biri **bilerek kayıtsız** (`M4` — bizim C# kodumuzda ve düzeltilebilir).
 
 ```
                         ┌───────────────────────────────┐
-        wire            │  wire-denetimi (29 iddia)     │   İstemci DOĞRU MU konuşuyor
+        wire            │  wire-denetimi (31 iddia)     │   İstemci DOĞRU MU konuşuyor
                         ├───────────────────────────────┤
         uçtan uca       │  sihirbaz ×3 · senaryolar     │   Akış çalışıyor mu
                         │  atölye                       │
@@ -204,7 +209,7 @@ test "sonuç geldi mi" diye bakar. Sonucun **nasıl** geldiğine bakmaz. Aşağ�
 
 | | |
 |---|---|
-| **Nerede** | `tools/fake-gemini/wire-denetimi.mjs` — 29 iddia |
+| **Nerede** | `tools/fake-gemini/wire-denetimi.mjs` — 31 iddia |
 | **test-all adımı** | `wire-denetimi` |
 
 Sahte Gemini sunucusu istemciyi **çalıştırır**; bu sonda istemciyi **denetler**.
@@ -464,33 +469,39 @@ sayılır — CI'yı kırmaz ama **görünür kalır**.
    bir sessizleştirme anahtarı değildir; yalnızca **zaten kayda geçmiş** olanı
    sessizleştirir.
 
-Şu an defterde duran maddelerin hepsi `ustAkim`: TypeScript ve Python SDK'larının
-stdio transport'u bozuk JSON satırını sessizce düşürüyor (`J5`), ve iki SDK şema
-doğrulama hatasını `-32602` yerine `-32603`'e sarmalıyor (`J4`). C# aynı testte
-`-32700` döndüğü için bunlar *"SDK'lar böyle yapar"* mazeretiyle kapatılamaz —
-**aynı spec, aynı sürüm, farklı sonuç.** Kayıtta tutulmasının sebebi budur: bir
-uyum listesinin görevi *"kimin suçu"* demek değil, **davranışı kayda geçirmektir**.
+**Defter bugün BOŞTUR** — ve boş kalması bir CI kuralıdır. Ama boşalma hikâyesi
+kuralların neden böyle olduğunu anlatır:
 
-### Defterde bilerek YER ALMAYAN bir ihlal
+Defter bir süre yalnız `ustAkim` maddeler taşıdı: TypeScript ve Python
+SDK'larının stdio transport'u bozuk JSON satırını sessizce düşürüyordu (`J5`) ve
+iki SDK şema doğrulama hatasını `-32602` yerine `-32603`'e sarmalıyordu (`J4`).
+C# aynı testte `-32700` döndüğü için bunlar *"SDK'lar böyle yapar"* mazeretiyle
+kapatılamazdı — **aynı spec, aynı sürüm, farklı sonuç.** Çözüm SDK'yı beklemek
+olmadı: her iki dilde SDK'nın önüne ince birer nöbetçi katman yazıldı
+(`parse-guard`, `params-guard`, `envelope-guard`) ve maddeler ölçümle kapandı;
+koşucu `★ ARTIK GÖRÜLMÜYOR` uyarısı üretti, kayıtlar silindi.
 
-`M4` (C# / `2026-07-28`) hâlâ kalıyor: sunucu, client `elicitation`
-desteklemediğini bildirmesine rağmen `elicitation/create` istiyor
+### Defterde bilerek YER ALMAMIŞ bir ihlal
+
+`M4` (C# / `2026-07-28`) uzun süre açık kaldı: sunucu, client `elicitation`
+desteklemediğini bildirmesine rağmen `elicitation/create` istiyordu
 ([docs/12 § BULGU 4](12-mcp-uyum.md)). Deftere **alınmadı**, çünkü `nedenKapali`
-için geçerli iki değerden (`ustAkim`, `tasarim`) hiçbirine uymuyor: hata bizim
-C# adaptör kodumuzda ve **düzeltilebilir**.
+için geçerli iki değerden (`ustAkim`, `tasarim`) hiçbirine uymuyordu: hata bizim
+C# adaptör kodumuzdaydı ve **düzeltilebilirdi**.
 
 Bir MUST ihlalini *"düzeltilebilir ama henüz düzeltmedik"* diye maskelemek
 defteri bir **çöp kutusuna** çevirir. Bu yüzden `--bilinen-ihlaller` bayrağıyla
-bile kırmızı kalır:
+bile kırmızı kaldı — düzeltilene kadar:
 
 ```
 ✘ mcp-uyum   45s  KALDI   6 koşu · 240 madde geçti ·
                           LİSTEDE OLMAYAN 1 MUST ihlali: cs/2026-07-28/M4 ·
-                          4 bilinen ihlal maskelendi
+                          4 bilinen ihlal maskelendi        (tarihî çıktı)
 ```
 
 Defterde olan sessizleşir, olmayan kırmızı kalır. **Fark, listeye girmek için
-gerekçe yazmış olmaktır.**
+gerekçe yazmış olmaktır.** Bugünkü çıktı: `6 koşu · 252 madde geçti · MUST
+ihlali yok` — ve defter boş.
 
 `$cozulmusKayit` bölümü tarih düşürür: `T7` (Vaka C) düzeltildi ve 2026-08-03
 ölçümünde altı koşunun **altısında da** geçti. **Defterin küçülmesi ölçülebilir

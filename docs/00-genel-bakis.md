@@ -64,7 +64,7 @@ flowchart LR
   H -- "stdio · JSON-RPC 2.0" --> S
 
   subgraph S["xurrent-mcp sunucusu (TS | PY | CS)"]
-    T["8 tool<br/>contract/tools.json"]
+    T["10 tool<br/>contract/tools.json"]
   end
 
   S --> XA["Xurrent adapter"]
@@ -101,8 +101,10 @@ yazacaksan bu vergi pahalıdır. Üç istemci veya üç dil varsa bedavaya gelir
 | **3** | Toplu kaydet | `xurrent_create_time_entries_bulk` | **yazma** |
 | **4a** | Günün takvimini oku | `calendar_list_today` | okuma |
 | **4b** | Toplantıları öneriye çevir | `plan_time_entries_from_calendar` | **önizleme** |
+| **3 (doğrulama)** | Yazılanı geri oku | `xurrent_list_time_entries` | okuma |
+| **2+3 (sohbet)** | LLM'siz host'ta diyaloğu yürüt | `timesheet_wizard` | **sohbet** |
 
-Sekiz tool: **4 okuma + 2 yazma + 1 takvim + 1 önizleme.**
+On tool: **5 okuma + 2 yazma + 1 takvim + 1 önizleme + 1 sohbet.**
 
 Dikkat çeken iki tasarım kararı:
 
@@ -122,12 +124,12 @@ parametre adları ve çıktı alanları **birebir** oradan gelir; üç sunucu da
 ## Repoda ne nerede?
 
 ```
-contract/tools.json      ← tek gerçek kaynak. 8 tool'un dil-bağımsız sözleşmesi.
+contract/tools.json      ← tek gerçek kaynak. 10 tool'un dil-bağımsız sözleşmesi.
 contract/protocol.md     ← çift protokol sözleşmesi (2025-11-25 + 2026-07-28)
 fixtures/*.json          ← ortak mock veri. Üç dil de AYNI dosyaları okur.
 fixtures/README.md       ← göreli tarih sözleşmesi (dayOffset / startLocal)
 docs/                    ← bu klasör: anlatım notları
-docs/wizard/steps.json   ← sihirbazın ders akışı (14 adım)
+docs/wizard/steps.json   ← sihirbazın ders akışı (16 adım)
 servers/typescript/      ┐
 servers/python/          ├ üç bağımsız implementasyon, aynı sözleşme
 servers/csharp/          ┘
@@ -214,8 +216,17 @@ Ayrıntı: [`fixtures/README.md`](../fixtures/README.md).
 | [07 — Sihirbaz](07-sihirbaz.md) | `steps.json`, ders akışı | Dersi vermeden önce |
 | [08 — Riskler ve SSS](08-riskler-ve-sss.md) | Doğrulanmalı liste, kurtarma notları | Canlıya bağlanmadan önce |
 | [09 — Protokol geçişi](09-protokol-gecisi.md) ★ | `2026-07-28`, MRTR, `requestState`, ölçüm | Breaking change'i anlamak için |
+| [10 — Sıfırdan geliştirme](10-sifirdan-gelistirme.md) ★ | Proje nasıl üretildi: 7 faz, kararlar, tuzaklar | Süreci anlamak için |
+| [11 — Prompt defteri](11-prompt-defteri.md) | Atölye adımlarının kopyala-yapıştır hâli (ÜRETİLİR) | Atölyeyi kendin yaparken |
+| [12 — MCP uyum](12-mcp-uyum.md) | Spec uyum denetimi, MUST/SHOULD, borç defteri | Kendi sunucunu denetlerken |
+| [13 — Inspector](13-inspector.md) | Resmî inspector + repo'nun açıklamalı ekranı | Protokolü gözle görmek için |
+| [14 — Test ve kalite](14-test-ve-kalite.md) | Altı katmanlı doğrulama piramidi | Test stratejisi için |
+| [15 — Güvenilirlik](15-guvenilirlik.md) ★ | Retry, dedup, kaos senaryoları, "kesin mesajlaşma" | Rate limit'e çarpmadan önce |
+| [16 — REST ve resmî SDK](16-rest-ve-sdk.md) | İkinci transport, 422 modeli, vendor SDK ölçümü | Transport seçmeden önce |
+| [17 — Plugin ve Copilot Studio](17-plugin-ve-copilot.md) | Plugin modeli, konektör, tunnel yürüyüşü | Dış yüzey bağlarken |
+| [18 — CLI](18-cli.md) | `xmcp`: ham JSON-RPC istemcisi + TUI sohbet | Terminalden sürmek için |
 | [Demo senaryosu](demo/senaryo.md) | Sunum script'i, süre tahminleri | Sunum sabahı |
 
-**00'dan 09'a on bölüm**, artı demo senaryosu. Sıra bir okuma sırasıdır, zorunluluk
-değil — ama **02** ve **09** yıldızlıdır: biri dersin kalbi, diğeri dersin en güncel
-dersi.
+**00'dan 18'e on dokuz bölüm**, artı demo senaryosu. Sıra bir okuma sırasıdır,
+zorunluluk değil — yıldızlılar önceliklidir: **02** dersin kalbi, **09** en güncel
+dersi, **10** sürecin kendisi, **15** üretim yoluna çıkmadan önceki son kapı.

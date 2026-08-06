@@ -86,7 +86,7 @@ npx @modelcontextprotocol/inspector \
   node servers/typescript/dist/mcp/stdio.js
 ```
 
-**Beklenen:** Tarayıcı açılır, `tools/list` **8 tool** gösterir.
+**Beklenen:** Tarayıcı açılır, `tools/list` **10 tool** gösterir.
 
 > *"Bu bir MCP sunucusu. Sekiz yetenek bildiriyor: dört okuma, iki yazma, bir takvim,
 > bir önizleme. Şu ikisine dikkat: `xurrent_create_time_entry` `readOnlyHint: false`
@@ -287,7 +287,7 @@ Yazma bittikten sonra:
 > demedik — 'üzerine 60 ekle' dedik. Entegrasyonlarda çift sayma hatalarının bir
 > numaralı kaynağı bu."*
 
-### B5 — Protokol vaadi: adım 12 (3 dk)
+### B5 — Protokol vaadi: adım 16 (3 dk)
 
 ```bash
 # Sihirbazı kapat, Python ile aç
@@ -356,7 +356,7 @@ bugünkü toplantılarımı Xurrent'a yazmak istiyorum, önce bir plan çıkar
 
 | Bileşen | İnternetsiz |
 |---|---|
-| Sihirbaz (12 adım) | ✅ |
+| Sihirbaz (16 adım) | ✅ |
 | Mock Xurrent adapter | ✅ |
 | Mock takvim | ✅ |
 | `verify-contract` | ✅ |
@@ -428,6 +428,32 @@ less contract/tools.json
 **Seçenek 3 — Strateji seçim ağacını tartış (3 dk):**
 [02 — Seçim rehberi](../02-zaman-girisi-modeli.md#stratejiler) diyagramını tahtaya çiz
 ve öğrencilere sor: *"Sizin kurumunuzda hangisi?"*
+
+**Seçenek 4 — Kaos senaryosunu CANLI koş (1 dk):**
+
+```bash
+node tools/fake-xurrent/senaryolar.mjs --dil ts
+```
+
+> *"Şimdi sunucuya bilerek arıza enjekte ediyoruz: üç kez 429, sonra bir kalem
+> kalıcı kırık. İzleyin: retry politikası yazmayı kurtarıyor, kısmen kırılan
+> bulk AYNI komutla tekrar çalıştırılınca `deduped` ile tamamlanıyor — çift
+> kayıt yok. Güvenilirlik iddia değil, ölçüm."* (bkz. [15](../15-guvenilirlik.md))
+
+**Seçenek 5 — LLM'siz sohbeti göster (2 dk):**
+
+```bash
+cd clients/cli && node xmcp.mjs chat --server ts --script "1
+2 saat
+dün 14:00 VPN bakımı
+two_step
+evet"
+```
+
+> *"Az önce UI'sız, LLM'siz, tarayıcısız bir chatbot kullandık. Sohbetin aklı
+> sunucudaki `timesheet_wizard` durum makinesinde — Copilot Studio'ya bağlanınca
+> da aynı makine konuşacak. Ve '2 saat'in 120 dakikaya çevrildiğini bot'un
+> SÖYLEDİĞİNE dikkat."* (bkz. [18](../18-cli.md))
 
 ---
 
@@ -501,7 +527,7 @@ node scripts/gen-ics.mjs                    # .ics'i bugüne göre üret
 
 | Değer | Nerede |
 |---|---|
-| **8** | tool sayısı (`tools/list`) |
+| **10** | tool sayısı (`tools/list`) |
 | **3 / 3** | açık Request / Task |
 | **30** | `timeIncrement` |
 | **3** | effort class (4'ten biri `disabled`) |
@@ -519,4 +545,4 @@ node scripts/gen-ics.mjs                    # .ics'i bugüne göre üret
 > ticket bağını **bozamaz**, ve `two_step` stratejisi mümkün olur.
 >
 > **3.** Sözleşme netse implementasyon dili gerçekten bir detaydır — üç sunucu, aynı
-> 12 adım, aynı sayılar.
+> 16 adım, aynı sayılar.

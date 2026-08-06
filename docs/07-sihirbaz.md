@@ -18,7 +18,7 @@ node clients/wizard/wizard.mjs --server ts
 ```
 
 Yaptığı şey: bir MCP sunucusu başlatır, `tools/list` çağırır, sonra
-[`docs/wizard/steps.json`](wizard/steps.json) içindeki 12 adımı sırayla yürütür. Her
+[`docs/wizard/steps.json`](wizard/steps.json) içindeki 16 adımı sırayla yürütür. Her
 adımda **önce anlatır, sonra gerçek bir tool çağrısı yapar, sonra çıktıyı yorumlar.**
 
 Üç özellik onu ders için ideal kılıyor:
@@ -150,7 +150,7 @@ uyumludur — ikisi de aynı "bugün"e göre hesaplanır.
 
 ---
 
-## Ders akışı: 12 adım, 6 bölüm
+## Ders akışı: 16 adım, 8 bölüm
 
 | Bölüm | Adım | Konu | Tool |
 |---|---|---|---|
@@ -165,7 +165,11 @@ uyumludur — ikisi de aynı "bugün"e göre hesaplanır.
 | **Takvim** | 09 | **İSTER #4** — takvimi oku | `calendar_list_today` |
 | | 10 | Toplantıları öneriye çevir | `plan_time_entries_from_calendar` |
 | **Yazma** | 11 | Gerçekten yaz — onayla | `xurrent_create_time_entry` (`confirmable`) |
-| **Kapanış** | 12 | Sunucuyu değiştir | `xurrent_whoami` |
+| **Protokol** | 12 | **★ Spec iş ortasında değişti** | `callTool` + `table` |
+| | 13 | Aynı iş mantığı, iki protokol kabuğu | `compareProtocols` (`xurrent_create_time_entry`) |
+| **Sohbet** | 14 | Yazılanı geri oku — kesin mesajlaşmanın gözü | `xurrent_list_time_entries` |
+| | 15 | LLM'siz chatbot: üç turluk diyalog | `timesheet_wizard` (`callToolSequence` + `{{prev.sessionState}}`) |
+| **Kapanış** | 16 | Sunucuyu değiştir | `xurrent_whoami` |
 
 Akış kasıtlı: **okuma → kısıtı keşfet → planla → yaz.** Öğrenci "önce keşfet, sonra
 yaz" ilkesini anlatılarak değil, **yaşayarak** öğrenir.

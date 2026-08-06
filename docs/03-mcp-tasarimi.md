@@ -1,6 +1,6 @@
 # 03 — MCP tasarımı
 
-> **Bölüm hedefi:** Sekiz tool'un neden tam olarak bu sekiz tool olduğunu, yazma
+> **Bölüm hedefi:** On tool'un neden tam olarak bu on tool olduğunu, yazma
 > güvenliğinin üç katmanını ve sunucunun istemciye niyetini nasıl bildirdiğini anlamak.
 
 | ← Önceki | Sonraki → |
@@ -11,7 +11,7 @@
 
 ## Tool sınırlarını kim çizer?
 
-Sekiz tool var. Sözleşme: [`contract/tools.json`](../contract/tools.json).
+On tool var. Sözleşme: [`contract/tools.json`](../contract/tools.json).
 
 | # | Tool | `kind` | Neden var |
 |---|---|---|---|
@@ -23,10 +23,12 @@ Sekiz tool var. Sözleşme: [`contract/tools.json`](../contract/tools.json).
 | 6 | `xurrent_create_time_entries_bulk` | **write** | Takvim planını tek onayla uygulamak için. Atomik değil, ve bunu saklamıyor. |
 | 7 | `calendar_list_today` | read | **İster #4a.** Ham takvimi normalize eder ve filtreler. |
 | 8 | `plan_time_entries_from_calendar` | **preview** | **İster #4b.** Öneri üretir. **Yapısal olarak yazamaz.** |
+| 9 | `xurrent_list_time_entries` | read | **Geri-okuma.** Yazma raporuna güvenmek yerine kaydı sunucudan doğrulamak; `sourceId` ile dedup araması (bkz. [15](15-guvenilirlik.md)). |
+| 10 | `timesheet_wizard` | **chat** | **LLM'siz sohbet.** Sunucu-güdümlü durum makinesi; ince host'ta (Copilot Studio, terminal) diyaloğu sunucu yürütür (bkz. [contract/wizard.md](../contract/wizard.md)). |
 
 ### Neden "her ister = bir tool" değil?
 
-Dört ister var, sekiz tool. Fark üç tasarım kararından geliyor:
+Dört ister var, on tool. Fark üç tasarım kararından geliyor:
 
 **1 — Bir tool, bir *yetenek*; bir *cümle* değil.**
 İster #4 tek cümle: *"takvimi oku, her toplantıyı zaman girişi olarak ekle."* Bunu tek

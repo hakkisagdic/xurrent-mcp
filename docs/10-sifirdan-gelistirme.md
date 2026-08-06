@@ -1399,5 +1399,24 @@ Pratik kurallar:
 | Yayın | 4 mantıksal commit + 1 sonradan; MIT; `.env` hiç commit'lenmedi |
 | En genellenebilir ders | **Sözleşmeyi kodun önüne koy, sonra ölç.** |
 
+---
+
+# FAZ 7 — Genişleme (sonradan): sözleşme büyürken tez değişmedi
+
+Bu bölümün anlattığı ilk 16 adım repoyu yayına taşıdı. Yayından sonra sözleşme
+büyüdü — ve büyüme, tezi test eden ikinci bir ölçüm oldu:
+
+| Genişleme | Ne değişti | Adım |
+|---|---|---|
+| Güvenilirlik katmanı | retry operasyon sınıfları, kaos senaryoları, dedup — `contract/reliability.md` | atölye **17** · [15](15-guvenilirlik.md) |
+| İki yeni tool | geri-okuma (`xurrent_list_time_entries`) + LLM'siz sohbet (`timesheet_wizard`); sözleşme 8 → **10** tool | atölye **18** · [contract/wizard.md](../contract/wizard.md) |
+| İkinci transport | REST v1 adaptörleri + resmî .NET SDK ölçümü; `[rest]` parite koşusu | atölye **19** · [16](16-rest-ve-sdk.md) |
+| Dış yüzeyler | çift-çağ HTTP + API anahtarı kapısı, Copilot Studio konektörü, plugin sözleşmesi, `xmcp` | atölye **20** · [17](17-plugin-ve-copilot.md) · [18](18-cli.md) |
+
+Her genişleme aynı sırayla ilerledi: önce sözleşme dosyası, sonra üç dile birden
+implementasyon, sonra ölçüm (senaryolar 21 → **62** kontrole, birim testler
+612 → **1131**'e, doğrulama 16 → **20** adıma çıktı). Bu fazın adım adım anlatımı
+yukarıdaki bölümler gibi atölyededir: `node clients/atolye/atolye.mjs --adim 17`.
+
 Sunum planı: [demo/senaryo.md](demo/senaryo.md).
 Makine-okunur adımlar: [`docs/atolye/adimlar.json`](atolye/adimlar.json).

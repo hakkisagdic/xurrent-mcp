@@ -51,7 +51,22 @@ SHOULD ihlalleri raporda görünür ama derlemeyi kırmaz.
 
 # ÖLÇÜLMÜŞ SONUÇ
 
-Aşağıdakiler `node scripts/mcp-uyum.mjs --hepsi --protokol ikisi` çıktısıdır. **Tahmin değildir.**
+## Güncel durum (2026-08-05)
+
+```
+node scripts/mcp-uyum.mjs --hepsi --protokol ikisi
+→ 6 koşu · 252 madde GEÇTİ · MUST ihlali YOK · çıkış kodu 0
+```
+
+Borç defteri (`scripts/bilinen-ihlaller.json`) **boştur** ve CI bunu her koşuda
+doğrular. Aşağıdaki BULGU'ların tamamı **kapatılmıştır** — bölümler silinmedi,
+çünkü dersin anlatısı tam olarak bu bulgulardır: *neyin, neden, nasıl* kırık
+olduğu ve nasıl kapandığı. Sözleşme 10 tool'a çıkarken (geri-okuma + sihirbaz,
+docs/15 ve docs/18) madde kataloğu değişmedi; uyum, tool sayısından bağımsızdır.
+
+## İlk ölçüm (2026-08-03) — tarihî kayıt
+
+Aşağıdakiler İLK denetim koşusunun çıktısıdır. **Tahmin değildir.**
 Katalog 65 madde içerir: 60'ı otomatik, 5'i elle.
 
 | Sunucu | Revizyon | GEÇTİ | KALDI | ATLANDI | Kalan MUST |
@@ -63,7 +78,7 @@ Katalog 65 madde içerir: 60'ı otomatik, 5'i elle.
 | C# | 2026-07-28 | 49 | 3 | 13 | `J4`, `M4`, `T7` |
 | C# | 2025-11-25 | 30 | 2 | 33 | `J4`, `T7` |
 
-**Çıkış kodu 1.** Altı koşunun altısında da en az bir MUST maddesi kaldı.
+**Çıkış kodu 1 idi.** Altı koşunun altısında da en az bir MUST maddesi kalmıştı.
 
 > v1 koşularında ATLANDI sayısının yüksek olması (33) bir sorun değildir: 2026-07-28'e özgü
 > maddeler (`Y*`, `M*`) o revizyonda **yoktur**, dolayısıyla ölçülmezler.
@@ -154,7 +169,7 @@ D5 · OAuth DCR KULLANILMIYOR (yerine CIMD)                              ✔    
 Toplam **16 KALDI** (12 MUST + 4 SHOULD), ama bunlar **5 ayrı kök nedene** iniyor.
 Hiçbiri gizlenmedi; spec ihlali bulmak bu aracın amacıdır.
 
-## ✘ BULGU 1 — `isError` iş kuralı hatasını bildirmiyor (T7)
+## ✔ BULGU 1 (kapatıldı) — `isError` iş kuralı hatasını bildirmiyordu (T7)
 
 **Etkilenen:** Python (iki revizyon), C# (iki revizyon). TypeScript geçiyor.
 **Seviye:** MUST. **En ciddi bulgu budur.**
@@ -184,7 +199,7 @@ ve protokolün varlık sebebi tam olarak bunu insafa bırakmamaktır.
 **Düzeltme:** `errors.length > 0` ise `isError = true`. Tek satırlık düzeltme, üç dilde de
 MCP adaptör katmanında (`servers/*/mcp/`), iş mantığına dokunmadan yapılır.
 
-## ✘ BULGU 2 — Bozuk JSON'a `-32700` dönmüyor (J5)
+## ✔ BULGU 2 (kapatıldı) — Bozuk JSON'a `-32700` dönmüyordu (J5)
 
 **Etkilenen:** TypeScript ve Python (iki revizyon da). **C# geçiyor.**
 **Seviye:** MUST.
@@ -205,7 +220,7 @@ mazeretiyle geçiştirilemeyeceğini gösteriyor: **aynı spec, aynı sürüm, f
 yukarı akışta (upstream) çözülmesi gerekir. Checklist'te tutulmasının sebebi budur — bir uyum
 listesinin görevi "kimin suçu" demek değil, **davranışı kayda geçirmektir**.
 
-## ✘ BULGU 3 — Eksik `params` `-32603` dönüyor, `-32602` değil (J4)
+## ✔ BULGU 3 (kapatıldı) — Eksik `params` `-32603` dönüyordu, `-32602` değil (J4)
 
 **Etkilenen:** TypeScript v1, C# (iki revizyon). Python ve TS v2 geçiyor.
 **Seviye:** MUST.
@@ -227,7 +242,7 @@ denemek mantıklıdır, `-32602`'de aynı isteği tekrar göndermek **sonsuza ka
 C#'ın `"An error occurred."` mesajı ayrıca hata ayıklamayı imkânsız kılıyor — hangi alanın
 hatalı olduğu söylenmiyor.
 
-## ✘ BULGU 4 — C# desteklenmeyen `inputRequest` gönderiyor (M4)
+## ✔ BULGU 4 (kapatıldı) — C# desteklenmeyen `inputRequest` gönderiyordu (M4)
 
 **Etkilenen:** yalnızca C# / 2026-07-28. **Seviye:** MUST.
 
@@ -245,7 +260,7 @@ Gönderirse client o isteği karşılayamaz ve çağrı **kalıcı olarak tıkan
 cevaplayabilir ne de devam edebilir. TS ve Python bu durumda politikayı uygulayıp uyarıyla
 devam ediyor; C# `clientCapabilities`'i hiç okumuyor.
 
-## ○ BULGU 5 — Era tespiti `clientInfo`'yu zorunlu sanıyor (Y2b + Y3b)
+## ✔ BULGU 5 (kapatıldı) — Era tespiti `clientInfo`'yu zorunlu sanıyordu (Y2b + Y3b)
 
 **Etkilenen:** TypeScript ve Python / 2026-07-28. C# geçiyor. **Seviye:** SHOULD (ikisi de).
 

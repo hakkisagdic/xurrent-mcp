@@ -38,7 +38,7 @@ değil.
 | `time-allocations.json` | Yol A (`timeEntryCreate`) hedefleri. Biri `descriptionRequired` |
 | `calendar.json` | Takvim. Bugün (`dayOffset: 0`) 8 ham etkinlik → 5 gerçek toplantı; dün (`dayOffset: -1`) 2 toplantı |
 | `calendar.ics` | Aynı veri `.ics` formatında — `ics` sağlayıcısını test etmek için. `npm run gen:ics` ile üretilir |
-| `time-entries.json` | Başlangıçta boş. Mock modda yazılanlar buraya birikir (`XURRENT_MOCK_PERSIST=1` ise diske de yazılır) |
+| `time-entries.json` | 5 tohum kayıt taşır (dünden 5 gün öncesine, `dayOffset` −1..−5) — "geçen hafta ne yazmışım" sorusunun cevaplanabilmesi için. Mock modda yeni yazılanlar üzerine birikir (`XURRENT_MOCK_PERSIST=1` ise diske de yazılır) |
 
 `.ics` gerçek bir dosya formatıdır ve göreli tarih taşıyamaz; bu yüzden
 `scripts/gen-ics.mjs` onu `calendar.json`'dan **o anki tarihe göre** yeniden üretir.
