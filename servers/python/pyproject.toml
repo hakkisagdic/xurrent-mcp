@@ -18,7 +18,7 @@ dependencies = [
     # server.py dogrudan `import uvicorn` yapar. Onceden yalnizca mcp'nin
     # GECISLI bagimliligi olarak geliyordu — mcp bir gun uvicorn'u birakirsa
     # HTTP transport sessizce kirilirdi. Dogrudan import = dogrudan bagimlilik.
-    "uvicorn>=0.30.0",
+    "uvicorn>=0.52.3",
 ]
 
 [dependency-groups]
