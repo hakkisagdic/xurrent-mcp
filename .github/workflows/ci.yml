@@ -33,7 +33,7 @@ on:
   # branches filtresi verildiği için ETİKET push'ları buraya DÜŞMEZ — v* etiketi
   # release.yml'i tetikler ve o zaten test-all'ı baştan koşar.
   push:
-    branches: ["**"]
+    branches: [main]
   pull_request:
   workflow_dispatch:
     inputs:
